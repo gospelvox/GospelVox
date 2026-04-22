@@ -1,0 +1,1 @@
+{"version":3,"file":"activatePriestAccount.js","sourceRoot":"","sources":["../../src/priest/activatePriestAccount.ts"],"names":[],"mappings":";;;AAAA,uDAA+D;AAC/D,mDAA2C;AAE9B,QAAA,qBAAqB,GAAG,IAAA,cAAM,EACzC,EAAC,MAAM,EAAE,kBAAM,EAAC,EAChB,KAAK,EAAE,OAAO,EAAE,EAAE;IAChB,8CAA8C;IAC9C,uCAAuC;IACvC,MAAM,IAAI,kBAAU,CAAC,eAAe,EAAE,qBAAqB,CAAC,CAAC;AAC/D,CAAC,CACF,CAAC"}

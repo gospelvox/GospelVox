@@ -1,0 +1,1 @@
+{"version":3,"file":"verifyBibleSessionPayment.js","sourceRoot":"","sources":["../../src/payments/verifyBibleSessionPayment.ts"],"names":[],"mappings":";;;AAAA,uDAA+D;AAC/D,mDAA2C;AAE9B,QAAA,yBAAyB,GAAG,IAAA,cAAM,EAC7C,EAAC,MAAM,EAAE,kBAAM,EAAC,EAChB,KAAK,EAAE,OAAO,EAAE,EAAE;IAChB,8DAA8D;IAC9D,MAAM,IAAI,kBAAU,CAAC,eAAe,EAAE,qBAAqB,CAAC,CAAC;AAC/D,CAAC,CACF,CAAC"}

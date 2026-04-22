@@ -1,0 +1,39 @@
+{
+  "project_info": {
+    "project_number": "761780336670",
+    "project_id": "gospelvox-a2208",
+    "storage_bucket": "gospelvox-a2208.firebasestorage.app"
+  },
+  "client": [
+    {
+      "client_info": {
+        "mobilesdk_app_id": "1:761780336670:android:b3859031ff32ed62ba960f",
+        "android_client_info": {
+          "package_name": "com.gospelvox.gospel_vox"
+        }
+      },
+      "oauth_client": [
+        {
+          "client_id": "761780336670-t7sllsa9fkrke1o0ah94dt1eab1b10ul.apps.googleusercontent.com",
+          "client_type": 3
+        }
+      ],
+      "api_key": [
+        {
+          "current_key": "AIzaSyDzSUfD6IlxdpctDPyrhnWFLeIaY1M2y44"
+        }
+      ],
+      "services": {
+        "appinvite_service": {
+          "other_platform_oauth_client": [
+            {
+              "client_id": "761780336670-t7sllsa9fkrke1o0ah94dt1eab1b10ul.apps.googleusercontent.com",
+              "client_type": 3
+            }
+          ]
+        }
+      }
+    }
+  ],
+  "configuration_version": "1"
+}

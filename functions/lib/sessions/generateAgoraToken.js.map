@@ -1,0 +1,1 @@
+{"version":3,"file":"generateAgoraToken.js","sourceRoot":"","sources":["../../src/sessions/generateAgoraToken.ts"],"names":[],"mappings":";;;AAAA,uDAA+D;AAC/D,mDAA2C;AAE9B,QAAA,kBAAkB,GAAG,IAAA,cAAM,EACtC,EAAC,MAAM,EAAE,kBAAM,EAAC,EAChB,KAAK,EAAE,OAAO,EAAE,EAAE;IAChB,0DAA0D;IAC1D,wCAAwC;IACxC,MAAM,IAAI,kBAAU,CAAC,eAAe,EAAE,qBAAqB,CAAC,CAAC;AAC/D,CAAC,CACF,CAAC"}

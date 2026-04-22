@@ -1,0 +1,1 @@
+{"version":3,"file":"sessionWatchdog.js","sourceRoot":"","sources":["../../src/sessions/sessionWatchdog.ts"],"names":[],"mappings":";;;AAAA,+DAA2D;AAC3D,mDAA2C;AAE9B,QAAA,eAAe,GAAG,IAAA,sBAAU,EACvC,EAAC,QAAQ,EAAE,iBAAiB,EAAE,MAAM,EAAE,kBAAM,EAAC,EAC7C,KAAK,IAAI,EAAE;IACT,uDAAuD;IACvD,+CAA+C;IAC/C,OAAO,CAAC,GAAG,CAAC,wCAAwC,CAAC,CAAC;AACxD,CAAC,CACF,CAAC"}

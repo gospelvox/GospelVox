@@ -1,0 +1,1 @@
+{"version":3,"file":"createSessionRequest.js","sourceRoot":"","sources":["../../src/sessions/createSessionRequest.ts"],"names":[],"mappings":";;;AAAA,uDAA+D;AAC/D,mDAA2C;AAE9B,QAAA,oBAAoB,GAAG,IAAA,cAAM,EACxC,EAAC,MAAM,EAAE,kBAAM,EAAC,EAChB,KAAK,EAAE,OAAO,EAAE,EAAE;IAChB,uDAAuD;IACvD,kCAAkC;IAClC,MAAM,IAAI,kBAAU,CAAC,eAAe,EAAE,qBAAqB,CAAC,CAAC;AAC/D,CAAC,CACF,CAAC"}
