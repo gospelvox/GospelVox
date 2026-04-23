@@ -10,10 +10,16 @@
 // gives child widgets a clean, typed way to ask the shell to change
 // its selected index, without passing callbacks through the tree.
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/router/app_router.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/user/home/pages/home_page.dart';
 import 'package:gospel_vox/features/user/wallet/pages/wallet_page.dart';
 
@@ -46,7 +52,7 @@ class _UserShellPageState extends State<UserShellPage> {
             _PlaceholderTab(title: "Matrimony", icon: Icons.favorite_outline),
             _PlaceholderTab(title: "Bible", icon: Icons.menu_book_outlined),
             WalletPage(),
-            _PlaceholderTab(title: "Me", icon: Icons.person_outline),
+            _MeTab(),
           ],
         ),
         bottomNavigationBar: Container(
@@ -199,6 +205,224 @@ class _NavItem extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Temporary "Me" tab — hosts a minimal sign-out button so we can
+// switch roles during development without having to clear app
+// storage. Expand with real profile/account tiles later.
+class _MeTab extends StatefulWidget {
+  const _MeTab();
+
+  @override
+  State<_MeTab> createState() => _MeTabState();
+}
+
+class _MeTabState extends State<_MeTab> {
+  bool _signingOut = false;
+
+  Future<void> _signOut() async {
+    if (_signingOut) return;
+    setState(() => _signingOut = true);
+
+    try {
+      // Cached role must be cleared BEFORE the auth.signOut write —
+      // the router's redirect fires the instant the auth state
+      // changes, and a stale cache would route the next role
+      // selection back to the previous role's shell.
+      clearCachedRole();
+      await sl<AuthRepository>().signOut();
+      if (!mounted) return;
+      context.go('/select-role');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _signingOut = false);
+      AppSnackBar.error(context, 'Failed to sign out. Try again.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final user = FirebaseAuth.instance.currentUser;
+    final name = user?.displayName ?? '';
+    final email = user?.email ?? '';
+
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Text(
+                'Me',
+                style: GoogleFonts.inter(
+                  fontSize: 22,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppColors.surfaceWhite,
+                  borderRadius: BorderRadius.circular(14),
+                  border: Border.all(
+                    color: AppColors.muted.withValues(alpha: 0.08),
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Container(
+                      width: 44,
+                      height: 44,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: AppColors.primaryBrown
+                            .withValues(alpha: 0.08),
+                      ),
+                      child: Icon(
+                        Icons.person_outline_rounded,
+                        size: 22,
+                        color: AppColors.primaryBrown,
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            name.isNotEmpty ? name : 'Signed in',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w600,
+                              color: AppColors.deepDarkBrown,
+                            ),
+                          ),
+                          if (email.isNotEmpty) ...[
+                            const SizedBox(height: 2),
+                            Text(
+                              email,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w400,
+                                color: AppColors.muted,
+                              ),
+                            ),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const Spacer(),
+              _SignOutButton(
+                signingOut: _signingOut,
+                onTap: _signOut,
+              ),
+              const SizedBox(height: 8),
+              Center(
+                child: Text(
+                  'Temporary — signs you out so you can switch roles.',
+                  textAlign: TextAlign.center,
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted.withValues(alpha: 0.7),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SignOutButton extends StatefulWidget {
+  final bool signingOut;
+  final VoidCallback onTap;
+
+  const _SignOutButton({
+    required this.signingOut,
+    required this.onTap,
+  });
+
+  @override
+  State<_SignOutButton> createState() => _SignOutButtonState();
+}
+
+class _SignOutButtonState extends State<_SignOutButton> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = widget.signingOut;
+
+    return Listener(
+      onPointerDown: (_) {
+        if (!disabled) setState(() => _scale = 0.97);
+      },
+      onPointerUp: (_) => setState(() => _scale = 1.0),
+      onPointerCancel: (_) => setState(() => _scale = 1.0),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: disabled ? null : widget.onTap,
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            height: 52,
+            decoration: BoxDecoration(
+              color: AppColors.errorRed.withValues(
+                alpha: disabled ? 0.5 : 1.0,
+              ),
+              borderRadius: BorderRadius.circular(14),
+            ),
+            child: Center(
+              child: disabled
+                  ? const SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(
+                        strokeWidth: 2,
+                        color: Colors.white,
+                      ),
+                    )
+                  : Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Icon(
+                          Icons.logout_rounded,
+                          size: 18,
+                          color: Colors.white,
+                        ),
+                        const SizedBox(width: 8),
+                        Text(
+                          'Sign Out',
+                          style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        ),
       ),
     );
   }

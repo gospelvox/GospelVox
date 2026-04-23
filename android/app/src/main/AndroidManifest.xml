@@ -1,6 +1,62 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
+
+    <!--
+        Runtime permissions required across the app.
+
+        INTERNET / ACCESS_NETWORK_STATE are required in the MAIN manifest
+        for release builds — the debug manifest only applies when running
+        via `flutter run`. Without these a release APK silently fails on
+        every Firebase / Razorpay / HTTP call.
+
+        Media + camera are required by image_picker (priest registration
+        photo, user profile avatar). Android 13+ replaces the legacy
+        READ_EXTERNAL_STORAGE with the granular READ_MEDIA_IMAGES.
+
+        Voice call permissions (RECORD_AUDIO, MODIFY_AUDIO_SETTINGS,
+        BLUETOOTH_CONNECT) are required by agora_rtc_engine. Without
+        RECORD_AUDIO the call SDK fails to initialise the mic.
+
+        POST_NOTIFICATIONS is required by OneSignal on Android 13+
+        (API 33). Without it the user never sees a system prompt and
+        push delivery is permanently blocked.
+
+        WAKE_LOCK keeps the CPU running during a live voice session so
+        the billing heartbeat timers don't drift when the screen goes
+        off mid-call.
+    -->
+    <uses-permission android:name="android.permission.INTERNET"/>
+    <uses-permission android:name="android.permission.ACCESS_NETWORK_STATE"/>
+
+    <!-- image_picker -->
+    <uses-permission android:name="android.permission.CAMERA"/>
+    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
+    <!-- Android 12 and below still use the legacy storage permission. -->
+    <uses-permission
+        android:name="android.permission.READ_EXTERNAL_STORAGE"
+        android:maxSdkVersion="32"/>
+
+    <!-- agora_rtc_engine -->
+    <uses-permission android:name="android.permission.RECORD_AUDIO"/>
+    <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
+
+    <!-- onesignal_flutter / firebase_messaging (Android 13+) -->
+    <uses-permission android:name="android.permission.POST_NOTIFICATIONS"/>
+
+    <!-- Keep CPU awake during live sessions so timers don't drift. -->
+    <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Optional features — let Play Store filter correctly instead of
+         rejecting devices without a camera. -->
+    <uses-feature
+        android:name="android.hardware.camera"
+        android:required="false"/>
+    <uses-feature
+        android:name="android.hardware.microphone"
+        android:required="false"/>
+
     <application
-        android:label="gospel_vox"
+        android:label="GospelVox"
         android:name="${applicationName}"
         android:icon="@mipmap/ic_launcher">
         <activity

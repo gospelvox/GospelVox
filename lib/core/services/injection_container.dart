@@ -17,8 +17,12 @@ import 'package:gospel_vox/features/priest/activation/bloc/activation_cubit.dart
 import 'package:gospel_vox/features/priest/activation/data/activation_repository.dart';
 import 'package:gospel_vox/features/priest/registration/bloc/priest_registration_cubit.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_repository.dart';
+import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
+import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
+import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
+import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
 import 'package:gospel_vox/features/user/wallet/bloc/wallet_cubit.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 
@@ -77,6 +81,24 @@ Future<void> initDependencies() async {
       () => ActivationRepository());
   sl.registerFactory<ActivationCubit>(
       () => ActivationCubit(sl<ActivationRepository>()));
+
+  // Sessions — the repository is shared between user and priest
+  // sides because both halves read from the same sessions collection
+  // and we don't want two parallel models drifting. Cubits are
+  // factories so each waiting/incoming page mount owns its own
+  // timers + stream subscription.
+  sl.registerLazySingleton<SessionRepository>(() => SessionRepository());
+  sl.registerFactory<SessionRequestCubit>(
+      () => SessionRequestCubit(sl<SessionRepository>()));
+  sl.registerFactory<IncomingRequestCubit>(
+      () => IncomingRequestCubit(sl<SessionRepository>()));
+
+  // Chat session — factory so each chat screen mount owns its own
+  // timers + stream subscriptions. Sharing a singleton would mean
+  // the stopwatch from a previous session would carry into the
+  // next one.
+  sl.registerFactory<ChatSessionCubit>(
+      () => ChatSessionCubit(sl<SessionRepository>()));
 
   // Note: RazorpayService is intentionally NOT registered here.
   // Its callbacks hold references to BuildContext, so a singleton

@@ -20,7 +20,6 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
@@ -96,10 +95,18 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
       _balance >= _minCost;
 
   void _requestSession(String type) {
-    // Session request flow lands here next week. For now we just
-    // acknowledge the tap — keeps the button responsive rather than
-    // silently doing nothing, which always reads as "broken".
-    AppSnackBar.info(context, 'Session requests coming soon');
+    final priest = _priest;
+    if (priest == null) return;
+    // Pass denormalized priest info through so the waiting screen
+    // can render instantly without a second Firestore read. The
+    // actual session doc is created by the CF inside the cubit.
+    context.push('/session/waiting', extra: {
+      'priestId': priest.uid,
+      'priestName': priest.fullName,
+      'priestPhotoUrl': priest.photoUrl,
+      'priestDenomination': priest.denomination,
+      'type': type,
+    });
   }
 
   @override

@@ -5,6 +5,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 
+import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/admin/dashboard/pages/admin_dashboard_page.dart';
 import 'package:gospel_vox/features/admin/settings/pages/admin_settings_page.dart';
 import 'package:gospel_vox/features/auth/pages/login_page.dart';
@@ -18,10 +20,22 @@ import 'package:gospel_vox/features/priest/registration/pages/pending_approval_p
 import 'package:gospel_vox/features/admin/speakers/pages/speaker_detail_page.dart';
 import 'package:gospel_vox/features/admin/speakers/pages/speakers_list_page.dart';
 import 'package:gospel_vox/features/priest/registration/pages/priest_registration_page.dart';
+import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
+import 'package:gospel_vox/features/priest/session/pages/incoming_request_page.dart';
+import 'package:gospel_vox/features/priest/session/pages/priest_chat_session_page.dart';
+import 'package:gospel_vox/features/priest/session/pages/session_summary_page.dart';
 import 'package:gospel_vox/features/priest/settings/pages/priest_settings_page.dart';
+import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
+import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/user/home/pages/priest_profile_page.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
+import 'package:gospel_vox/features/user/session/pages/chat_session_page.dart';
+import 'package:gospel_vox/features/user/session/pages/post_session_page.dart';
+import 'package:gospel_vox/features/user/session/pages/session_waiting_page.dart';
 import 'package:gospel_vox/features/user/wallet/pages/payment_success_page.dart';
+import 'package:google_fonts/google_fonts.dart';
+import 'package:flutter_bloc/flutter_bloc.dart';
 
 String? _cachedRole;
 
@@ -201,6 +215,125 @@ final appRouter = GoRouter(
       path: '/priest',
       builder: (context, state) => const PriestDashboardPage(),
     ),
+    // Session request flow — the waiting screen fires the CF itself
+    // in initState, so this route exists purely to supply the cubit
+    // and hand the priest metadata through as extras. Using `extra`
+    // (not path params) keeps URLs clean and lets us pass photo
+    // URLs and denomination without encoding them.
+    GoRoute(
+      path: '/session/waiting',
+      builder: (context, state) {
+        final extra = state.extra as Map<String, dynamic>? ?? const {};
+        return BlocProvider(
+          create: (_) => sl<SessionRequestCubit>(),
+          child: SessionWaitingPage(
+            priestId: extra['priestId'] as String? ?? '',
+            priestName: extra['priestName'] as String? ?? '',
+            priestPhotoUrl: extra['priestPhotoUrl'] as String? ?? '',
+            priestDenomination:
+                extra['priestDenomination'] as String? ?? '',
+            sessionType: extra['type'] as String? ?? 'chat',
+          ),
+        );
+      },
+    ),
+    // Priest incoming-request screen. The dashboard stream listener
+    // navigates here with the already-hydrated SessionModel and the
+    // priest's current activation flag, so the page can gate the
+    // Accept button without a second read.
+    GoRoute(
+      path: '/priest/incoming',
+      builder: (context, state) {
+        final extra = state.extra;
+        final session = extra is Map<String, dynamic>
+            ? extra['session'] as SessionModel?
+            : extra as SessionModel?;
+        final isActivated = extra is Map<String, dynamic>
+            ? (extra['isActivated'] as bool? ?? false)
+            : false;
+        if (session == null) {
+          return const _MissingSessionPlaceholder();
+        }
+        return BlocProvider(
+          create: (_) =>
+              sl<IncomingRequestCubit>()..receiveRequest(session),
+          child: IncomingRequestPage(
+            session: session,
+            isActivated: isActivated,
+          ),
+        );
+      },
+    ),
+    // Live chat — user side. Both sides share ChatSessionView but
+    // each owns its own cubit so isUserSide is seeded correctly
+    // (drives whether heartbeat + billingTick run here).
+    GoRoute(
+      path: '/session/chat/:id',
+      builder: (context, state) {
+        final sessionId = state.pathParameters['id'] ?? '';
+        return BlocProvider(
+          create: (_) => sl<ChatSessionCubit>()
+            ..startSession(sessionId: sessionId, isUserSide: true),
+          child: ChatSessionPage(sessionId: sessionId),
+        );
+      },
+    ),
+    // Live chat — priest side. Same view, passive cubit (no
+    // heartbeat, no billing) so we never double-bill the user.
+    GoRoute(
+      path: '/session/priest-chat/:id',
+      builder: (context, state) {
+        final sessionId = state.pathParameters['id'] ?? '';
+        return BlocProvider(
+          create: (_) => sl<ChatSessionCubit>()
+            ..startSession(sessionId: sessionId, isUserSide: false),
+          child: PriestChatSessionPage(sessionId: sessionId),
+        );
+      },
+    ),
+    // User's post-session summary + rating screen. Landed on via
+    // context.go (not push) so the chat can't be reached back.
+    GoRoute(
+      path: '/session/post',
+      builder: (context, state) {
+        final extra = state.extra;
+        if (extra is! Map<String, dynamic>) {
+          return const _MissingSessionPlaceholder();
+        }
+        final summary = extra['summary'] as SessionSummary?;
+        final session = extra['session'] as SessionModel?;
+        if (summary == null || session == null) {
+          return const _MissingSessionPlaceholder();
+        }
+        return PostSessionPage(
+          summary: summary,
+          session: session,
+          endReason:
+              (extra['endReason'] as String?) ?? 'user_ended',
+        );
+      },
+    ),
+    // Priest's summary — earnings/commission/net.
+    GoRoute(
+      path: '/session/priest-summary',
+      builder: (context, state) {
+        final extra = state.extra;
+        if (extra is! Map<String, dynamic>) {
+          return const _MissingSessionPlaceholder();
+        }
+        final summary = extra['summary'] as SessionSummary?;
+        final session = extra['session'] as SessionModel?;
+        if (summary == null || session == null) {
+          return const _MissingSessionPlaceholder();
+        }
+        return SessionSummaryPage(
+          summary: summary,
+          session: session,
+          endReason:
+              (extra['endReason'] as String?) ?? 'priest_ended',
+        );
+      },
+    ),
     // Placeholders for dashboard quick-action tiles. Each route exists
     // today so tapping the tile navigates somewhere readable instead
     // of silently doing nothing; the real pages ship later this week.
@@ -321,6 +454,30 @@ class _AdminPlaceholder extends StatelessWidget {
         scrolledUnderElevation: 0,
       ),
       body: const Center(child: Text('Coming Soon')),
+    );
+  }
+}
+
+// Safety net in case /priest/incoming is opened without a session in
+// extras — e.g. a stale deep link. Shouldn't happen in the real flow
+// since the dashboard passes the session itself.
+class _MissingSessionPlaceholder extends StatelessWidget {
+  const _MissingSessionPlaceholder();
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      backgroundColor: AppColors.background,
+      body: Center(
+        child: Text(
+          'Session unavailable',
+          style: GoogleFonts.inter(
+            fontSize: 15,
+            fontWeight: FontWeight.w600,
+            color: AppColors.deepDarkBrown,
+          ),
+        ),
+      ),
     );
   }
 }

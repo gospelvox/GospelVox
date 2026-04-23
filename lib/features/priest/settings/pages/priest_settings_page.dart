@@ -18,8 +18,11 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/router/app_router.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 
 class PriestSettingsPage extends StatelessWidget {
   const PriestSettingsPage({super.key});
@@ -92,6 +95,10 @@ class PriestSettingsPage extends StatelessWidget {
               _PauseRequestsTile(),
               SizedBox(height: 12),
               _AvailabilityExplainer(),
+              SizedBox(height: 28),
+              _SectionLabel('ACCOUNT'),
+              SizedBox(height: 10),
+              _SignOutTile(),
             ],
           ),
         ),
@@ -295,6 +302,132 @@ class _Toggle extends StatelessWidget {
                   offset: const Offset(0, 1),
                   color: Colors.black.withValues(alpha: 0.1),
                 ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Sign-out tile ────────────────────────────────────────
+//
+// Temporary scaffolding for dev — makes it easy to flip between
+// user and priest roles without clearing storage. Can be promoted
+// into a proper account section later.
+
+class _SignOutTile extends StatefulWidget {
+  const _SignOutTile();
+
+  @override
+  State<_SignOutTile> createState() => _SignOutTileState();
+}
+
+class _SignOutTileState extends State<_SignOutTile> {
+  bool _signingOut = false;
+  double _scale = 1.0;
+
+  Future<void> _signOut() async {
+    if (_signingOut) return;
+    setState(() => _signingOut = true);
+
+    try {
+      // Clear the router's cached role first — a lingering cache
+      // would send the next sign-in back to the priest shell even
+      // after they picked a different role.
+      clearCachedRole();
+      await sl<AuthRepository>().signOut();
+      if (!mounted) return;
+      context.go('/select-role');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _signingOut = false);
+      AppSnackBar.error(context, 'Failed to sign out. Try again.');
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (_) {
+        if (!_signingOut) setState(() => _scale = 0.98);
+      },
+      onPointerUp: (_) => setState(() => _scale = 1.0),
+      onPointerCancel: (_) => setState(() => _scale = 1.0),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: _signingOut ? null : _signOut,
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            padding: const EdgeInsets.all(16),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceWhite,
+              borderRadius: BorderRadius.circular(16),
+              border: Border.all(
+                color: AppColors.errorRed.withValues(alpha: 0.15),
+              ),
+            ),
+            child: Row(
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    borderRadius: BorderRadius.circular(10),
+                    color: AppColors.errorRed.withValues(alpha: 0.08),
+                  ),
+                  child: Icon(
+                    Icons.logout_rounded,
+                    size: 20,
+                    color: AppColors.errorRed,
+                  ),
+                ),
+                const SizedBox(width: 14),
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Text(
+                        'Sign Out',
+                        style: GoogleFonts.inter(
+                          fontSize: 15,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.errorRed,
+                        ),
+                      ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'End this session and return to role selection.',
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w400,
+                          height: 1.4,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                const SizedBox(width: 12),
+                if (_signingOut)
+                  const SizedBox(
+                    width: 18,
+                    height: 18,
+                    child: CircularProgressIndicator(
+                      strokeWidth: 2,
+                      color: AppColors.errorRed,
+                    ),
+                  )
+                else
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 20,
+                    color: AppColors.muted,
+                  ),
               ],
             ),
           ),

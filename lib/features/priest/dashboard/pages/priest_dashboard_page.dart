@@ -31,6 +31,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/features/shared/data/session_model.dart';
 
 class PriestDashboardPage extends StatefulWidget {
   const PriestDashboardPage({super.key});
@@ -56,12 +57,19 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   double _rating = 0.0;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestSub;
+
+  // Track which request IDs we've already routed to so a stream
+  // refire (e.g. another field changing on the same doc) doesn't
+  // push the incoming-request screen twice for the same session.
+  final Set<String> _seenRequestIds = <String>{};
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _attachDocStream();
+    _attachPendingRequestStream();
   }
 
   @override
@@ -70,6 +78,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     _heartbeatTimer?.cancel();
     _offlineGraceTimer?.cancel();
     _docSub?.cancel();
+    _requestSub?.cancel();
     // Best-effort mark offline on unmount. Fire-and-forget is
     // intentional — if the widget is gone the priest is gone, and
     // the watchdog CF catches anything this write misses.
@@ -132,6 +141,81 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     }, onError: (_) {
       if (!mounted) return;
       setState(() => _loading = false);
+    });
+  }
+
+  // Listen for pending session requests targeted at this priest.
+  //
+  // Query intentionally has NO orderBy — two reasons:
+  //   1. `where priestId + where status + orderBy createdAt`
+  //      requires a composite Firestore index. Without it the
+  //      whole stream throws FAILED_PRECONDITION on first fire
+  //      and the priest never sees any request. We trade the
+  //      server-side sort for a client-side sort so the app
+  //      works out-of-the-box in a fresh Firebase project.
+  //   2. `orderBy` on a server timestamp excludes docs whose
+  //      timestamp hasn't been stamped yet — for ~1s right after
+  //      the CF write, the doc would be invisible.
+  //
+  // We dedupe seen ids because a still-pending doc emits multiple
+  // snapshots as metadata propagates, and we don't want to push
+  // the incoming screen twice for the same request.
+  void _attachPendingRequestStream() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    _requestSub = FirebaseFirestore.instance
+        .collection('sessions')
+        .where('priestId', isEqualTo: uid)
+        .where('status', isEqualTo: 'pending')
+        .snapshots()
+        .listen((snap) {
+      if (!mounted) return;
+      if (snap.docs.isEmpty) return;
+
+      // Pick the newest pending by createdAt (client-side sort).
+      // Docs with no timestamp yet rank last — they'll float to
+      // the top on the next snapshot once the server stamps them.
+      final docs = snap.docs.toList()
+        ..sort((a, b) {
+          final aTime = a.data()['createdAt'] as Timestamp?;
+          final bTime = b.data()['createdAt'] as Timestamp?;
+          if (aTime == null && bTime == null) return 0;
+          if (aTime == null) return 1;
+          if (bTime == null) return -1;
+          return bTime.compareTo(aTime);
+        });
+
+      final doc = docs.first;
+      if (_seenRequestIds.contains(doc.id)) return;
+
+      final session = SessionModel.fromFirestore(doc.id, doc.data());
+
+      // Only react to genuinely fresh requests. A session that's
+      // already >60s old is about to expire anyway — routing to
+      // the incoming screen would just flash the expired sheet.
+      if (session.createdAt != null) {
+        final age = DateTime.now().difference(session.createdAt!);
+        if (age.inSeconds > 60) return;
+      }
+
+      _seenRequestIds.add(doc.id);
+      debugPrint(
+        '[PriestDashboard] Incoming request ${doc.id} '
+        'from ${session.userName}',
+      );
+      context.push('/priest/incoming', extra: {
+        'session': session,
+        'isActivated': _isActivated,
+      });
+    }, onError: (e, st) {
+      // Surface the real error in logs. The most common cause now
+      // (after dropping orderBy) is a Firestore security rule that
+      // denies `sessions` collection reads — without this line the
+      // priest would just sit on a silent dashboard.
+      debugPrint(
+        '[PriestDashboard] pending-session stream failed: $e\n$st',
+      );
     });
   }
 

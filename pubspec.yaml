@@ -65,6 +65,27 @@ dev_dependencies:
   flutter_lints: any
   injectable_generator: any
   build_runner: any
+  # Generates app launcher icons for Android + iOS from a single
+  # source PNG. Run `dart run flutter_launcher_icons` after changing
+  # the source image to regenerate every density/size variant.
+  flutter_launcher_icons: any
 
 flutter:
   uses-material-design: true
+
+# Launcher icon config. Source is the 512x512 Play Store graphic —
+# flutter_launcher_icons rescales it for every Android mipmap
+# density + every iOS size. On Android 8+ the adaptive icon uses
+# the same graphic as its foreground on a warm beige background
+# (AppColors.background = #F4EDE3) so the logo sits inside the
+# round/squircle mask without an ugly white halo on Pixel launchers.
+flutter_launcher_icons:
+  android: true
+  ios: true
+  image_path: "icons/play_store_512.png"
+  min_sdk_android: 21
+  adaptive_icon_background: "#F4EDE3"
+  adaptive_icon_foreground: "icons/play_store_512.png"
+  # iOS rejects icons with an alpha channel, so flatten here
+  # rather than manually editing the PNG.
+  remove_alpha_ios: true
