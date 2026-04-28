@@ -27,6 +27,12 @@ class ChatSessionActive extends ChatSessionState {
   final bool isSendingMessage;
   final bool isEnding;
 
+  // True when the OTHER party hasn't sent a message in 90+ seconds
+  // (or hasn't sent any since the session started). Drives the
+  // local-only system message in the chat list. Reset whenever
+  // their next message arrives.
+  final bool showIdleWarning;
+
   const ChatSessionActive({
     required this.session,
     required this.messages,
@@ -35,6 +41,7 @@ class ChatSessionActive extends ChatSessionState {
     this.isLowBalance = false,
     this.isSendingMessage = false,
     this.isEnding = false,
+    this.showIdleWarning = false,
   });
 
   // MM:SS used by the top-bar timer pill. We pad both halves so the
@@ -65,6 +72,7 @@ class ChatSessionActive extends ChatSessionState {
     bool? isLowBalance,
     bool? isSendingMessage,
     bool? isEnding,
+    bool? showIdleWarning,
   }) {
     return ChatSessionActive(
       session: session ?? this.session,
@@ -74,6 +82,7 @@ class ChatSessionActive extends ChatSessionState {
       isLowBalance: isLowBalance ?? this.isLowBalance,
       isSendingMessage: isSendingMessage ?? this.isSendingMessage,
       isEnding: isEnding ?? this.isEnding,
+      showIdleWarning: showIdleWarning ?? this.showIdleWarning,
     );
   }
 }

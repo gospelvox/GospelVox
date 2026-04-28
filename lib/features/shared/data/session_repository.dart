@@ -204,4 +204,100 @@ class SessionRepository {
         })
         .timeout(const Duration(seconds: 5));
   }
+
+  // ─── Typing presence ────────────────────────────────────
+
+  // Mark this side as actively typing. `since` is set the FIRST
+  // time we report typing in a session of activity — kept stable
+  // across rapid keystrokes so the other side can compute "how
+  // long has X been typing for". The cubit handles the debounce.
+  Future<void> setTyping({
+    required String sessionId,
+    required bool isUserSide,
+    required bool typing,
+  }) async {
+    final prefix = isUserSide ? 'user' : 'priest';
+    final updates = <String, Object?>{
+      '${prefix}Typing': typing,
+    };
+    if (typing) {
+      // Only stamp `since` when transitioning from not-typing to
+      // typing. The cubit guards against re-writing within an
+      // active typing burst, so this single set captures the true
+      // start time.
+      updates['${prefix}TypingSince'] = FieldValue.serverTimestamp();
+    } else {
+      updates['${prefix}TypingSince'] = null;
+    }
+    try {
+      await _db
+          .doc('sessions/$sessionId')
+          .update(updates)
+          .timeout(const Duration(seconds: 5));
+    } catch (_) {
+      // Typing presence is purely cosmetic — never let a failed
+      // write surface to the user.
+    }
+  }
+
+  // ─── Reactions ──────────────────────────────────────────
+
+  // Toggle a reaction on a single message. Writing a `null` value
+  // via FieldValue.delete() removes the entry — Firestore merges
+  // the dotted-path update into the existing map so we don't
+  // overwrite anyone else's reaction.
+  Future<void> setReaction({
+    required String sessionId,
+    required String messageId,
+    required String userId,
+    required String? emoji,
+  }) async {
+    await _db
+        .doc('sessions/$sessionId/messages/$messageId')
+        .update({
+          'reactions.$userId': emoji ?? FieldValue.delete(),
+        })
+        .timeout(const Duration(seconds: 5));
+  }
+
+  // ─── Balance stream ─────────────────────────────────────
+
+  // Real-time stream of the user's coin balance. The chat cubit
+  // subscribes so a successful in-chat top-up reflects the new
+  // balance instantly, instead of waiting for the next billingTick
+  // to refresh remainingBalance.
+  Stream<int> watchUserBalance(String userId) {
+    return _db.doc('users/$userId').snapshots().map(
+          (snap) => (snap.data()?['coinBalance'] as num?)?.toInt() ?? 0,
+        );
+  }
+
+  // ─── Voice (Agora) ──────────────────────────────────────
+
+  // Mint an Agora RTC token for this session's channel. The CF
+  // validates that the caller is a participant in the session,
+  // checks that the session is active and of type "voice", and
+  // returns the token + a numeric Agora uid derived from the
+  // caller's Firebase uid (Agora needs a 32-bit int, not a
+  // string). Channel name on the SDK side is the sessionId.
+  Future<Map<String, dynamic>> getAgoraToken(String sessionId) async {
+    final result = await _functions
+        .httpsCallable('generateAgoraToken')
+        .call({'sessionId': sessionId})
+        .timeout(const Duration(seconds: 10));
+
+    final raw = result.data;
+    final data = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : const <String, dynamic>{};
+    final token = data['token'];
+    if (token is! String || token.isEmpty) {
+      throw Exception('Failed to generate voice token');
+    }
+    return {
+      'token': token,
+      'uid': (data['uid'] as num?)?.toInt() ?? 0,
+      'channelName': data['channelName'] as String? ?? sessionId,
+    };
+  }
 }

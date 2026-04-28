@@ -24,6 +24,18 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
   Timer? _countdownTimer;
   int _secondsRemaining = 60;
 
+  // Stream subscription on the session doc. We watch it so the
+  // priest's screen auto-dismisses if the user cancels (or the
+  // request expires server-side) instead of waiting for the local
+  // 60s countdown to wind down to a request that no longer exists.
+  StreamSubscription<SessionModel>? _sessionSubscription;
+
+  // Once we've transitioned to ANY terminal state, we ignore
+  // further session-doc snapshots. Without this, the snapshot
+  // confirming our own accept would race the in-flight accept
+  // and risk emitting Cancelled on top of Accepted.
+  bool _terminalEmitted = false;
+
   IncomingRequestCubit(this._repository)
       : super(const IncomingRequestInitial());
 
@@ -41,6 +53,7 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
     }
 
     if (_secondsRemaining <= 0) {
+      _terminalEmitted = true;
       if (!isClosed) emit(const IncomingRequestExpired());
       return;
     }
@@ -53,6 +66,43 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
     }
 
     _startCountdown();
+    _attachSessionStream(session);
+  }
+
+  // Subscribes to the session doc so a remote status change
+  // (user-cancel, server-expire, etc.) immediately dismisses the
+  // priest's incoming screen. Without this the priest would be
+  // staring at a request that no longer exists for up to 60s.
+  void _attachSessionStream(SessionModel session) {
+    _sessionSubscription?.cancel();
+    _sessionSubscription =
+        _repository.watchSession(session.id).listen((snap) {
+      if (isClosed || _terminalEmitted) return;
+
+      switch (snap.status) {
+        case 'pending':
+          // Still waiting for our action — nothing to do.
+          break;
+        case 'cancelled':
+          _terminalEmitted = true;
+          _countdownTimer?.cancel();
+          emit(IncomingRequestUserCancelled(snap.userName));
+          break;
+        case 'expired':
+          _terminalEmitted = true;
+          _countdownTimer?.cancel();
+          emit(const IncomingRequestExpired());
+          break;
+        // 'active' / 'completed' / 'declined' all imply the
+        // priest's accept/decline already landed — the local
+        // emit covers those, the snapshot just confirms.
+        default:
+          break;
+      }
+    }, onError: (_) {
+      // Silent — session-doc reads can fail transiently. The
+      // local 60s timer is the safety net.
+    });
   }
 
   void _startCountdown() {
@@ -63,6 +113,7 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
         _secondsRemaining--;
 
         if (_secondsRemaining <= 0) {
+          _terminalEmitted = true;
           _countdownTimer?.cancel();
           if (!isClosed) emit(const IncomingRequestExpired());
           return;
@@ -98,6 +149,7 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
 
       await _repository.acceptSession(sessionId);
 
+      _terminalEmitted = true;
       if (isClosed) return;
       emit(IncomingRequestAccepted(current.session));
     } on TimeoutException {
@@ -120,6 +172,7 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
     try {
       _countdownTimer?.cancel();
       await _repository.declineSession(sessionId);
+      _terminalEmitted = true;
       if (!isClosed) emit(const IncomingRequestDeclined());
     } catch (e, st) {
       debugPrint('[IncomingRequestCubit] declineSession failed: $e\n$st');
@@ -132,6 +185,7 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
   @override
   Future<void> close() {
     _countdownTimer?.cancel();
+    _sessionSubscription?.cancel();
     return super.close();
   }
 }

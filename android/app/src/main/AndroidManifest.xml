@@ -38,6 +38,15 @@
     <!-- agora_rtc_engine -->
     <uses-permission android:name="android.permission.RECORD_AUDIO"/>
     <uses-permission android:name="android.permission.MODIFY_AUDIO_SETTINGS"/>
+    <!-- Legacy BLUETOOTH permission for Android 7-11 (API 24-30).
+         Android 12+ replaced it with the runtime BLUETOOTH_CONNECT
+         below, but our minSdk is 24 — without this, Agora can't
+         route audio to BT headsets / AirPods / car systems on the
+         legacy half of the install base. The maxSdkVersion ensures
+         it isn't requested on devices that already use the new
+         runtime model. -->
+    <uses-permission android:name="android.permission.BLUETOOTH"
+        android:maxSdkVersion="30"/>
     <uses-permission android:name="android.permission.BLUETOOTH_CONNECT"/>
 
     <!-- onesignal_flutter / firebase_messaging (Android 13+) -->
@@ -45,6 +54,15 @@
 
     <!-- Keep CPU awake during live sessions so timers don't drift. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
+
+    <!-- Foreground service that keeps a voice call alive when the
+         user backgrounds the app or locks the screen. Without this,
+         aggressive OEM battery managers (Xiaomi/Oppo/Samsung) kill
+         the process within seconds of backgrounding and the call
+         drops. The MICROPHONE-typed FGS is required on Android 14+
+         when the service captures audio. -->
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
+    <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 
     <!-- Optional features — let Play Store filter correctly instead of
          rejecting devices without a camera. -->
@@ -97,6 +115,16 @@
         <meta-data
             android:name="io.flutter.embedding.android.EnableImpeller"
             android:value="false" />
+
+        <!-- Voice call foreground service. Started by VoiceCallCubit
+             via a MethodChannel into MainActivity, stopped when the
+             call ends. The "microphone" foregroundServiceType is
+             mandatory on Android 14+ when the service captures audio;
+             starting without it throws SecurityException at runtime. -->
+        <service
+            android:name=".CallForegroundService"
+            android:foregroundServiceType="microphone"
+            android:exported="false" />
     </application>
     <!-- Required to query activities that can process text, see:
          https://developer.android.com/training/package-visibility and

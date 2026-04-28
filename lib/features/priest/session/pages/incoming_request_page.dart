@@ -69,39 +69,65 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: Container(
-        width: double.infinity,
-        height: double.infinity,
-        decoration: const BoxDecoration(
-          gradient: LinearGradient(
-            begin: Alignment.topCenter,
-            end: Alignment.bottomCenter,
-            colors: [_kBgTop, _kBgBottom],
+    return PopScope(
+      // Hardware back is disabled. The priest must use the explicit
+      // Decline button — silently popping out would leave the
+      // session pending until the local 60s timer expires it,
+      // which is bad UX for the waiting user.
+      canPop: false,
+      child: Scaffold(
+        body: Container(
+          width: double.infinity,
+          height: double.infinity,
+          decoration: const BoxDecoration(
+            gradient: LinearGradient(
+              begin: Alignment.topCenter,
+              end: Alignment.bottomCenter,
+              colors: [_kBgTop, _kBgBottom],
+            ),
           ),
-        ),
-        child: BlocConsumer<IncomingRequestCubit, IncomingRequestState>(
-          listener: (context, state) {
-            if (state is IncomingRequestAccepted) {
-              context.go('/session/priest-chat/${state.session.id}');
-            } else if (state is IncomingRequestDeclined) {
-              if (context.canPop()) context.pop();
-            } else if (state is IncomingRequestExpired) {
-              AppSnackBar.info(context, 'Request expired');
-              if (context.canPop()) context.pop();
-            } else if (state is IncomingRequestError) {
-              if (state.message == '__needs_activation__') {
-                ActivationPromptSheet.show(context);
-              } else {
-                AppSnackBar.error(context, state.message);
+          child: BlocConsumer<IncomingRequestCubit, IncomingRequestState>(
+            listener: (context, state) {
+              if (state is IncomingRequestAccepted) {
+                // Branch on session type so voice requests land on
+                // the Agora call screen, not the chat screen.
+                if (state.session.isVoice) {
+                  context.go(
+                    '/session/priest-voice/${state.session.id}',
+                  );
+                } else {
+                  context.go(
+                    '/session/priest-chat/${state.session.id}',
+                  );
+                }
+              } else if (state is IncomingRequestDeclined) {
+                if (context.canPop()) context.pop();
+              } else if (state is IncomingRequestExpired) {
+                AppSnackBar.info(context, 'Request expired');
+                if (context.canPop()) context.pop();
+              } else if (state is IncomingRequestUserCancelled) {
+                // The user withdrew before we reacted. Distinct
+                // copy from "expired" so the priest understands
+                // why the screen disappeared.
+                final who = state.userName.isNotEmpty
+                    ? state.userName
+                    : 'The user';
+                AppSnackBar.info(context, '$who cancelled the request');
+                if (context.canPop()) context.pop();
+              } else if (state is IncomingRequestError) {
+                if (state.message == '__needs_activation__') {
+                  ActivationPromptSheet.show(context);
+                } else {
+                  AppSnackBar.error(context, state.message);
+                }
               }
-            }
-          },
-          builder: (context, state) {
-            return SafeArea(
-              child: _buildContent(context, state),
-            );
-          },
+            },
+            builder: (context, state) {
+              return SafeArea(
+                child: _buildContent(context, state),
+              );
+            },
+          ),
         ),
       ),
     );

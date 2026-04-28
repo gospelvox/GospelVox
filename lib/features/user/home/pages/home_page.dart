@@ -255,6 +255,21 @@ class _HomeViewState extends State<_HomeView>
     AppSnackBar.info(context, message);
   }
 
+  // Mirror of priest_profile_page._requestSession. The card already
+  // hides this CTA when !priest.isAvailable, so we don't gate again
+  // here — the CF (createSessionRequest) handles balance, busy, and
+  // last-second offline checks server-side and the waiting page
+  // surfaces those errors.
+  void _startSession(SpeakerModel priest, String type) {
+    context.push('/session/waiting', extra: {
+      'priestId': priest.uid,
+      'priestName': priest.fullName,
+      'priestPhotoUrl': priest.photoUrl,
+      'priestDenomination': priest.denomination,
+      'type': type,
+    });
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -618,8 +633,8 @@ class _HomeViewState extends State<_HomeView>
               gradient: _C
                   .priestGradients[i % _C.priestGradients.length],
               onTap: () => _openProfile(priest.uid),
-              onChat: () => _comingSoon('Session requests coming soon'),
-              onCall: () => _comingSoon('Session requests coming soon'),
+              onChat: () => _startSession(priest, 'chat'),
+              onCall: () => _startSession(priest, 'voice'),
               onNotify: () => _comingSoon(
                 "You'll be notified when ${priest.fullName} is available",
               ),

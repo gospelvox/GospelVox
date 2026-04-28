@@ -8,9 +8,17 @@ import 'package:gospel_vox/features/admin/settings/bloc/coin_packs_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/settings_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_packs_repository.dart';
 import 'package:gospel_vox/features/admin/settings/data/settings_repository.dart';
+import 'package:gospel_vox/features/admin/reports/bloc/admin_reports_cubit.dart';
+import 'package:gospel_vox/features/admin/reports/data/admin_reports_repository.dart';
+import 'package:gospel_vox/features/admin/sessions/bloc/admin_sessions_cubit.dart';
+import 'package:gospel_vox/features/admin/sessions/data/admin_sessions_repository.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speaker_detail_cubit.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speakers_cubit.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speakers_repository.dart';
+import 'package:gospel_vox/features/admin/users/bloc/admin_users_cubit.dart';
+import 'package:gospel_vox/features/admin/users/data/admin_users_repository.dart';
+import 'package:gospel_vox/features/admin/withdrawals/bloc/admin_withdrawals_cubit.dart';
+import 'package:gospel_vox/features/admin/withdrawals/data/admin_withdrawals_repository.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_cubit.dart';
@@ -18,6 +26,8 @@ import 'package:gospel_vox/features/priest/activation/data/activation_repository
 import 'package:gospel_vox/features/priest/registration/bloc/priest_registration_cubit.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_repository.dart';
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
+import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
+import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
@@ -67,6 +77,30 @@ Future<void> initDependencies() async {
   sl.registerFactory<SpeakerDetailCubit>(
       () => SpeakerDetailCubit(sl<SpeakersRepository>()));
 
+  // Admin users / sessions / reports / withdrawals — same shape as
+  // speakers: stateless repo (singleton) + factory cubit so each
+  // page mount starts with a fresh state machine, and the sessions
+  // cubit's long-lived stream subscription dies with the page.
+  sl.registerLazySingleton<AdminUsersRepository>(
+      () => AdminUsersRepository());
+  sl.registerFactory<AdminUsersCubit>(
+      () => AdminUsersCubit(sl<AdminUsersRepository>()));
+
+  sl.registerLazySingleton<AdminSessionsRepository>(
+      () => AdminSessionsRepository());
+  sl.registerFactory<AdminSessionsCubit>(
+      () => AdminSessionsCubit(sl<AdminSessionsRepository>()));
+
+  sl.registerLazySingleton<AdminReportsRepository>(
+      () => AdminReportsRepository());
+  sl.registerFactory<AdminReportsCubit>(
+      () => AdminReportsCubit(sl<AdminReportsRepository>()));
+
+  sl.registerLazySingleton<AdminWithdrawalsRepository>(
+      () => AdminWithdrawalsRepository());
+  sl.registerFactory<AdminWithdrawalsCubit>(
+      () => AdminWithdrawalsCubit(sl<AdminWithdrawalsRepository>()));
+
   // Priest registration — repo is a singleton (it's stateless), but
   // the cubit is a factory because each registration session should
   // start with a fresh state machine.
@@ -81,6 +115,15 @@ Future<void> initDependencies() async {
       () => ActivationRepository());
   sl.registerFactory<ActivationCubit>(
       () => ActivationCubit(sl<ActivationRepository>()));
+
+  // Priest wallet — stateless repo (singleton) + factory cubit so
+  // each wallet page mount gets a fresh balance subscription. The
+  // bank-details page also resolves the repo from `sl` directly to
+  // save bank fields without needing the cubit.
+  sl.registerLazySingleton<PriestWalletRepository>(
+      () => PriestWalletRepository());
+  sl.registerFactory<PriestWalletCubit>(
+      () => PriestWalletCubit(sl<PriestWalletRepository>()));
 
   // Sessions — the repository is shared between user and priest
   // sides because both halves read from the same sessions collection
@@ -105,4 +148,17 @@ Future<void> initDependencies() async {
   // would leak the first page that uses it. Each widget that needs
   // Razorpay constructs its own instance in initState and disposes
   // it in dispose — see WalletPage for the pattern.
+
+  // Note: AgoraService is intentionally NOT registered here. The
+  // RTC engine holds native audio resources that must be lifecycle-
+  // bound to the page that uses them; reusing a singleton across
+  // calls produces audio glitches and "channel already joined"
+  // errors. VoiceCallPage / PriestVoiceCallPage construct a fresh
+  // AgoraService inline inside their BlocProvider and the
+  // VoiceCallCubit disposes it on close.
+
+  // Note: VoiceCallCubit is intentionally NOT registered here. It
+  // takes the per-page AgoraService as a constructor param, so it
+  // can't be sourced from a global factory the way ChatSessionCubit
+  // can — the voice pages build it directly inside BlocProvider.
 }

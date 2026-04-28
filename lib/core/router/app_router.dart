@@ -8,13 +8,20 @@ import 'package:go_router/go_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/admin/dashboard/pages/admin_dashboard_page.dart';
+import 'package:gospel_vox/features/admin/reports/pages/reports_page.dart';
+import 'package:gospel_vox/features/admin/sessions/pages/admin_sessions_page.dart';
 import 'package:gospel_vox/features/admin/settings/pages/admin_settings_page.dart';
+import 'package:gospel_vox/features/admin/users/pages/admin_users_page.dart';
+import 'package:gospel_vox/features/admin/withdrawals/pages/withdrawals_page.dart';
 import 'package:gospel_vox/features/auth/pages/login_page.dart';
 import 'package:gospel_vox/features/auth/pages/onboarding_page.dart';
 import 'package:gospel_vox/features/auth/pages/role_selection_page.dart';
 import 'package:gospel_vox/features/priest/activation/pages/activation_paywall_page.dart';
 import 'package:gospel_vox/features/priest/activation/pages/activation_success_page.dart';
 import 'package:gospel_vox/features/priest/dashboard/pages/priest_dashboard_page.dart';
+import 'package:gospel_vox/features/priest/notifications/pages/notifications_page.dart';
+import 'package:gospel_vox/features/priest/profile/pages/priest_profile_page.dart'
+    as priest_profile;
 import 'package:gospel_vox/features/priest/registration/pages/application_rejected_page.dart';
 import 'package:gospel_vox/features/priest/registration/pages/pending_approval_page.dart';
 import 'package:gospel_vox/features/admin/speakers/pages/speaker_detail_page.dart';
@@ -23,8 +30,15 @@ import 'package:gospel_vox/features/priest/registration/pages/priest_registratio
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
 import 'package:gospel_vox/features/priest/session/pages/incoming_request_page.dart';
 import 'package:gospel_vox/features/priest/session/pages/priest_chat_session_page.dart';
+import 'package:gospel_vox/features/priest/session/pages/priest_voice_call_page.dart';
+import 'package:gospel_vox/features/priest/session/pages/session_dropped_page.dart';
 import 'package:gospel_vox/features/priest/session/pages/session_summary_page.dart';
+import 'package:gospel_vox/features/priest/settings/pages/priest_availability_page.dart';
 import 'package:gospel_vox/features/priest/settings/pages/priest_settings_page.dart';
+import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
+import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart';
+import 'package:gospel_vox/features/priest/wallet/pages/priest_wallet_page.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/user/home/pages/priest_profile_page.dart';
@@ -33,6 +47,7 @@ import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart
 import 'package:gospel_vox/features/user/session/pages/chat_session_page.dart';
 import 'package:gospel_vox/features/user/session/pages/post_session_page.dart';
 import 'package:gospel_vox/features/user/session/pages/session_waiting_page.dart';
+import 'package:gospel_vox/features/user/session/pages/voice_call_page.dart';
 import 'package:gospel_vox/features/user/wallet/pages/payment_success_page.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -291,6 +306,26 @@ final appRouter = GoRouter(
         );
       },
     ),
+    // Live voice call — user side. The page constructs its own
+    // VoiceCallCubit + AgoraService inline (see voice_call_page.dart
+    // for why those aren't sourced from the DI container).
+    GoRoute(
+      path: '/session/voice/:id',
+      builder: (context, state) {
+        final sessionId = state.pathParameters['id'] ?? '';
+        return VoiceCallPage(sessionId: sessionId);
+      },
+    ),
+    // Live voice call — priest side. Mirror of the user route with
+    // isUserSide: false wired inside the page so billing only ever
+    // runs from the user's client.
+    GoRoute(
+      path: '/session/priest-voice/:id',
+      builder: (context, state) {
+        final sessionId = state.pathParameters['id'] ?? '';
+        return PriestVoiceCallPage(sessionId: sessionId);
+      },
+    ),
     // User's post-session summary + rating screen. Landed on via
     // context.go (not push) so the chat can't be reached back.
     GoRoute(
@@ -334,6 +369,37 @@ final appRouter = GoRouter(
         );
       },
     ),
+    // Priest's "session ended unexpectedly" landing. Reached when
+    // the chat ends for any reason OTHER than the priest tapping
+    // End — see priest_chat_session_page._onEnded for the branch.
+    GoRoute(
+      path: '/priest/session-dropped',
+      builder: (context, state) {
+        final extra = state.extra;
+        if (extra is! Map<String, dynamic>) {
+          return const _MissingSessionPlaceholder();
+        }
+        final session = extra['session'] as SessionModel?;
+        if (session == null) {
+          return const _MissingSessionPlaceholder();
+        }
+        return SessionDroppedPage(
+          session: session,
+          earnedAmount: (extra['earned'] as int?) ?? 0,
+          duration: (extra['duration'] as int?) ?? 0,
+          endReason: (extra['endReason'] as String?) ?? 'external',
+        );
+      },
+    ),
+    // Priest's availability sub-page (Pause Requests). The
+    // settings hub at /priest/settings has a tile that opens
+    // this; nothing else routes to it directly today, but the
+    // explicit path makes it easy to deep-link from a future
+    // notification ("you've been paused for 24h").
+    GoRoute(
+      path: '/priest/settings/availability',
+      builder: (context, state) => const PriestAvailabilityPage(),
+    ),
     // Placeholders for dashboard quick-action tiles. Each route exists
     // today so tapping the tile navigates somewhere readable instead
     // of silently doing nothing; the real pages ship later this week.
@@ -372,11 +438,9 @@ final appRouter = GoRouter(
 // these entries.
 List<GoRoute> _priestPlaceholderRoutes() {
   // Pages with real implementations live alongside the placeholders.
-  // Settings is the first to graduate — it hosts the Pause Requests
-  // toggle the dashboard points at.
+  // Settings, Wallet, Profile, and Notifications have graduated;
+  // bible-sessions remains a placeholder until that week ships.
   const placeholders = {
-    '/priest/wallet': 'My Wallet',
-    '/priest/profile': 'My Profile',
     '/priest/bible-sessions': 'Bible Sessions',
   };
 
@@ -384,6 +448,49 @@ List<GoRoute> _priestPlaceholderRoutes() {
     GoRoute(
       path: '/priest/settings',
       builder: (context, state) => const PriestSettingsPage(),
+    ),
+    // Real wallet route — owns its own cubit so each mount starts
+    // with a fresh balance stream. Loads on construction since the
+    // page does no work without uid.
+    GoRoute(
+      path: '/priest/wallet',
+      builder: (context, state) {
+        final uid = FirebaseAuth.instance.currentUser?.uid;
+        return BlocProvider(
+          create: (_) {
+            final cubit = sl<PriestWalletCubit>();
+            if (uid != null) cubit.loadWallet(uid);
+            return cubit;
+          },
+          child: const PriestWalletPage(),
+        );
+      },
+    ),
+    // Bank details page — receives existing details via `extra`
+    // when the wallet routes here for editing. Null `extra` means
+    // first-time setup.
+    GoRoute(
+      path: '/priest/bank-details',
+      builder: (context, state) {
+        final existing = state.extra is BankDetails
+            ? state.extra as BankDetails
+            : null;
+        return BankDetailsPage(existingDetails: existing);
+      },
+    ),
+    // Priest's own profile (view + edit). Distinct from the user-side
+    // /user/priest/:id which renders a public-facing speaker profile —
+    // hence the import alias on PriestMyProfilePage above.
+    GoRoute(
+      path: '/priest/profile',
+      builder: (context, state) =>
+          const priest_profile.PriestMyProfilePage(),
+    ),
+    // In-app notifications list. FCM push registration is a separate
+    // concern (Week 5); this route only renders the in-app inbox.
+    GoRoute(
+      path: '/priest/notifications',
+      builder: (context, state) => const NotificationsPage(),
     ),
     ...placeholders.entries.map(
       (e) => GoRoute(
@@ -396,11 +503,7 @@ List<GoRoute> _priestPlaceholderRoutes() {
 
 List<GoRoute> _adminSubRoutes() {
   const placeholders = {
-    '/admin/users': 'User Management',
     '/admin/matrimony': 'Matrimony Approvals',
-    '/admin/reports': 'Reports',
-    '/admin/sessions': 'Session Monitor',
-    '/admin/withdrawals': 'Withdrawals',
     '/admin/revenue': 'Revenue Dashboard',
     '/admin/bible-sessions': 'Bible Sessions',
     '/admin/products': 'Products',
@@ -427,6 +530,25 @@ List<GoRoute> _adminSubRoutes() {
         final id = state.pathParameters['id'] ?? '';
         return SpeakerDetailPage(speakerId: id);
       },
+    ),
+    // User / session / report / withdrawal dashboards. All four
+    // are read-mostly: the only mutating actions live inside the
+    // reports + withdrawals pages (resolve / mark-paid / block).
+    GoRoute(
+      path: '/admin/users',
+      builder: (context, state) => const AdminUsersPage(),
+    ),
+    GoRoute(
+      path: '/admin/sessions',
+      builder: (context, state) => const AdminSessionsPage(),
+    ),
+    GoRoute(
+      path: '/admin/reports',
+      builder: (context, state) => const ReportsPage(),
+    ),
+    GoRoute(
+      path: '/admin/withdrawals',
+      builder: (context, state) => const WithdrawalsPage(),
     ),
     // Placeholder pages
     ...placeholders.entries.map(

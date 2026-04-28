@@ -27,13 +27,32 @@ class PriestChatSessionPage extends StatelessWidget {
   }
 
   void _onEnded(BuildContext context, ChatSessionEnded state) {
-    context.go(
-      '/session/priest-summary',
-      extra: {
-        'summary': state.summary,
-        'session': state.session,
-        'endReason': state.endReason,
-      },
-    );
+    // Branch based on who/what ended the session:
+    //   • priest_ended → priest deliberately tapped End → normal
+    //     summary page (their own action, no surprise).
+    //   • everything else (user_ended, balance_zero,
+    //     watchdog_timeout, external) → SessionDroppedPage so we
+    //     can reassure the priest the drop wasn't their fault and
+    //     show them what they earned.
+    if (state.endReason == 'priest_ended') {
+      context.go(
+        '/session/priest-summary',
+        extra: {
+          'summary': state.summary,
+          'session': state.session,
+          'endReason': state.endReason,
+        },
+      );
+    } else {
+      context.go(
+        '/priest/session-dropped',
+        extra: {
+          'session': state.session,
+          'earned': state.summary.priestEarnings,
+          'duration': state.summary.durationMinutes,
+          'endReason': state.endReason,
+        },
+      );
+    }
   }
 }

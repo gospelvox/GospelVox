@@ -44,6 +44,10 @@ app.*.map.json
 /android/app/profile
 /android/app/release
 service-account-key.json
+functions/service-account-key.json
+
+# Local state file written by functions/test-watchdog.js
+functions/.test-watchdog-state.json
 
 # Firebase Functions env (holds Razorpay key secret — must NEVER be committed)
 functions/.env

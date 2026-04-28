@@ -88,6 +88,17 @@ class _PostSessionPageState extends State<PostSessionPage>
         return 'Your balance ran out — the session ended automatically.';
       case 'priest_ended':
         return 'The speaker ended the session.';
+      case 'network_disconnected':
+        // 30-second disconnect supervisor in the voice cubit gave
+        // up waiting for the channel to recover.
+        return 'The call was disconnected due to network issues. '
+            'No further charge has been applied.';
+      case 'connection_failed':
+        // 60-second remote-join supervisor: the speaker never made
+        // it onto the Agora channel. We auto-end so you aren't
+        // stuck waiting forever.
+        return "The speaker couldn't connect their audio. "
+            'No charge has been applied — please try another speaker.';
       case 'external':
       case 'completed':
         return 'The session has ended.';
@@ -338,6 +349,12 @@ class _SummaryRow extends StatelessWidget {
           ),
           Text(
             value,
+            // Belt-and-braces against an oddly long balance / coin
+            // string. Today the values are always short ("10 coins"),
+            // but a 5-digit balance + currency suffix could push the
+            // row width past the screen on small phones.
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
             style: GoogleFonts.inter(
               fontSize: 14,
               fontWeight: FontWeight.w700,

@@ -32,6 +32,25 @@ class SessionModel {
   final int priestEarnings;
   final DateTime? lastHeartbeat;
 
+  // Why the session terminated. Set by the Cloud Functions:
+  //   • billingTick on insufficient balance → "balance_zero"
+  //   • sessionWatchdog on stale heartbeat  → "watchdog_timeout"
+  //   • endSession                          → endedBy field instead
+  // The chat cubit reads this field so the post-session screens
+  // can render the precise reason ("Your balance ran out") rather
+  // than a generic "session ended".
+  final String endReason;
+
+  // Typing presence — each side updates its own field while the
+  // user is composing. The `Since` timestamp is set when typing
+  // begins and cleared on idle, letting the other side compute
+  // "X has been typing for Y seconds" → "is composing a longer
+  // response…" once Y exceeds 10s.
+  final bool userTyping;
+  final DateTime? userTypingSince;
+  final bool priestTyping;
+  final DateTime? priestTypingSince;
+
   // Denormalised user info so the priest's incoming screen renders
   // without an extra users/{uid} read.
   final String userName;
@@ -60,6 +79,11 @@ class SessionModel {
     this.totalCharged = 0,
     this.priestEarnings = 0,
     this.lastHeartbeat,
+    this.endReason = '',
+    this.userTyping = false,
+    this.userTypingSince,
+    this.priestTyping = false,
+    this.priestTypingSince,
     required this.userName,
     required this.userPhotoUrl,
     required this.priestName,
@@ -94,6 +118,11 @@ class SessionModel {
       totalCharged: (data['totalCharged'] as num?)?.toInt() ?? 0,
       priestEarnings: (data['priestEarnings'] as num?)?.toInt() ?? 0,
       lastHeartbeat: ts(data['lastHeartbeat']),
+      endReason: data['endReason'] as String? ?? '',
+      userTyping: data['userTyping'] as bool? ?? false,
+      userTypingSince: ts(data['userTypingSince']),
+      priestTyping: data['priestTyping'] as bool? ?? false,
+      priestTypingSince: ts(data['priestTypingSince']),
       userName: data['userName'] as String? ?? '',
       userPhotoUrl: data['userPhotoUrl'] as String? ?? '',
       priestName: data['priestName'] as String? ?? '',
@@ -128,6 +157,16 @@ class ChatMessage {
   final String senderName;
   final String text;
   final DateTime? createdAt;
+  // {uid → emoji}. Each participant can leave one reaction per
+  // message; tapping the same emoji again clears it. Stored as a
+  // map (not a subcollection) so the chat stream picks reactions
+  // up in the same snapshot as the message itself — no second
+  // fetch needed to render a bubble with its reactions.
+  final Map<String, String> reactions;
+  // True for client-side optimistic bubbles that haven't been
+  // confirmed by the Firestore stream yet. Drives the small ⏱
+  // status icon under outbound bubbles.
+  final bool isPending;
 
   const ChatMessage({
     required this.id,
@@ -135,12 +174,21 @@ class ChatMessage {
     required this.senderName,
     required this.text,
     this.createdAt,
+    this.reactions = const {},
+    this.isPending = false,
   });
 
   factory ChatMessage.fromFirestore(
     String docId,
     Map<String, dynamic> data,
   ) {
+    final raw = data['reactions'];
+    final reactions = raw is Map
+        ? Map<String, String>.from(
+            raw.map((k, v) => MapEntry(k.toString(), v.toString())),
+          )
+        : const <String, String>{};
+
     return ChatMessage(
       id: docId,
       senderId: data['senderId'] as String? ?? '',
@@ -151,6 +199,25 @@ class ChatMessage {
       createdAt: data['createdAt'] is Timestamp
           ? (data['createdAt'] as Timestamp).toDate()
           : null,
+      reactions: reactions,
+    );
+  }
+
+  // Optimistic bubble used by the cubit between "tap Send" and
+  // the moment Firestore returns the canonical message.
+  factory ChatMessage.pending({
+    required String tempId,
+    required String senderId,
+    required String senderName,
+    required String text,
+  }) {
+    return ChatMessage(
+      id: tempId,
+      senderId: senderId,
+      senderName: senderName,
+      text: text,
+      createdAt: DateTime.now(),
+      isPending: true,
     );
   }
 }

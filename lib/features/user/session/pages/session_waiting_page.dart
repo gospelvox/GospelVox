@@ -87,7 +87,13 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
         body: BlocConsumer<SessionRequestCubit, SessionRequestState>(
           listener: (context, state) {
             if (state is SessionRequestAccepted) {
-              context.go('/session/chat/${state.session.id}');
+              // Branch on session type so voice requests land on
+              // the Agora call screen, not the chat screen.
+              if (state.session.isVoice) {
+                context.go('/session/voice/${state.session.id}');
+              } else {
+                context.go('/session/chat/${state.session.id}');
+              }
             } else if (state is SessionRequestDeclined) {
               _showDeclinedSheet(state.priestName);
             } else if (state is SessionRequestExpired) {

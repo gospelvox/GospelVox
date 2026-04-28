@@ -45,5 +45,31 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!-- Background modes for voice calls.
+	     audio: keeps the Agora audio stream alive when the screen
+	            locks or the user switches apps. Without this, iOS
+	            suspends the engine within ~3 seconds of backgrounding.
+	     voip:  marks the app as a Voice-over-IP client. iOS gives
+	            VoIP apps slightly more network and CPU headroom, and
+	            lets us register a longer-lived audio session. We do
+	            NOT use PushKit / CallKit (incoming requests come over
+	            our own Firestore stream), so this is purely the
+	            background-friendliness side of the flag — no extra
+	            App Store review work required. -->
+	<key>UIBackgroundModes</key>
+	<array>
+		<string>audio</string>
+		<string>voip</string>
+	</array>
+	<!-- App Store REJECTS apps that access the microphone without
+	     this string. Shown verbatim in the system permission prompt. -->
+	<key>NSMicrophoneUsageDescription</key>
+	<string>Gospel Vox needs microphone access for voice consultations with speakers.</string>
+	<!-- Required by iOS 13+ when the app interacts with Bluetooth
+	     audio devices (headsets). Agora routes audio through any
+	     paired AirPods / car system; without this string the OS
+	     blocks the route silently. -->
+	<key>NSBluetoothAlwaysUsageDescription</key>
+	<string>Gospel Vox uses Bluetooth to connect with audio devices during voice calls.</string>
 </dict>
 </plist>

@@ -60,9 +60,13 @@ class DashboardRepository {
   }
 
   Future<int> _getOpenReportsCount() async {
+    // 'pending' matches the value the report queue and admin
+    // resolve flow use ({pending, resolved}). Earlier 'open' was
+    // a leftover from a never-shipped status taxonomy and made
+    // this card permanently read 0.
     final snap = await _db
         .collection('reports')
-        .where('status', isEqualTo: 'open')
+        .where('status', isEqualTo: 'pending')
         .count()
         .get();
     return snap.count ?? 0;

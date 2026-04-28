@@ -60,6 +60,15 @@ class IncomingRequestExpired extends IncomingRequestState {
   const IncomingRequestExpired();
 }
 
+// User on the other side withdrew the request before the priest
+// reacted. Surfaced via the session-doc stream so the priest's
+// screen auto-dismisses instead of waiting for the local 60s
+// timer to elapse on a request that no longer exists.
+class IncomingRequestUserCancelled extends IncomingRequestState {
+  final String userName;
+  const IncomingRequestUserCancelled(this.userName);
+}
+
 // Dual-purpose: generic failures carry a user-facing message, while
 // the sentinel `__needs_activation__` is the contract between cubit
 // and page for "show the activation bottom sheet". Using a state

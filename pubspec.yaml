@@ -40,6 +40,11 @@ dependencies:
 
   # Voice Calls
   agora_rtc_engine: any
+  # Runtime permission requests (microphone for voice calls). The
+  # AndroidManifest already declares RECORD_AUDIO, but Android 6+
+  # requires an explicit runtime grant before Agora's mic capture
+  # actually works.
+  permission_handler: any
 
   # Notifications
   onesignal_flutter: any
