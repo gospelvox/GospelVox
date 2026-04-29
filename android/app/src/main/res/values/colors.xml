@@ -1,4 +1,7 @@
 <?xml version="1.0" encoding="utf-8"?>
 <resources>
     <color name="ic_launcher_background">#F4EDE3</color>
+    <!-- Tint applied to the small status-bar notification icon. Brand
+         brown so FCM-delivered pushes match the rest of the app. -->
+    <color name="notification_color">#6B3A2A</color>
 </resources>

@@ -4,6 +4,7 @@ import * as crypto from "crypto";
 // See createCoinOrder.ts for why this uses require-style import.
 import Razorpay = require("razorpay");
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -152,7 +153,10 @@ export const verifyCoinPurchase = onCall(
     // the coins the order was created for.
     const amountPaidRupees = Math.round(orderAmountPaise / 100);
 
-    // ── 4. Credit + record atomically ───────────────────────────
+    // ── 4. Credit + record + notify atomically ──────────────────
+    // The notification doc is part of the same batch as the balance
+    // update so the in-app inbox can never be out of sync with the
+    // wallet. The OS-level push is best-effort and fires after.
     const batch = db.batch();
 
     const userRef = db.doc(`users/${uid}`);
@@ -172,10 +176,38 @@ export const verifyCoinPurchase = onCall(
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    const notifRef = db.collection("notifications").doc();
+    batch.set(notifRef, {
+      userId: uid,
+      type: "coins_purchased",
+      title: "Coins Added",
+      body:
+        `Your purchase of ${coins} coins for ₹${amountPaidRupees} ` +
+        "is complete. Tap to open your wallet.",
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
     await batch.commit();
 
     const updatedUser = await userRef.get();
-    const newBalance = updatedUser.data()?.coinBalance ?? 0;
+    const newBalance = Number(updatedUser.data()?.coinBalance ?? 0);
+
+    // Push so the user sees the receipt even if the wallet page is
+    // backgrounded after Razorpay's redirect. Body includes the new
+    // balance so the OS banner is self-explanatory without opening
+    // the app — same numbers the in-app doc shows.
+    await sendPushNotification({
+      userId: uid,
+      title: "Coins Added",
+      body:
+        `${coins} coins credited for ₹${amountPaidRupees}. ` +
+        `Wallet balance: ${newBalance} coins.`,
+      data: {
+        type: "coins_purchased",
+        route: "/user",
+      },
+    });
 
     return {newBalance, alreadyProcessed: false};
   },

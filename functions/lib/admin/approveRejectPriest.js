@@ -23,6 +23,7 @@ exports.approveRejectPriest = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 exports.approveRejectPriest = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
     var _a, _b, _c, _d;
@@ -118,13 +119,25 @@ exports.approveRejectPriest = (0, https_1.onCall)({ region: constants_1.REGION }
     // ── 6. Notify the priest ──
     // Best-effort — a failed notification should not cause the whole
     // moderation action to roll back, so this is in its own try.
+    const notification = buildNotification(typedAction, rejectionReason);
     try {
-        const notification = buildNotification(typedAction, rejectionReason);
         await db.collection("notifications").add(Object.assign(Object.assign({ userId: priestId }, notification), { isRead: false, createdAt: admin.firestore.FieldValue.serverTimestamp() }));
     }
     catch (err) {
         console.error(`[approveRejectPriest] Notification failed for ${priestId}:`, err);
     }
+    // ── 7. Push to the priest's device(s). Approve routes them to
+    //      the activation flow; everything else lands them on the
+    //      dashboard where the new status is reflected.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: priestId,
+        title: notification.title,
+        body: notification.body,
+        data: {
+            type: notification.type,
+            route: typedAction === "approve" ? "/priest/activation" : "/priest",
+        },
+    });
     return {
         success: true,
         newStatus,

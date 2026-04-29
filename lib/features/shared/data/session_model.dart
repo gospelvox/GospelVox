@@ -63,6 +63,13 @@ class SessionModel {
   final String priestPhotoUrl;
   final String priestDenomination;
 
+  // Post-session feedback — written by post_session_page after the
+  // user picks a star rating + types optional notes. Both nullable
+  // because the user may close the post-session screen without
+  // rating, in which case neither field is ever set on the doc.
+  final double? userRating;
+  final String? userFeedback;
+
   const SessionModel({
     required this.id,
     required this.userId,
@@ -89,6 +96,8 @@ class SessionModel {
     required this.priestName,
     required this.priestPhotoUrl,
     required this.priestDenomination,
+    this.userRating,
+    this.userFeedback,
   });
 
   // createdAt and friends can land as null during the write-then-read
@@ -128,6 +137,8 @@ class SessionModel {
       priestName: data['priestName'] as String? ?? '',
       priestPhotoUrl: data['priestPhotoUrl'] as String? ?? '',
       priestDenomination: data['priestDenomination'] as String? ?? '',
+      userRating: (data['userRating'] as num?)?.toDouble(),
+      userFeedback: data['userFeedback'] as String?,
     );
   }
 

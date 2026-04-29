@@ -23,6 +23,7 @@ const crypto = require("crypto");
 // See createCoinOrder.ts for why this uses require-style import.
 const Razorpay = require("razorpay");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 exports.verifyActivationFee = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
     var _a, _b, _c, _d;
@@ -151,6 +152,18 @@ exports.verifyActivationFee = (0, https_1.onCall)({ region: constants_1.REGION }
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     await batch.commit();
+    // Push the priest's device(s) so they see activation confirmed
+    // even if they backgrounded the app during Razorpay's redirect.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: uid,
+        title: "Account Activated!",
+        body: "Your speaker account is now active. " +
+            "You can start accepting sessions.",
+        data: {
+            type: "account_activated",
+            route: "/priest",
+        },
+    });
     return { success: true, alreadyActivated: false };
 });
 //# sourceMappingURL=verifyActivationFee.js.map

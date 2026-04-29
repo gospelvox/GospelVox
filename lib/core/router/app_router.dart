@@ -39,10 +39,20 @@ import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart'
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/priest_wallet_page.dart';
+import 'package:gospel_vox/features/priest/bible/pages/priest_bible_detail_page.dart';
+import 'package:gospel_vox/features/priest/bible/pages/priest_bible_sessions_page.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
+import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/features/user/bible/pages/bible_session_detail_page.dart';
+import 'package:gospel_vox/features/shared/pages/chat_transcript_page.dart';
+import 'package:gospel_vox/features/shared/pages/session_detail_page.dart';
+import 'package:gospel_vox/features/shared/pages/session_history_page.dart';
 import 'package:gospel_vox/features/user/home/pages/priest_profile_page.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/features/user/profile/pages/about_page.dart';
+import 'package:gospel_vox/features/user/profile/pages/edit_profile_page.dart';
+import 'package:gospel_vox/features/user/profile/pages/user_settings_page.dart';
 import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
 import 'package:gospel_vox/features/user/session/pages/chat_session_page.dart';
 import 'package:gospel_vox/features/user/session/pages/post_session_page.dart';
@@ -226,6 +236,32 @@ final appRouter = GoRouter(
         return PriestProfilePage(priestId: priestId);
       },
     ),
+    // Bible session detail (user side). Pushed from the BibleTab
+    // card. The page handles its own load + register + pay flow,
+    // so the route is just an id passthrough.
+    GoRoute(
+      path: '/bible/detail/:id',
+      builder: (context, state) {
+        final id = state.pathParameters['id'] ?? '';
+        return BibleSessionDetailPage(sessionId: id);
+      },
+    ),
+    // User-side profile sub-routes. The Me tab is rendered inside
+    // the shell's IndexedStack, so these are pushed on top of the
+    // shell rather than replacing it — the bottom nav stays out of
+    // view while the user is editing or browsing settings.
+    GoRoute(
+      path: '/user/edit-profile',
+      builder: (context, state) => const EditProfilePage(),
+    ),
+    GoRoute(
+      path: '/user/settings',
+      builder: (context, state) => const UserSettingsPage(),
+    ),
+    GoRoute(
+      path: '/user/about',
+      builder: (context, state) => const AboutPage(),
+    ),
     GoRoute(
       path: '/priest',
       builder: (context, state) => const PriestDashboardPage(),
@@ -400,6 +436,72 @@ final appRouter = GoRouter(
       path: '/priest/settings/availability',
       builder: (context, state) => const PriestAvailabilityPage(),
     ),
+    // Session-history list — shared page driven by `isUserSide`.
+    // Loads on construction since the page does no work without uid;
+    // currentUser is guaranteed non-null here because the router's
+    // top-level redirect bounces unauthenticated users to /select-role
+    // before any sub-route mounts.
+    GoRoute(
+      path: '/user/session-history',
+      builder: (context, state) {
+        final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+        return BlocProvider(
+          create: (_) => sl<SessionHistoryCubit>()
+            ..loadUserSessions(uid),
+          child: const SessionHistoryPage(isUserSide: true),
+        );
+      },
+    ),
+    GoRoute(
+      path: '/priest/session-history',
+      builder: (context, state) {
+        final uid = FirebaseAuth.instance.currentUser?.uid ?? '';
+        return BlocProvider(
+          create: (_) => sl<SessionHistoryCubit>()
+            ..loadPriestSessions(uid),
+          child: const SessionHistoryPage(isUserSide: false),
+        );
+      },
+    ),
+    // Per-session detail page. The session itself is passed as an
+    // extra rather than re-fetched by id — the list already has the
+    // hydrated model and a refetch would cost a round-trip for no
+    // new data on a page that's effectively read-only.
+    GoRoute(
+      path: '/session/detail',
+      builder: (context, state) {
+        final extra = state.extra;
+        if (extra is! Map<String, dynamic>) {
+          return const _MissingSessionPlaceholder();
+        }
+        final session = extra['session'] as SessionModel?;
+        final isUserSide = extra['isUserSide'] as bool? ?? true;
+        if (session == null) {
+          return const _MissingSessionPlaceholder();
+        }
+        return SessionDetailPage(
+          session: session,
+          isUserSide: isUserSide,
+        );
+      },
+    ),
+    // Read-only chat transcript. otherName + sessionDate are optional
+    // niceties for the header; if they're missing (deep link) the
+    // page still renders fine with a generic title.
+    GoRoute(
+      path: '/session/transcript/:id',
+      builder: (context, state) {
+        final sessionId = state.pathParameters['id'] ?? '';
+        final extra = state.extra is Map<String, dynamic>
+            ? state.extra as Map<String, dynamic>
+            : const <String, dynamic>{};
+        return ChatTranscriptPage(
+          sessionId: sessionId,
+          otherName: extra['otherName'] as String? ?? '',
+          sessionDate: extra['sessionDate'] as String? ?? '',
+        );
+      },
+    ),
     // Placeholders for dashboard quick-action tiles. Each route exists
     // today so tapping the tile navigates somewhere readable instead
     // of silently doing nothing; the real pages ship later this week.
@@ -432,17 +534,13 @@ final appRouter = GoRouter(
   ],
 );
 
-// Priest-side stubs for routes the new dashboard links to. They exist
-// so the quick-action tiles don't dead-end; the real pages (wallet,
-// profile, bible sessions, settings) ship later and will replace
-// these entries.
+// Priest-side dashboard sub-routes. Originally stubbed when the
+// dashboard was wired up; settings/wallet/profile/notifications and
+// now bible-sessions have all graduated to real pages, so the
+// `placeholders` map is empty — kept here as the seam where future
+// dashboard tiles can land before their real screens ship.
 List<GoRoute> _priestPlaceholderRoutes() {
-  // Pages with real implementations live alongside the placeholders.
-  // Settings, Wallet, Profile, and Notifications have graduated;
-  // bible-sessions remains a placeholder until that week ships.
-  const placeholders = {
-    '/priest/bible-sessions': 'Bible Sessions',
-  };
+  const placeholders = <String, String>{};
 
   return [
     GoRoute(
@@ -491,6 +589,22 @@ List<GoRoute> _priestPlaceholderRoutes() {
     GoRoute(
       path: '/priest/notifications',
       builder: (context, state) => const NotificationsPage(),
+    ),
+    // Priest's Bible sessions list — entry point from the dashboard
+    // tile. The "+" button on the page itself opens the create sheet.
+    GoRoute(
+      path: '/priest/bible-sessions',
+      builder: (context, state) => const PriestBibleSessionsPage(),
+    ),
+    // Priest's session manage view. Pushed by the list page; returns
+    // a `bool?` via pop() — true when something mutated (link added,
+    // session cancelled / completed) so the list refreshes on return.
+    GoRoute(
+      path: '/priest/bible/:id',
+      builder: (context, state) {
+        final id = state.pathParameters['id'] ?? '';
+        return PriestBibleDetailPage(sessionId: id);
+      },
     ),
     ...placeholders.entries.map(
       (e) => GoRoute(

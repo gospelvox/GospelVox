@@ -45,7 +45,7 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
-	<!-- Background modes for voice calls.
+	<!-- Background modes for voice calls + push.
 	     audio: keeps the Agora audio stream alive when the screen
 	            locks or the user switches apps. Without this, iOS
 	            suspends the engine within ~3 seconds of backgrounding.
@@ -55,11 +55,15 @@
 	            NOT use PushKit / CallKit (incoming requests come over
 	            our own Firestore stream), so this is purely the
 	            background-friendliness side of the flag — no extra
-	            App Store review work required. -->
+	            App Store review work required.
+	     remote-notification: required by FCM so silent / data-only
+	            pushes wake the app long enough for the background
+	            handler to run. Without it, iOS may drop the payload. -->
 	<key>UIBackgroundModes</key>
 	<array>
 		<string>audio</string>
 		<string>voip</string>
+		<string>remote-notification</string>
 	</array>
 	<!-- App Store REJECTS apps that access the microphone without
 	     this string. Shown verbatim in the system permission prompt. -->

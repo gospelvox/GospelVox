@@ -7,6 +7,7 @@ const crypto = require("crypto");
 // See createCoinOrder.ts for why this uses require-style import.
 const Razorpay = require("razorpay");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 // Credits coins to the user AFTER verifying three things:
 //   1. The HMAC-SHA256 signature from Razorpay matches (proves the
@@ -109,7 +110,10 @@ exports.verifyCoinPurchase = (0, https_1.onCall)({ region: constants_1.REGION },
     // still honour the amount the user actually paid, but we credit
     // the coins the order was created for.
     const amountPaidRupees = Math.round(orderAmountPaise / 100);
-    // ── 4. Credit + record atomically ───────────────────────────
+    // ── 4. Credit + record + notify atomically ──────────────────
+    // The notification doc is part of the same batch as the balance
+    // update so the in-app inbox can never be out of sync with the
+    // wallet. The OS-level push is best-effort and fires after.
     const batch = db.batch();
     const userRef = db.doc(`users/${uid}`);
     batch.update(userRef, {
@@ -126,9 +130,33 @@ exports.verifyCoinPurchase = (0, https_1.onCall)({ region: constants_1.REGION },
         amountPaid: amountPaidRupees,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    const notifRef = db.collection("notifications").doc();
+    batch.set(notifRef, {
+        userId: uid,
+        type: "coins_purchased",
+        title: "Coins Added",
+        body: `Your purchase of ${coins} coins for ₹${amountPaidRupees} ` +
+            "is complete. Tap to open your wallet.",
+        isRead: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
     await batch.commit();
     const updatedUser = await userRef.get();
-    const newBalance = (_e = (_d = updatedUser.data()) === null || _d === void 0 ? void 0 : _d.coinBalance) !== null && _e !== void 0 ? _e : 0;
+    const newBalance = Number((_e = (_d = updatedUser.data()) === null || _d === void 0 ? void 0 : _d.coinBalance) !== null && _e !== void 0 ? _e : 0);
+    // Push so the user sees the receipt even if the wallet page is
+    // backgrounded after Razorpay's redirect. Body includes the new
+    // balance so the OS banner is self-explanatory without opening
+    // the app — same numbers the in-app doc shows.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: uid,
+        title: "Coins Added",
+        body: `${coins} coins credited for ₹${amountPaidRupees}. ` +
+            `Wallet balance: ${newBalance} coins.`,
+        data: {
+            type: "coins_purchased",
+            route: "/user",
+        },
+    });
     return { newBalance, alreadyProcessed: false };
 });
 //# sourceMappingURL=verifyCoinPurchase.js.map

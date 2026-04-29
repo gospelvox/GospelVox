@@ -1,6 +1,7 @@
 import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -195,8 +196,8 @@ async function processStaleSession(
     title: "Session Ended",
     body:
       `Your ${session.type} session with ` +
-      `${session.priestName ?? "the speaker"} ended due to ` +
-      `connection timeout. Duration: ${finalDuration} min. ` +
+      `${session.priestName ?? "the speaker"} ended due to a ` +
+      `connection issue. Duration: ${finalDuration} min. ` +
       `Charged: ${finalTotalCharged} coins.`,
     sessionId: sessionId,
     isRead: false,
@@ -210,8 +211,8 @@ async function processStaleSession(
     title: "Session Ended",
     body:
       `Your ${session.type} session with ` +
-      `${session.userName ?? "the user"} ended due to ` +
-      `connection timeout. Duration: ${finalDuration} min. ` +
+      `${session.userName ?? "the user"} ended due to a ` +
+      `connection issue. Duration: ${finalDuration} min. ` +
       `Earned: ₹${finalPriestEarnings}.`,
     sessionId: sessionId,
     isRead: false,
@@ -219,6 +220,38 @@ async function processStaleSession(
   });
 
   await notifBatch.commit();
+
+  // Push both sides so the abandoned-session outcome lands as a
+  // visible OS notification, not just an in-app inbox entry. Most
+  // useful when the user's app crashed (which is why we got here) —
+  // they need to know their balance changed.
+  await sendPushNotification({
+    userId: session.userId,
+    title: "Session Ended",
+    body:
+      `Your ${session.type} session ended due to a connection issue. ` +
+      `Duration: ${finalDuration} min. ` +
+      `Charged: ${finalTotalCharged} coins.`,
+    data: {
+      type: "session_ended",
+      sessionId: sessionId,
+      route: "/user",
+    },
+  });
+
+  await sendPushNotification({
+    userId: session.priestId,
+    title: "Session Ended",
+    body:
+      `Your ${session.type} session ended due to a connection issue. ` +
+      `Duration: ${finalDuration} min. ` +
+      `Earned: ₹${finalPriestEarnings}.`,
+    data: {
+      type: "session_ended",
+      sessionId: sessionId,
+      route: "/priest",
+    },
+  });
 
   console.log(
     `[Watchdog] Session ${sessionId} ended. ` +

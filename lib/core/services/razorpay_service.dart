@@ -101,6 +101,51 @@ class RazorpayService {
     }
   }
 
+  // Opens checkout in direct-amount mode (no pre-created order_id).
+  // The success callback returns paymentId only — no signature — so
+  // server-side verification falls back on Razorpay's payments.fetch
+  // API (see verifyBibleSessionPayment). Used for one-shot pay-and-
+  // join flows where the bookkeeping overhead of a separate order CF
+  // isn't worth it; the per-payment fetch is still cryptographically
+  // grounded because it requires our key_secret.
+  void openCheckoutWithoutOrder({
+    required int amountInPaise,
+    required String description,
+    required String userEmail,
+    required String userName,
+    Map<String, String>? notes,
+    String? userPhone,
+  }) {
+    final razorpay = _razorpay;
+    if (razorpay == null) {
+      debugPrint('[Razorpay] openCheckoutWithoutOrder before init()');
+      return;
+    }
+
+    final options = <String, dynamic>{
+      'key': PaymentConfig.razorpayKeyId,
+      'amount': amountInPaise,
+      'currency': 'INR',
+      'name': PaymentConfig.companyName,
+      'description': description,
+      'notes': ?notes,
+      'prefill': <String, dynamic>{
+        'email': userEmail,
+        'contact': userPhone ?? '',
+        'name': userName,
+      },
+      'theme': <String, dynamic>{
+        'color': PaymentConfig.checkoutThemeHex,
+      },
+    };
+
+    try {
+      razorpay.open(options);
+    } catch (e) {
+      debugPrint('[Razorpay] open() failed: $e');
+    }
+  }
+
   // Must be called when the widget using this service is disposed.
   // Without this, the native Razorpay activity keeps references to
   // the handler closures, which in turn capture the old BuildContext

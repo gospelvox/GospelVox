@@ -4,6 +4,7 @@ exports.sessionWatchdog = void 0;
 const scheduler_1 = require("firebase-functions/v2/scheduler");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 // How long after the last client heartbeat we treat a session as
 // abandoned. 2 minutes is the product contract — short enough that
@@ -152,8 +153,8 @@ async function processStaleSession(sessionId, session) {
         type: "session_ended",
         title: "Session Ended",
         body: `Your ${session.type} session with ` +
-            `${(_h = session.priestName) !== null && _h !== void 0 ? _h : "the speaker"} ended due to ` +
-            `connection timeout. Duration: ${finalDuration} min. ` +
+            `${(_h = session.priestName) !== null && _h !== void 0 ? _h : "the speaker"} ended due to a ` +
+            `connection issue. Duration: ${finalDuration} min. ` +
             `Charged: ${finalTotalCharged} coins.`,
         sessionId: sessionId,
         isRead: false,
@@ -165,14 +166,42 @@ async function processStaleSession(sessionId, session) {
         type: "session_ended",
         title: "Session Ended",
         body: `Your ${session.type} session with ` +
-            `${(_j = session.userName) !== null && _j !== void 0 ? _j : "the user"} ended due to ` +
-            `connection timeout. Duration: ${finalDuration} min. ` +
+            `${(_j = session.userName) !== null && _j !== void 0 ? _j : "the user"} ended due to a ` +
+            `connection issue. Duration: ${finalDuration} min. ` +
             `Earned: ₹${finalPriestEarnings}.`,
         sessionId: sessionId,
         isRead: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     await notifBatch.commit();
+    // Push both sides so the abandoned-session outcome lands as a
+    // visible OS notification, not just an in-app inbox entry. Most
+    // useful when the user's app crashed (which is why we got here) —
+    // they need to know their balance changed.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: session.userId,
+        title: "Session Ended",
+        body: `Your ${session.type} session ended due to a connection issue. ` +
+            `Duration: ${finalDuration} min. ` +
+            `Charged: ${finalTotalCharged} coins.`,
+        data: {
+            type: "session_ended",
+            sessionId: sessionId,
+            route: "/user",
+        },
+    });
+    await (0, sendPush_1.sendPushNotification)({
+        userId: session.priestId,
+        title: "Session Ended",
+        body: `Your ${session.type} session ended due to a connection issue. ` +
+            `Duration: ${finalDuration} min. ` +
+            `Earned: ₹${finalPriestEarnings}.`,
+        data: {
+            type: "session_ended",
+            sessionId: sessionId,
+            route: "/priest",
+        },
+    });
     console.log(`[Watchdog] Session ${sessionId} ended. ` +
         `Duration: ${finalDuration} min. ` +
         `Charged: ${finalTotalCharged} coins. ` +

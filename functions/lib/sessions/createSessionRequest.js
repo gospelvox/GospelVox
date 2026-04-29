@@ -4,6 +4,7 @@ exports.createSessionRequest = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 // Creates a pending session between a user and a priest. This is
 // the ONLY entry point for session creation — the Flutter client
@@ -137,6 +138,27 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
         sessionId: sessionRef.id,
         isRead: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    // 9. Push the priest's device(s) so they hear the request even
+    //    if their app is backgrounded. Best-effort — sendPush
+    //    swallows its own failures so this never blocks return.
+    //
+    //    Route is "/priest" (the dashboard) NOT "/priest/incoming".
+    //    The incoming-request page requires a SessionModel passed via
+    //    extras — a notification tap can only carry string data, so
+    //    navigating directly would land on the "Session unavailable"
+    //    placeholder. The dashboard's pending-request stream listener
+    //    detects the same session and auto-routes to /priest/incoming
+    //    with the full hydrated model.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: priestId,
+        title: `New ${type} request`,
+        body: `${userData.displayName || "A user"} wants to ${type === "chat" ? "chat with" : "call"} you`,
+        data: {
+            type: "session_request",
+            sessionId: sessionRef.id,
+            route: "/priest",
+        },
     });
     return { sessionId: sessionRef.id };
 });

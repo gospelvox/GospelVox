@@ -1,6 +1,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -179,6 +180,30 @@ export const createSessionRequest = onCall(
       sessionId: sessionRef.id,
       isRead: false,
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // 9. Push the priest's device(s) so they hear the request even
+    //    if their app is backgrounded. Best-effort — sendPush
+    //    swallows its own failures so this never blocks return.
+    //
+    //    Route is "/priest" (the dashboard) NOT "/priest/incoming".
+    //    The incoming-request page requires a SessionModel passed via
+    //    extras — a notification tap can only carry string data, so
+    //    navigating directly would land on the "Session unavailable"
+    //    placeholder. The dashboard's pending-request stream listener
+    //    detects the same session and auto-routes to /priest/incoming
+    //    with the full hydrated model.
+    await sendPushNotification({
+      userId: priestId,
+      title: `New ${type} request`,
+      body: `${userData.displayName || "A user"} wants to ${
+        type === "chat" ? "chat with" : "call"
+      } you`,
+      data: {
+        type: "session_request",
+        sessionId: sessionRef.id,
+        route: "/priest",
+      },
     });
 
     return {sessionId: sessionRef.id};

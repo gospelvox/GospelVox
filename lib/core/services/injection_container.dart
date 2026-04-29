@@ -28,7 +28,11 @@ import 'package:gospel_vox/features/priest/registration/data/priest_registration
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
 import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
+import 'package:gospel_vox/features/shared/bloc/bible_session_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
+import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
@@ -142,6 +146,23 @@ Future<void> initDependencies() async {
   // next one.
   sl.registerFactory<ChatSessionCubit>(
       () => ChatSessionCubit(sl<SessionRepository>()));
+
+  // Session history — stateless repo (singleton) + factory cubit so
+  // each history-list mount gets a fresh state machine. Used by both
+  // the user "Me" tab and the priest dashboard's quick actions.
+  sl.registerLazySingleton<SessionHistoryRepository>(
+      () => SessionHistoryRepository());
+  sl.registerFactory<SessionHistoryCubit>(
+      () => SessionHistoryCubit(sl<SessionHistoryRepository>()));
+
+  // Bible sessions — stateless repo (singleton) + factory cubit. The
+  // user-side Bible tab owns the cubit's lifecycle inside the shell;
+  // priest-side pages talk to the repo directly because they don't
+  // need the cubit's tab machine.
+  sl.registerLazySingleton<BibleSessionRepository>(
+      () => BibleSessionRepository());
+  sl.registerFactory<BibleSessionCubit>(
+      () => BibleSessionCubit(sl<BibleSessionRepository>()));
 
   // Note: RazorpayService is intentionally NOT registered here.
   // Its callbacks hold references to BuildContext, so a singleton

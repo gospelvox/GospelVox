@@ -4,6 +4,7 @@ exports.endSession = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 // Settles a session. Either party may call it — the CF checks
 // participation and is idempotent: if the session is already
@@ -100,11 +101,71 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
         totalSessions: admin.firestore.FieldValue.increment(1),
     });
     const finalUserSnap = await db.doc(`users/${session.userId}`).get();
+    const finalUserBalance = Number((_r = (_q = finalUserSnap.data()) === null || _q === void 0 ? void 0 : _q.coinBalance) !== null && _r !== void 0 ? _r : 0);
+    // Drop in-app inbox entries for both sides BEFORE pushing. The
+    // notification doc is the source of truth — push is best-effort
+    // delivery, but the inbox needs the record either way so users
+    // can review past sessions from the notifications page.
+    //
+    // Title is "Session Complete" (vs "Session Ended" used by the
+    // watchdog for abnormal termination) — the title alone tells the
+    // user whether the session ended cleanly or was timed out.
+    const notifBatch = db.batch();
+    const userNotifRef = db.collection("notifications").doc();
+    notifBatch.set(userNotifRef, {
+        userId: session.userId,
+        type: "session_ended",
+        title: "Session Complete",
+        body: `Your ${session.type} session lasted ${finalDuration} min. ` +
+            `${finalTotalCharged} coins used. ` +
+            `Wallet balance: ${finalUserBalance} coins.`,
+        sessionId: sessionId,
+        isRead: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    const priestNotifRef = db.collection("notifications").doc();
+    notifBatch.set(priestNotifRef, {
+        userId: session.priestId,
+        type: "session_ended",
+        title: "Session Complete",
+        body: `Your ${session.type} session lasted ${finalDuration} min. ` +
+            `₹${finalPriestEarnings} added to your wallet.`,
+        sessionId: sessionId,
+        isRead: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+    await notifBatch.commit();
+    // Push both sides so each party knows the session is settled —
+    // matters most when one side ended the call from a different
+    // surface and the other is still on the in-call screen.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: session.userId,
+        title: "Session Complete",
+        body: `Your ${session.type} session lasted ${finalDuration} min. ` +
+            `${finalTotalCharged} coins used. ` +
+            `Balance: ${finalUserBalance} coins.`,
+        data: {
+            type: "session_ended",
+            sessionId: sessionId,
+            route: "/user",
+        },
+    });
+    await (0, sendPush_1.sendPushNotification)({
+        userId: session.priestId,
+        title: "Session Complete",
+        body: `Your ${session.type} session lasted ${finalDuration} min. ` +
+            `₹${finalPriestEarnings} added to your wallet.`,
+        data: {
+            type: "session_ended",
+            sessionId: sessionId,
+            route: "/priest",
+        },
+    });
     return {
         durationMinutes: finalDuration,
         totalCharged: finalTotalCharged,
         priestEarnings: finalPriestEarnings,
-        newBalance: Number((_r = (_q = finalUserSnap.data()) === null || _q === void 0 ? void 0 : _q.coinBalance) !== null && _r !== void 0 ? _r : 0),
+        newBalance: finalUserBalance,
     };
 });
 //# sourceMappingURL=endSession.js.map

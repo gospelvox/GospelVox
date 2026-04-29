@@ -26,6 +26,7 @@ exports.requestWithdrawal = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 // Limit on the idempotency token. Long enough to fit a UUID v4
 // (36) or a Firestore auto-id (20); short enough to reject garbage
@@ -153,6 +154,19 @@ exports.requestWithdrawal = (0, https_1.onCall)({ region: constants_1.REGION }, 
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
     await batch.commit();
+    // Push the priest so the request lands as an OS notification —
+    // useful when the admin batch-processes payouts hours later and
+    // the priest backgrounded the wallet screen.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: uid,
+        title: "Withdrawal Submitted",
+        body: `₹${amount} withdrawal is being processed. ` +
+            "You'll be notified when it's sent to your bank.",
+        data: {
+            type: "withdrawal_processed",
+            route: "/priest/wallet",
+        },
+    });
     const newBalance = currentBalance - amount;
     return {
         withdrawalId: withdrawalRef.id,

@@ -245,7 +245,9 @@ class _HomeViewState extends State<_HomeView>
   void _switchToWalletTab() {
     final shell = UserShellScope.of(context);
     if (shell != null) {
-      shell.switchToTab(3);
+      // Wallet is index 2 in the 4-tab beta layout
+      // (Home / Bible / Wallet / Me).
+      shell.switchToTab(2);
     } else {
       context.go('/user');
     }

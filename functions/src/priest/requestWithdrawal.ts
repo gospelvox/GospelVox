@@ -24,6 +24,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -219,6 +220,21 @@ export const requestWithdrawal = onCall(
     });
 
     await batch.commit();
+
+    // Push the priest so the request lands as an OS notification —
+    // useful when the admin batch-processes payouts hours later and
+    // the priest backgrounded the wallet screen.
+    await sendPushNotification({
+      userId: uid,
+      title: "Withdrawal Submitted",
+      body:
+        `₹${amount} withdrawal is being processed. ` +
+        "You'll be notified when it's sent to your bank.",
+      data: {
+        type: "withdrawal_processed",
+        route: "/priest/wallet",
+      },
+    });
 
     const newBalance = currentBalance - amount;
 

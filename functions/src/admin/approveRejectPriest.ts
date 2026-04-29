@@ -21,6 +21,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -154,8 +155,8 @@ export const approveRejectPriest = onCall(
     // ── 6. Notify the priest ──
     // Best-effort — a failed notification should not cause the whole
     // moderation action to roll back, so this is in its own try.
+    const notification = buildNotification(typedAction, rejectionReason);
     try {
-      const notification = buildNotification(typedAction, rejectionReason);
       await db.collection("notifications").add({
         userId: priestId,
         ...notification,
@@ -168,6 +169,19 @@ export const approveRejectPriest = onCall(
         err
       );
     }
+
+    // ── 7. Push to the priest's device(s). Approve routes them to
+    //      the activation flow; everything else lands them on the
+    //      dashboard where the new status is reflected.
+    await sendPushNotification({
+      userId: priestId,
+      title: notification.title,
+      body: notification.body,
+      data: {
+        type: notification.type,
+        route: typedAction === "approve" ? "/priest/activation" : "/priest",
+      },
+    });
 
     return {
       success: true,

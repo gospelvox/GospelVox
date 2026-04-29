@@ -1,26 +1,31 @@
-// Root shell for the signed-in listener role — an IndexedStack with
-// a custom pill bottom-nav. We hold all top-level tab children alive
-// at the same time so switching between them feels instant and
-// preserves scroll position; only the active tab paints.
+// Root shell for the signed-in user role — an IndexedStack with a
+// custom pill bottom-nav. We hold all top-level tab children alive at
+// the same time so switching between them feels instant and preserves
+// scroll position; only the active tab paints.
 //
 // Why expose the tab-switcher via an InheritedWidget: the home tab's
-// coin pill needs to jump to the wallet tab without navigating
-// routes (a route push would put the wallet on top of the shell and
-// hide the nav bar). `UserShellScope.of(context)?.switchToTab(i)`
-// gives child widgets a clean, typed way to ask the shell to change
-// its selected index, without passing callbacks through the tree.
+// coin pill (and the Me tab's "Transaction History" row) need to jump
+// to the wallet tab without navigating routes — a route push would
+// put the wallet on top of the shell and hide the nav bar.
+// `UserShellScope.of(context)?.switchToTab(i)` gives child widgets a
+// clean, typed way to ask the shell to change its selected index,
+// without passing callbacks through the tree.
+//
+// Tab indices (4-tab beta layout — Matrimony hidden):
+//   0  Home
+//   1  Bible (placeholder until that week ships)
+//   2  Wallet
+//   3  Me
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
-import 'package:gospel_vox/core/router/app_router.dart';
-import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
-import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+import 'package:gospel_vox/features/user/bible/pages/bible_tab.dart';
 import 'package:gospel_vox/features/user/home/pages/home_page.dart';
+import 'package:gospel_vox/features/user/profile/pages/me_tab.dart';
 import 'package:gospel_vox/features/user/wallet/pages/wallet_page.dart';
 
 class UserShellPage extends StatefulWidget {
@@ -33,9 +38,28 @@ class UserShellPage extends StatefulWidget {
 class _UserShellPageState extends State<UserShellPage> {
   int _currentIndex = 0;
 
+  @override
+  void initState() {
+    super.initState();
+    // Drain any pending notification-tap route. A tap from terminated
+    // state stashes the route during NotificationService.init(); the
+    // shell is the first screen mounted after auth gating, so this is
+    // the earliest place GoRouter is guaranteed to be ready.
+    //
+    // Skip if the route is "/user" (we're already there) or empty.
+    // Pushing the shell on top of itself would stack two of them.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final route = NotificationService.pendingRoute;
+      NotificationService.pendingRoute = null;
+      if (route == null || route.isEmpty || route == '/user') return;
+      if (!mounted) return;
+      context.push(route);
+    });
+  }
+
   void _switchToTab(int index) {
     if (index == _currentIndex) return;
-    if (index < 0 || index > 4) return;
+    if (index < 0 || index > 3) return;
     setState(() => _currentIndex = index);
   }
 
@@ -49,10 +73,9 @@ class _UserShellPageState extends State<UserShellPage> {
           index: _currentIndex,
           children: const [
             HomePage(),
-            _PlaceholderTab(title: "Matrimony", icon: Icons.favorite_outline),
-            _PlaceholderTab(title: "Bible", icon: Icons.menu_book_outlined),
+            BibleTab(),
             WalletPage(),
-            _MeTab(),
+            MeTab(),
           ],
         ),
         bottomNavigationBar: Container(
@@ -84,34 +107,26 @@ class _UserShellPageState extends State<UserShellPage> {
               _NavItem(
                 index: 1,
                 currentIndex: _currentIndex,
-                inactiveIcon: Icons.favorite_outline,
-                activeIcon: Icons.favorite,
-                label: "Matrimony",
+                inactiveIcon: Icons.menu_book_outlined,
+                activeIcon: Icons.menu_book,
+                label: "Bible",
                 onTap: () => _switchToTab(1),
               ),
               _NavItem(
                 index: 2,
                 currentIndex: _currentIndex,
-                inactiveIcon: Icons.menu_book_outlined,
-                activeIcon: Icons.menu_book,
-                label: "Bible",
+                inactiveIcon: Icons.account_balance_wallet_outlined,
+                activeIcon: Icons.account_balance_wallet,
+                label: "Wallet",
                 onTap: () => _switchToTab(2),
               ),
               _NavItem(
                 index: 3,
                 currentIndex: _currentIndex,
-                inactiveIcon: Icons.account_balance_wallet_outlined,
-                activeIcon: Icons.account_balance_wallet,
-                label: "Wallet",
-                onTap: () => _switchToTab(3),
-              ),
-              _NavItem(
-                index: 4,
-                currentIndex: _currentIndex,
                 inactiveIcon: Icons.person_outline,
                 activeIcon: Icons.person,
                 label: "Me",
-                onTap: () => _switchToTab(4),
+                onTap: () => _switchToTab(3),
               ),
             ],
           ),
@@ -123,9 +138,10 @@ class _UserShellPageState extends State<UserShellPage> {
 
 // InheritedWidget providing tab-switch access to descendant widgets.
 // Opt-in: children that don't need it never touch this. We don't
-// auto-subscribe (updateShouldNotify returns false) because tab
-// transitions shouldn't force unrelated widgets to rebuild — the
-// shell itself already reacts to index changes via setState.
+// auto-subscribe (updateShouldNotify only fires when the index
+// actually changes) because tab transitions shouldn't force unrelated
+// widgets to rebuild — the shell itself already reacts to index
+// changes via setState.
 class UserShellScope extends InheritedWidget {
   final int currentIndex;
   final void Function(int index) switchToTab;
@@ -210,267 +226,3 @@ class _NavItem extends StatelessWidget {
   }
 }
 
-// Temporary "Me" tab — hosts a minimal sign-out button so we can
-// switch roles during development without having to clear app
-// storage. Expand with real profile/account tiles later.
-class _MeTab extends StatefulWidget {
-  const _MeTab();
-
-  @override
-  State<_MeTab> createState() => _MeTabState();
-}
-
-class _MeTabState extends State<_MeTab> {
-  bool _signingOut = false;
-
-  Future<void> _signOut() async {
-    if (_signingOut) return;
-    setState(() => _signingOut = true);
-
-    try {
-      // Cached role must be cleared BEFORE the auth.signOut write —
-      // the router's redirect fires the instant the auth state
-      // changes, and a stale cache would route the next role
-      // selection back to the previous role's shell.
-      clearCachedRole();
-      await sl<AuthRepository>().signOut();
-      if (!mounted) return;
-      context.go('/select-role');
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _signingOut = false);
-      AppSnackBar.error(context, 'Failed to sign out. Try again.');
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    final user = FirebaseAuth.instance.currentUser;
-    final name = user?.displayName ?? '';
-    final email = user?.email ?? '';
-
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 24, 20, 24),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              Text(
-                'Me',
-                style: GoogleFonts.inter(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.deepDarkBrown,
-                ),
-              ),
-              const SizedBox(height: 20),
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppColors.surfaceWhite,
-                  borderRadius: BorderRadius.circular(14),
-                  border: Border.all(
-                    color: AppColors.muted.withValues(alpha: 0.08),
-                  ),
-                ),
-                child: Row(
-                  children: [
-                    Container(
-                      width: 44,
-                      height: 44,
-                      decoration: BoxDecoration(
-                        shape: BoxShape.circle,
-                        color: AppColors.primaryBrown
-                            .withValues(alpha: 0.08),
-                      ),
-                      child: Icon(
-                        Icons.person_outline_rounded,
-                        size: 22,
-                        color: AppColors.primaryBrown,
-                      ),
-                    ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            name.isNotEmpty ? name : 'Signed in',
-                            maxLines: 1,
-                            overflow: TextOverflow.ellipsis,
-                            style: GoogleFonts.inter(
-                              fontSize: 15,
-                              fontWeight: FontWeight.w600,
-                              color: AppColors.deepDarkBrown,
-                            ),
-                          ),
-                          if (email.isNotEmpty) ...[
-                            const SizedBox(height: 2),
-                            Text(
-                              email,
-                              maxLines: 1,
-                              overflow: TextOverflow.ellipsis,
-                              style: GoogleFonts.inter(
-                                fontSize: 12,
-                                fontWeight: FontWeight.w400,
-                                color: AppColors.muted,
-                              ),
-                            ),
-                          ],
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const Spacer(),
-              _SignOutButton(
-                signingOut: _signingOut,
-                onTap: _signOut,
-              ),
-              const SizedBox(height: 8),
-              Center(
-                child: Text(
-                  'Temporary — signs you out so you can switch roles.',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.muted.withValues(alpha: 0.7),
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _SignOutButton extends StatefulWidget {
-  final bool signingOut;
-  final VoidCallback onTap;
-
-  const _SignOutButton({
-    required this.signingOut,
-    required this.onTap,
-  });
-
-  @override
-  State<_SignOutButton> createState() => _SignOutButtonState();
-}
-
-class _SignOutButtonState extends State<_SignOutButton> {
-  double _scale = 1.0;
-
-  @override
-  Widget build(BuildContext context) {
-    final disabled = widget.signingOut;
-
-    return Listener(
-      onPointerDown: (_) {
-        if (!disabled) setState(() => _scale = 0.97);
-      },
-      onPointerUp: (_) => setState(() => _scale = 1.0),
-      onPointerCancel: (_) => setState(() => _scale = 1.0),
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: disabled ? null : widget.onTap,
-        child: AnimatedScale(
-          scale: _scale,
-          duration: const Duration(milliseconds: 120),
-          curve: Curves.easeOut,
-          child: Container(
-            height: 52,
-            decoration: BoxDecoration(
-              color: AppColors.errorRed.withValues(
-                alpha: disabled ? 0.5 : 1.0,
-              ),
-              borderRadius: BorderRadius.circular(14),
-            ),
-            child: Center(
-              child: disabled
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        strokeWidth: 2,
-                        color: Colors.white,
-                      ),
-                    )
-                  : Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(
-                          Icons.logout_rounded,
-                          size: 18,
-                          color: Colors.white,
-                        ),
-                        const SizedBox(width: 8),
-                        Text(
-                          'Sign Out',
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
-                      ],
-                    ),
-            ),
-          ),
-        ),
-      ),
-    );
-  }
-}
-
-class _PlaceholderTab extends StatelessWidget {
-  final String title;
-  final IconData icon;
-
-  const _PlaceholderTab({
-    required this.title,
-    required this.icon,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      body: Center(
-        child: Column(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: [
-            Icon(
-              icon,
-              size: 48,
-              color: AppColors.muted.withValues(alpha: 0.4),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              style: GoogleFonts.inter(
-                fontSize: 18,
-                fontWeight: FontWeight.w600,
-                color: AppColors.muted,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              "Coming Soon",
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.w400,
-                color: AppColors.muted.withValues(alpha: 0.6),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}

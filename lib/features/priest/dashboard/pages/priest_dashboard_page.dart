@@ -30,6 +30,7 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 
@@ -70,6 +71,23 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     WidgetsBinding.instance.addObserver(this);
     _attachDocStream();
     _attachPendingRequestStream();
+
+    // Drain any pending notification-tap route. A tap from terminated
+    // state stashes the route during NotificationService.init(); the
+    // dashboard is the first screen mounted for an approved priest, so
+    // this is the earliest place GoRouter is guaranteed to be ready.
+    //
+    // Skip push if the route equals "/priest" — we're already on it,
+    // and pushing again would stack a duplicate dashboard. The session-
+    // request push uses "/priest" specifically so the dashboard's own
+    // pending-request stream picks it up with the full SessionModel.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final route = NotificationService.pendingRoute;
+      NotificationService.pendingRoute = null;
+      if (route == null || route.isEmpty || route == '/priest') return;
+      if (!mounted) return;
+      context.push(route);
+    });
   }
 
   @override
@@ -559,6 +577,11 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
           icon: Icons.person_outline,
           title: 'My Profile',
           onTap: () => context.push('/priest/profile'),
+        ),
+        _QuickAction(
+          icon: Icons.history_rounded,
+          title: 'Session History',
+          onTap: () => context.push('/priest/session-history'),
         ),
         _QuickAction(
           icon: Icons.menu_book_outlined,

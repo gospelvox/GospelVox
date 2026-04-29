@@ -1,6 +1,7 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
@@ -119,12 +120,83 @@ export const endSession = onCall(
     });
 
     const finalUserSnap = await db.doc(`users/${session.userId}`).get();
+    const finalUserBalance =
+      Number(finalUserSnap.data()?.coinBalance ?? 0);
+
+    // Drop in-app inbox entries for both sides BEFORE pushing. The
+    // notification doc is the source of truth — push is best-effort
+    // delivery, but the inbox needs the record either way so users
+    // can review past sessions from the notifications page.
+    //
+    // Title is "Session Complete" (vs "Session Ended" used by the
+    // watchdog for abnormal termination) — the title alone tells the
+    // user whether the session ended cleanly or was timed out.
+    const notifBatch = db.batch();
+
+    const userNotifRef = db.collection("notifications").doc();
+    notifBatch.set(userNotifRef, {
+      userId: session.userId,
+      type: "session_ended",
+      title: "Session Complete",
+      body:
+        `Your ${session.type} session lasted ${finalDuration} min. ` +
+        `${finalTotalCharged} coins used. ` +
+        `Wallet balance: ${finalUserBalance} coins.`,
+      sessionId: sessionId,
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const priestNotifRef = db.collection("notifications").doc();
+    notifBatch.set(priestNotifRef, {
+      userId: session.priestId,
+      type: "session_ended",
+      title: "Session Complete",
+      body:
+        `Your ${session.type} session lasted ${finalDuration} min. ` +
+        `₹${finalPriestEarnings} added to your wallet.`,
+      sessionId: sessionId,
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await notifBatch.commit();
+
+    // Push both sides so each party knows the session is settled —
+    // matters most when one side ended the call from a different
+    // surface and the other is still on the in-call screen.
+    await sendPushNotification({
+      userId: session.userId,
+      title: "Session Complete",
+      body:
+        `Your ${session.type} session lasted ${finalDuration} min. ` +
+        `${finalTotalCharged} coins used. ` +
+        `Balance: ${finalUserBalance} coins.`,
+      data: {
+        type: "session_ended",
+        sessionId: sessionId,
+        route: "/user",
+      },
+    });
+
+    await sendPushNotification({
+      userId: session.priestId,
+      title: "Session Complete",
+      body:
+        `Your ${session.type} session lasted ${finalDuration} min. ` +
+        `₹${finalPriestEarnings} added to your wallet.`,
+      data: {
+        type: "session_ended",
+        sessionId: sessionId,
+        route: "/priest",
+      },
+    });
 
     return {
       durationMinutes: finalDuration,
       totalCharged: finalTotalCharged,
       priestEarnings: finalPriestEarnings,
-      newBalance: Number(finalUserSnap.data()?.coinBalance ?? 0),
+      newBalance: finalUserBalance,
     };
   }
 );

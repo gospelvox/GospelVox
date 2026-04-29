@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendNotification = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.sendNotification = exports.notifyBibleSessionCancellation = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -42,6 +42,9 @@ Object.defineProperty(exports, "requestWithdrawal", { enumerable: true, get: fun
 // ═══ Users ═══
 var onUserCreated_1 = require("./users/onUserCreated");
 Object.defineProperty(exports, "onUserCreated", { enumerable: true, get: function () { return onUserCreated_1.onUserCreated; } });
+// ═══ Bible sessions ═══
+var notifyBibleSessionCancellation_1 = require("./bible/notifyBibleSessionCancellation");
+Object.defineProperty(exports, "notifyBibleSessionCancellation", { enumerable: true, get: function () { return notifyBibleSessionCancellation_1.notifyBibleSessionCancellation; } });
 // ═══ Notifications ═══
 var sendNotification_1 = require("./notifications/sendNotification");
 Object.defineProperty(exports, "sendNotification", { enumerable: true, get: function () { return sendNotification_1.sendNotification; } });

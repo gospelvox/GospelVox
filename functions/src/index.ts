@@ -29,5 +29,8 @@ export {requestWithdrawal} from "./priest/requestWithdrawal";
 // ═══ Users ═══
 export {onUserCreated} from "./users/onUserCreated";
 
+// ═══ Bible sessions ═══
+export {notifyBibleSessionCancellation} from "./bible/notifyBibleSessionCancellation";
+
 // ═══ Notifications ═══
 export {sendNotification} from "./notifications/sendNotification";

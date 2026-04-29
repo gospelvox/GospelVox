@@ -7,6 +7,8 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 import 'package:sign_in_with_apple/sign_in_with_apple.dart';
 
+import 'package:gospel_vox/core/services/notification_service.dart';
+
 // 15s for sign-in flows because OAuth provider round-trips can be slow on
 // 3G networks (common in India). 10s for Firestore reads/writes since those
 // hit our own backend with shorter latency.
@@ -100,6 +102,11 @@ class AuthRepository {
     required String photoUrl,
     required String role,
   }) async {
+    // set(merge:true) so we don't clobber an fcmTokens array that
+    // NotificationService may have written between sign-in and
+    // role-pick. Functionally equivalent to the previous unmerged
+    // set on the first-ever sign-in (the doc didn't exist anyway),
+    // but lets the FCM token survive the race.
     await FirebaseFirestore.instance.collection('users').doc(uid).set({
       'uid': uid,
       'displayName': displayName,
@@ -109,10 +116,16 @@ class AuthRepository {
       'createdAt': FieldValue.serverTimestamp(),
       'coinBalance': 0,
       'isOnline': false,
-    });
+    }, SetOptions(merge: true));
   }
 
   Future<void> signOut() async {
+    // Remove the FCM token BEFORE signing out so we can still write
+    // to users/{uid} (rules require auth) and so a freshly-signed-in
+    // account on the same device doesn't inherit the previous user's
+    // pushes during the brief window between signOut and the next
+    // token refresh.
+    await NotificationService().removeToken();
     await _googleSignIn.signOut();
     await _auth.signOut();
   }
