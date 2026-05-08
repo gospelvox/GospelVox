@@ -63,6 +63,14 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   // moment onUserJoined fires (or on close / endCall).
   Timer? _remoteJoinHintTimer;
   Timer? _remoteJoinFailTimer;
+  // 30-second cap on the VoiceCallConnecting state. Without this,
+  // an Agora init / token-fetch / joinChannel hang (network drop
+  // mid-handshake) would leave the user staring at the spinner
+  // indefinitely with no exit. After the timer fires we tear the
+  // engine down and surface VoiceCallError so the view's error
+  // branch can offer a back button. Cancelled the moment we
+  // transition to VoiceCallActive on the first session snapshot.
+  Timer? _connectingTimeout;
   final Stopwatch _stopwatch = Stopwatch();
 
   int _lastKnownBalance = 0;
@@ -87,6 +95,23 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     try {
       if (isClosed) return;
       emit(const VoiceCallConnecting());
+
+      // Arm the connecting-timeout BEFORE any network call. If
+      // anything between here and the first VoiceCallActive snapshot
+      // hangs (Agora init, getAgoraToken CF, joinChannel, Firestore
+      // listener cold start), the timer fires and surfaces an error
+      // so the user can back out instead of being stuck staring at
+      // a "Connecting…" spinner.
+      _connectingTimeout = Timer(const Duration(seconds: 30), () {
+        if (isClosed) return;
+        if (state is! VoiceCallConnecting) return;
+        debugPrint('[VoiceCallCubit] Connecting timed out after 30s');
+        _agoraService.dispose();
+        CallKeepAliveService.stop();
+        emit(const VoiceCallError(
+          'Connection took too long. Please try again.',
+        ));
+      });
 
       await _agoraService.init();
       _wireAgoraCallbacks();
@@ -128,6 +153,11 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       );
     } catch (e, stack) {
       if (isClosed) return;
+      // Cancel the connecting-timeout on the synchronous-error path
+      // so it can't fire after we've already emitted VoiceCallError
+      // (which would clobber the more-specific message we set below).
+      _connectingTimeout?.cancel();
+      _connectingTimeout = null;
       // Surface the real cause in logcat. The on-screen text stays
       // user-friendly, but a developer reading `flutter logs` should
       // see exactly which CF code / Agora error / network failure
@@ -180,6 +210,10 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     }
 
     // First active snapshot — seed and start side-specific timers.
+    // Cancel the connecting-timeout: we successfully made it past
+    // every potentially-hanging step.
+    _connectingTimeout?.cancel();
+    _connectingTimeout = null;
     _lastKnownBalance = session.userBalance;
     if (!_timersStarted) {
       _timersStarted = true;
@@ -545,6 +579,8 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     _billingTimer = null;
     _disconnectTimer?.cancel();
     _disconnectTimer = null;
+    _connectingTimeout?.cancel();
+    _connectingTimeout = null;
     _cancelRemoteJoinTimers();
   }
 

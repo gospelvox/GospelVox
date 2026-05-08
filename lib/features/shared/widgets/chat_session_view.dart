@@ -29,12 +29,12 @@
 
 import 'dart:async';
 
-import 'package:connectivity_plus/connectivity_plus.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/services/connectivity_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
@@ -89,50 +89,93 @@ class _ChatSessionViewState extends State<ChatSessionView> {
   // Live connectivity state. Drives the offline pill in the top
   // bar so the user knows their messages aren't going through
   // before the watchdog quietly ends the session in the background.
-  StreamSubscription<List<ConnectivityResult>>? _connSub;
+  // Reuses the global ConnectivityService singleton — opening a
+  // second Connectivity().onConnectivityChanged subscription would
+  // duplicate the platform-channel listener (per the singleton's
+  // own docstring).
+  StreamSubscription<bool>? _connSub;
   bool _isOffline = false;
+
+  // True when an inbound message arrived while the user was scrolled
+  // up reading older content. Drives the "↓ New message" pill so we
+  // never yank them away from what they're reading. Cleared the
+  // moment they manually scroll back to the bottom.
+  bool _showNewMessagePill = false;
 
   @override
   void initState() {
     super.initState();
     _setupConnectivity();
+    _scrollController.addListener(_handleScroll);
   }
 
-  // Initialise + subscribe to connectivity changes. Both the
-  // initial check and the stream go through the same _apply()
-  // method so we don't have to reason about ordering.
-  Future<void> _setupConnectivity() async {
-    final conn = Connectivity();
-    try {
-      final initial = await conn.checkConnectivity();
-      if (mounted) _applyConnectivity(initial);
-    } catch (_) {
-      // Best-effort — if the platform check fails we just leave
-      // _isOffline at false. The chat still works; we just don't
-      // surface an offline pill until the stream emits.
-    }
-    _connSub = conn.onConnectivityChanged.listen(_applyConnectivity);
-  }
-
-  void _applyConnectivity(List<ConnectivityResult> results) {
-    if (!mounted) return;
-    // ConnectivityResult.none is the only definitive "no network"
-    // signal. We treat the empty-list edge as "unknown / online"
-    // so a flaky platform call can't false-positive.
-    final offline = results.isNotEmpty &&
-        results.every((r) => r == ConnectivityResult.none);
-    if (offline != _isOffline) {
-      setState(() => _isOffline = offline);
-    }
+  void _setupConnectivity() {
+    final svc = ConnectivityService();
+    _isOffline = !svc.isOnline;
+    _connSub = svc.onChanged.listen((isOnline) {
+      if (!mounted) return;
+      final offline = !isOnline;
+      if (offline != _isOffline) {
+        setState(() => _isOffline = offline);
+      }
+    });
   }
 
   @override
   void dispose() {
     _connSub?.cancel();
+    _scrollController.removeListener(_handleScroll);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
+  }
+
+  // 100px window that counts as "at the bottom". Picked to forgive a
+  // small accidental swipe-up from the input region without us
+  // suppressing the auto-scroll the user actually wants.
+  bool _isAtBottom({double threshold = 100}) {
+    if (!_scrollController.hasClients) return true;
+    final pos = _scrollController.position;
+    return pos.maxScrollExtent - pos.pixels <= threshold;
+  }
+
+  // Fires on manual scroll. Once the user reaches the bottom on
+  // their own, we know they've caught up — drop the pill.
+  void _handleScroll() {
+    if (!mounted) return;
+    if (!_showNewMessagePill) return;
+    if (_isAtBottom()) {
+      setState(() => _showNewMessagePill = false);
+    }
+  }
+
+  // Tapping the pill: hop to bottom and dismiss. Also called when
+  // sending an outbound message while the user happens to be
+  // scrolled up — the act of sending implies they want to follow.
+  void _scrollToBottom() {
+    HapticFeedback.lightImpact();
+    if (!_scrollController.hasClients) return;
+    _scrollController.animateTo(
+      _scrollController.position.maxScrollExtent,
+      duration: const Duration(milliseconds: 280),
+      curve: Curves.easeOutCubic,
+    );
+    if (_showNewMessagePill) {
+      setState(() => _showNewMessagePill = false);
+    }
+  }
+
+  // Hide the empty-chat illustration when there's anything else to
+  // show in its place — the idle warning OR the low-balance card.
+  // Billing starts the moment the priest accepts, so a user with
+  // zero messages but low balance still needs to see the recharge
+  // nudge; otherwise the session just cuts off mid-thought.
+  bool _shouldShowEmpty(ChatSessionActive state) {
+    if (state.messages.isNotEmpty) return false;
+    if (state.showIdleWarning) return false;
+    if (widget.isUserSide && state.isLowBalance) return false;
+    return true;
   }
 
   // Sender name comes from the denormalised session field — keeps
@@ -231,25 +274,51 @@ class _ChatSessionViewState extends State<ChatSessionView> {
             onEndTap: _showEndConfirmation,
           ),
           Expanded(
-            child: state.messages.isEmpty && !state.showIdleWarning
-                ? const _EmptyChat()
-                : _MessageList(
-                    controller: _scrollController,
-                    messages: state.messages,
-                    currentUid: widget.currentUid,
-                    isUserSide: widget.isUserSide,
-                    showLowBalanceCard:
-                        widget.isUserSide && state.isLowBalance,
-                    showIdleWarning: state.showIdleWarning,
-                    remainingBalance: state.remainingBalance,
-                    onAddCoins: _openRecharge,
-                    onReact: (msgId, emoji) =>
-                        context.read<ChatSessionCubit>().toggleReaction(
-                              messageId: msgId,
-                              userId: widget.currentUid,
-                              emoji: emoji,
-                            ),
+            child: Stack(
+              children: [
+                _shouldShowEmpty(state)
+                    ? const _EmptyChat()
+                    : _MessageList(
+                        controller: _scrollController,
+                        messages: state.messages,
+                        currentUid: widget.currentUid,
+                        currentSessionId: widget.sessionId,
+                        pastMeta: state.pastMeta,
+                        isUserSide: widget.isUserSide,
+                        showLowBalanceCard:
+                            widget.isUserSide && state.isLowBalance,
+                        showIdleWarning: state.showIdleWarning,
+                        remainingBalance: state.remainingBalance,
+                        onAddCoins: _openRecharge,
+                        onReact: (msgId, emoji) =>
+                            context.read<ChatSessionCubit>().toggleReaction(
+                                  messageId: msgId,
+                                  userId: widget.currentUid,
+                                  emoji: emoji,
+                                ),
+                      ),
+                // "↓ New message" pill — only meaningful while the
+                // user is scrolled up. IgnorePointer when hidden so
+                // it never eats taps over the message list. Pure
+                // opacity fade keeps the transition cheap.
+                Positioned(
+                  left: 0,
+                  right: 0,
+                  bottom: 12,
+                  child: IgnorePointer(
+                    ignoring: !_showNewMessagePill,
+                    child: AnimatedOpacity(
+                      duration: const Duration(milliseconds: 180),
+                      curve: Curves.easeOutCubic,
+                      opacity: _showNewMessagePill ? 1.0 : 0.0,
+                      child: Center(
+                        child: _NewMessagePill(onTap: _scrollToBottom),
+                      ),
+                    ),
                   ),
+                ),
+              ],
+            ),
           ),
           _TypingFooter(
             otherName: otherName,
@@ -271,6 +340,13 @@ class _ChatSessionViewState extends State<ChatSessionView> {
   void _maybeAutoScroll(List<ChatMessage> messages) {
     if (messages.isEmpty) {
       _lastMessageId = null;
+      if (_showNewMessagePill) {
+        // Defer the setState — we're inside a build. Empty list
+        // means there's nothing to be "behind on" anymore.
+        WidgetsBinding.instance.addPostFrameCallback((_) {
+          if (mounted) setState(() => _showNewMessagePill = false);
+        });
+      }
       return;
     }
     final latestId = messages.last.id;
@@ -289,11 +365,27 @@ class _ChatSessionViewState extends State<ChatSessionView> {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!_scrollController.hasClients) return;
-      _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
-        duration: const Duration(milliseconds: 240),
-        curve: Curves.easeOutCubic,
-      );
+
+      // Auto-follow only when (a) the message is ours — sending
+      // implies "show me what I just said" — or (b) we were
+      // already near the bottom. If the user is scrolled up
+      // reading older content, surface the pill instead so we
+      // never yank them away from what they're reading.
+      final atBottom = _isAtBottom();
+      if (wasOurs || atBottom) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+        if (_showNewMessagePill) {
+          setState(() => _showNewMessagePill = false);
+        }
+      } else {
+        if (!_showNewMessagePill) {
+          setState(() => _showNewMessagePill = true);
+        }
+      }
     });
   }
 
@@ -660,10 +752,23 @@ class _EndButtonState extends State<_EndButton> {
 //   [...messages] [idle warning] [low-balance card]
 // Low-balance sits closest to the input because it's the more
 // urgent of the two (it can stop the session entirely).
+//
+// Past-session continuity:
+//   • A divider row "── Session · May 1 · 15 min ──" is injected
+//     before the FIRST bubble of each past sessionId. No divider
+//     for the current session — the conversation flows naturally
+//     from the most recent past divider into the live bubbles
+//     with no separator.
+//   • Past bubbles render exactly the same as live ones (no
+//     dimming, no smaller text — confirmed). The only behavioral
+//     difference is long-press reactions are disabled on past
+//     bubbles, since reactions are a current-session interaction.
 class _MessageList extends StatelessWidget {
   final ScrollController controller;
   final List<ChatMessage> messages;
   final String currentUid;
+  final String currentSessionId;
+  final Map<String, PastSessionMeta> pastMeta;
   final bool isUserSide;
   final bool showLowBalanceCard;
   final bool showIdleWarning;
@@ -675,6 +780,8 @@ class _MessageList extends StatelessWidget {
     required this.controller,
     required this.messages,
     required this.currentUid,
+    required this.currentSessionId,
+    required this.pastMeta,
     required this.isUserSide,
     required this.showLowBalanceCard,
     required this.showIdleWarning,
@@ -685,66 +792,106 @@ class _MessageList extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Index math: messages occupy [0, messages.length).
-    // Then the idle row (if any), then the low-balance card (if any).
-    final messageCount = messages.length;
-    final idleIndex = showIdleWarning ? messageCount : -1;
-    final lowBalanceIndex = showLowBalanceCard
-        ? messageCount + (showIdleWarning ? 1 : 0)
-        : -1;
-    final itemCount = messageCount +
-        (showIdleWarning ? 1 : 0) +
-        (showLowBalanceCard ? 1 : 0);
+    // Pre-build the row sequence once. Divider rows are inserted at
+    // the start of each past-session group; the rest is messages
+    // + (optional) idle warning + (optional) low-balance card.
+    final rows = <_Row>[];
+    String? prevSessionId;
+    for (var i = 0; i < messages.length; i++) {
+      final msg = messages[i];
+      final sid = msg.sessionId;
+      final isPast = sid.isNotEmpty && sid != currentSessionId;
+      // Insert a divider whenever we step into a *past* session
+      // group — never for the current session (live messages flow
+      // straight off the last past divider with no break).
+      if (isPast && sid != prevSessionId) {
+        final meta = pastMeta[sid];
+        if (meta != null) {
+          rows.add(_DividerRow(
+            date: meta.date,
+            durationMinutes: meta.durationMinutes,
+          ));
+        }
+      }
+      rows.add(_BubbleRow(
+        message: msg,
+        isMe: msg.senderId == currentUid,
+        // A free priest message is read-only too (long-press blocked,
+        // reactions disabled). isPast already covers the past-session
+        // case; OR with the free-message kind so a single flag drives
+        // the inert-bubble rules in the renderer.
+        isPast: isPast || msg.isPriestMessage,
+        // Burst grouping is per-bubble within a session — never
+        // collapse a bubble's avatar gap into a different session's
+        // bubble even if the timestamps happen to be within 30s.
+        // Free messages also break bursts: a session bubble + a
+        // free message that happen to fall <30s apart shouldn't
+        // share a burst because they belong to different contexts.
+        isBurstContinuation: i > 0 &&
+            messages[i - 1].sessionId == sid &&
+            messages[i - 1].kind == msg.kind &&
+            _isBurstContinuationByMessages(messages[i - 1], msg),
+        showTimestamp: i == 0 ||
+            messages[i - 1].sessionId != sid ||
+            messages[i - 1].kind != msg.kind ||
+            _shouldShowTimestamp(messages[i - 1], msg),
+      ));
+      prevSessionId = sid;
+    }
+    if (showIdleWarning) {
+      rows.add(const _IdleRow());
+    }
+    if (showLowBalanceCard) {
+      rows.add(const _LowBalanceRow());
+    }
 
     return ListView.builder(
       controller: controller,
       physics: const BouncingScrollPhysics(),
       padding: const EdgeInsets.fromLTRB(16, 16, 16, 8),
-      itemCount: itemCount,
+      itemCount: rows.length,
       itemBuilder: (_, index) {
-        if (index == lowBalanceIndex) {
+        final row = rows[index];
+        if (row is _DividerRow) {
+          return _PastSessionDivider(
+            date: row.date,
+            durationMinutes: row.durationMinutes,
+          );
+        }
+        if (row is _IdleRow) {
+          return _IdleWarningMessage(isUserSide: isUserSide);
+        }
+        if (row is _LowBalanceRow) {
           return _LowBalanceMessage(
             balance: remainingBalance,
             onAddCoins: onAddCoins,
           );
         }
-        if (index == idleIndex) {
-          return _IdleWarningMessage(isUserSide: isUserSide);
-        }
-
-        final msg = messages[index];
-        final isMe = msg.senderId == currentUid;
-        final showTimestamp = _shouldShowTimestamp(index, messages);
-        // Burst grouping: if previous message was from the same
-        // sender within 30s, hide the small timestamp & tighten
-        // the gap. The first bubble in a burst gets full spacing.
-        final previousFromSameSender =
-            _isBurstContinuation(index, messages);
-
+        final bubble = row as _BubbleRow;
         return _ChatBubble(
-          key: ValueKey(msg.id),
-          message: msg,
-          isMe: isMe,
-          showTimestamp: showTimestamp,
-          isBurstContinuation: previousFromSameSender,
+          key: ValueKey(bubble.message.id),
+          message: bubble.message,
+          isMe: bubble.isMe,
+          isPast: bubble.isPast,
+          showTimestamp: bubble.showTimestamp,
+          isBurstContinuation: bubble.isBurstContinuation,
           onReact: onReact,
         );
       },
     );
   }
 
-  bool _shouldShowTimestamp(int index, List<ChatMessage> messages) {
-    if (index == 0) return true;
-    final prev = messages[index - 1].createdAt;
-    final curr = messages[index].createdAt;
-    if (prev == null || curr == null) return false;
-    return curr.difference(prev).inMinutes >= 5;
+  static bool _shouldShowTimestamp(ChatMessage prev, ChatMessage curr) {
+    final pa = prev.createdAt;
+    final ca = curr.createdAt;
+    if (pa == null || ca == null) return false;
+    return ca.difference(pa).inMinutes >= 5;
   }
 
-  bool _isBurstContinuation(int index, List<ChatMessage> messages) {
-    if (index == 0) return false;
-    final prev = messages[index - 1];
-    final curr = messages[index];
+  static bool _isBurstContinuationByMessages(
+    ChatMessage prev,
+    ChatMessage curr,
+  ) {
     if (prev.senderId != curr.senderId) return false;
     final pa = prev.createdAt;
     final ca = curr.createdAt;
@@ -753,11 +900,123 @@ class _MessageList extends StatelessWidget {
   }
 }
 
+// Internal row types — keeps the itemBuilder branchless and lets us
+// build the row sequence once per state emission instead of running
+// the divider math on every itemBuilder invocation.
+sealed class _Row {
+  const _Row();
+}
+
+class _DividerRow extends _Row {
+  final DateTime date;
+  final int durationMinutes;
+  const _DividerRow({required this.date, required this.durationMinutes});
+}
+
+class _IdleRow extends _Row {
+  const _IdleRow();
+}
+
+class _LowBalanceRow extends _Row {
+  const _LowBalanceRow();
+}
+
+class _BubbleRow extends _Row {
+  final ChatMessage message;
+  final bool isMe;
+  final bool isPast;
+  final bool showTimestamp;
+  final bool isBurstContinuation;
+
+  const _BubbleRow({
+    required this.message,
+    required this.isMe,
+    required this.isPast,
+    required this.showTimestamp,
+    required this.isBurstContinuation,
+  });
+}
+
+// Past-session divider rendered inline in the chat list. Same shape
+// as the one in chat_history_page so users see a consistent
+// "Session · date · duration" boundary on either surface. We label
+// the divider with date + duration; the type is implicit (chat,
+// because past_meta is populated only for completed chat sessions).
+class _PastSessionDivider extends StatelessWidget {
+  final DateTime date;
+  final int durationMinutes;
+
+  const _PastSessionDivider({
+    required this.date,
+    required this.durationMinutes,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final label = durationMinutes > 0
+        ? 'Session · ${_formatDividerDate(date)} · $durationMinutes min'
+        : 'Session · ${_formatDividerDate(date)}';
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 18),
+      child: Row(
+        children: [
+          Expanded(
+            child: Container(
+              height: 0.5,
+              color: AppColors.muted.withValues(alpha: 0.18),
+            ),
+          ),
+          Padding(
+            padding: const EdgeInsets.symmetric(horizontal: 12),
+            child: Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.3,
+                color: AppColors.muted.withValues(alpha: 0.75),
+              ),
+            ),
+          ),
+          Expanded(
+            child: Container(
+              height: 0.5,
+              color: AppColors.muted.withValues(alpha: 0.18),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+String _formatDividerDate(DateTime date) {
+  final now = DateTime.now();
+  final today = DateTime(now.year, now.month, now.day);
+  final that = DateTime(date.year, date.month, date.day);
+  final diff = today.difference(that).inDays;
+  if (diff == 0) return 'Today';
+  if (diff == 1) return 'Yesterday';
+  const months = [
+    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  if (diff < 365) return '${months[date.month - 1]} ${date.day}';
+  return '${months[date.month - 1]} ${date.day}, ${date.year}';
+}
+
 // ─── Chat bubble ─────────────────────────────────────────
 
 class _ChatBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isMe;
+  // True when the bubble belongs to a previously-completed session
+  // surfaced via the past-messages prefetch. Past bubbles render
+  // identically to live ones; the only behavioral difference is
+  // long-press reactions are disabled (reactions are a current-
+  // session interaction).
+  final bool isPast;
   final bool showTimestamp;
   final bool isBurstContinuation;
   final void Function(String messageId, String emoji) onReact;
@@ -766,6 +1025,7 @@ class _ChatBubble extends StatelessWidget {
     super.key,
     required this.message,
     required this.isMe,
+    required this.isPast,
     required this.showTimestamp,
     required this.isBurstContinuation,
     required this.onReact,
@@ -792,6 +1052,7 @@ class _ChatBubble extends StatelessWidget {
       child: _BubbleBody(
         message: message,
         isMe: isMe,
+        isPast: isPast,
         showTimestamp: showTimestamp,
         isBurstContinuation: isBurstContinuation,
         onReact: onReact,
@@ -803,6 +1064,7 @@ class _ChatBubble extends StatelessWidget {
 class _BubbleBody extends StatelessWidget {
   final ChatMessage message;
   final bool isMe;
+  final bool isPast;
   final bool showTimestamp;
   final bool isBurstContinuation;
   final void Function(String messageId, String emoji) onReact;
@@ -810,6 +1072,7 @@ class _BubbleBody extends StatelessWidget {
   const _BubbleBody({
     required this.message,
     required this.isMe,
+    required this.isPast,
     required this.showTimestamp,
     required this.isBurstContinuation,
     required this.onReact,
@@ -844,9 +1107,45 @@ class _BubbleBody extends StatelessWidget {
                 ),
               ),
             ),
+          // Subtle "Free message" tag above the FIRST bubble of a
+          // free-message burst, so users (and priest, for symmetry)
+          // can tell at a glance which messages came outside of a
+          // billable session. Drops below the timestamp row so the
+          // visual hierarchy is timestamp → tag → bubble.
+          if (message.isPriestMessage && !isBurstContinuation)
+            Padding(
+              padding: EdgeInsets.only(
+                bottom: 4,
+                left: isMe ? 0 : 4,
+                right: isMe ? 4 : 0,
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.auto_awesome_rounded,
+                    size: 10,
+                    color: AppColors.amberGold.withValues(alpha: 0.85),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    'Free message',
+                    style: GoogleFonts.inter(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: 0.2,
+                      color: AppColors.amberGold.withValues(alpha: 0.85),
+                    ),
+                  ),
+                ],
+              ),
+            ),
           GestureDetector(
             behavior: HitTestBehavior.opaque,
-            onLongPress: message.isPending
+            // No reactions on past bubbles — they belong to a closed
+            // session, so opening the reaction picker would let the
+            // user write to a message they no longer participate in.
+            onLongPress: (message.isPending || isPast)
                 ? null
                 : () => _openReactionPicker(context),
             child: Container(
@@ -1433,7 +1732,7 @@ class _EmptyChat extends StatelessWidget {
           ),
           const SizedBox(height: 16),
           Text(
-            'Start the conversation',
+            'Your session has started',
             style: GoogleFonts.inter(
               fontSize: 15,
               fontWeight: FontWeight.w500,
@@ -1442,7 +1741,7 @@ class _EmptyChat extends StatelessWidget {
           ),
           const SizedBox(height: 6),
           Text(
-            'Say hello to begin your session',
+            'Take your time',
             style: GoogleFonts.inter(
               fontSize: 13,
               fontWeight: FontWeight.w400,
@@ -1843,6 +2142,58 @@ class _CenteredLoader extends StatelessWidget {
       child: CircularProgressIndicator(
         color: AppColors.primaryBrown,
         strokeWidth: 2.5,
+      ),
+    );
+  }
+}
+
+// ─── "↓ New message" pill ────────────────────────────────
+//
+// Floats over the bottom-center of the message list when an inbound
+// message arrives while the user is scrolled up reading older
+// content. Tapping hops them to the bottom and dismisses the pill.
+
+class _NewMessagePill extends StatelessWidget {
+  final VoidCallback onTap;
+  const _NewMessagePill({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.primaryBrown,
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: AppColors.primaryBrown.withValues(alpha: 0.25),
+              blurRadius: 12,
+              offset: const Offset(0, 4),
+            ),
+          ],
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Icon(
+              Icons.arrow_downward_rounded,
+              size: 14,
+              color: Colors.white,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'New message',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: Colors.white,
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }

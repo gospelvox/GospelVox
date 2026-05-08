@@ -70,6 +70,14 @@ class SessionModel {
   final double? userRating;
   final String? userFeedback;
 
+  // Priest-initiated follow-up nudge state. Written exclusively by
+  // the sendFollowUp CF — never by the client. `followUpSent` gates
+  // the "Send Follow-up" button on the session detail page so each
+  // completed session can be nudged at most once.
+  final bool followUpSent;
+  final int? followUpTemplate;
+  final DateTime? followUpSentAt;
+
   const SessionModel({
     required this.id,
     required this.userId,
@@ -98,6 +106,9 @@ class SessionModel {
     required this.priestDenomination,
     this.userRating,
     this.userFeedback,
+    this.followUpSent = false,
+    this.followUpTemplate,
+    this.followUpSentAt,
   });
 
   // createdAt and friends can land as null during the write-then-read
@@ -139,6 +150,9 @@ class SessionModel {
       priestDenomination: data['priestDenomination'] as String? ?? '',
       userRating: (data['userRating'] as num?)?.toDouble(),
       userFeedback: data['userFeedback'] as String?,
+      followUpSent: data['followUpSent'] as bool? ?? false,
+      followUpTemplate: (data['followUpTemplate'] as num?)?.toInt(),
+      followUpSentAt: ts(data['followUpSentAt']),
     );
   }
 
@@ -158,10 +172,29 @@ class SessionModel {
       ratePerMinute > 0 ? userBalance ~/ ratePerMinute : 0;
 }
 
-// A single chat bubble. Lives under sessions/{id}/messages — we keep
-// it as a subcollection (not a single messages array on the session
-// doc) so we can paginate long chats and stream only new messages
-// without re-downloading the whole transcript on every snapshot.
+// A single chat bubble. Lives under sessions/{id}/messages for
+// session-bound bubbles, OR is synthesized from notifications/{id}
+// for priest-initiated free messages (kind == priestMessage). We
+// keep one model for both because the chat thread merges them by
+// timestamp and the view rendering is mostly the same — only the
+// interaction surface differs (no reactions / no replies on free
+// messages, plus a small badge to mark them).
+//
+// Why one model not two: a bubble is a bubble. Forking the type
+// hierarchy would force every renderer downstream to switch on
+// kind anyway, so we keep the discrimination on a single field.
+enum ChatMessageKind {
+  // Lives under sessions/{id}/messages, billed inside an active or
+  // completed paid session. This is the default and covers every
+  // bubble the chat surface has rendered prior to free messaging.
+  session,
+  // Priest-initiated free message written by sendPriestMessage CF
+  // to the notifications collection. Read-only in the chat thread —
+  // user can long-press to Report or tap the sticky CTA to Reply
+  // (which opens a paid session). Reactions are blocked.
+  priestMessage,
+}
+
 class ChatMessage {
   final String id;
   final String senderId;
@@ -179,6 +212,28 @@ class ChatMessage {
   // status icon under outbound bubbles.
   final bool isPending;
 
+  // The sessions/{id} doc this message lives under. Stamped by the
+  // chat cubit (never read from Firestore — the path implies it),
+  // so the live chat surface can tell past-session bubbles apart
+  // from current-session bubbles for divider placement and to
+  // disable interactions on history. Empty for free messages
+  // (kind == priestMessage) — they live outside any session.
+  final String sessionId;
+
+  // Distinguishes a session-bound bubble from a free message. The
+  // chat view uses this to (a) place the small "Free message" badge,
+  // (b) block long-press reactions, (c) suppress sender-side
+  // interactions like edit/delete that don't make sense on a one-way
+  // delivered message.
+  final ChatMessageKind kind;
+
+  // Only meaningful for `kind == priestMessage`. False when the user
+  // had muted the sending priest at the time of write — the CF still
+  // records the doc so the priest can see their own outbox, but the
+  // user-side chat + inbox filter on this so a muted message never
+  // surfaces to the recipient. Always true for session bubbles.
+  final bool delivered;
+
   const ChatMessage({
     required this.id,
     required this.senderId,
@@ -187,12 +242,16 @@ class ChatMessage {
     this.createdAt,
     this.reactions = const {},
     this.isPending = false,
+    this.sessionId = '',
+    this.kind = ChatMessageKind.session,
+    this.delivered = true,
   });
 
   factory ChatMessage.fromFirestore(
     String docId,
-    Map<String, dynamic> data,
-  ) {
+    Map<String, dynamic> data, {
+    String sessionId = '',
+  }) {
     final raw = data['reactions'];
     final reactions = raw is Map
         ? Map<String, String>.from(
@@ -211,6 +270,34 @@ class ChatMessage {
           ? (data['createdAt'] as Timestamp).toDate()
           : null,
       reactions: reactions,
+      sessionId: sessionId,
+    );
+  }
+
+  // Promotes a notifications/{id} doc of type 'priest_message' (or
+  // legacy 'follow_up') into a ChatMessage so the chat surface can
+  // render it inline alongside session bubbles. The notification
+  // doc carries priestId/priestName/body — we map them to
+  // senderId/senderName/text so the existing rendering code works
+  // unchanged.
+  factory ChatMessage.fromNotification(
+    String docId,
+    Map<String, dynamic> data,
+  ) {
+    return ChatMessage(
+      id: docId,
+      senderId: data['priestId'] as String? ?? '',
+      senderName: data['priestName'] as String? ?? '',
+      text: data['body'] as String? ?? '',
+      createdAt: data['createdAt'] is Timestamp
+          ? (data['createdAt'] as Timestamp).toDate()
+          : null,
+      kind: ChatMessageKind.priestMessage,
+      // Defaults to true for legacy follow_up docs that pre-date the
+      // delivered field — they were always delivered (mute didn't
+      // exist when they were written), so missing-field === true is
+      // the right interpretation.
+      delivered: data['delivered'] as bool? ?? true,
     );
   }
 
@@ -221,6 +308,7 @@ class ChatMessage {
     required String senderId,
     required String senderName,
     required String text,
+    required String sessionId,
   }) {
     return ChatMessage(
       id: tempId,
@@ -229,8 +317,65 @@ class ChatMessage {
       text: text,
       createdAt: DateTime.now(),
       isPending: true,
+      sessionId: sessionId,
     );
   }
+
+  // Optimistic bubble for a priest-initiated free message awaiting
+  // sendPriestMessage CF confirmation. Mirrors `pending` but flags
+  // the kind so the bubble renders with the free-message visual
+  // treatment (no reactions, "Free message" badge).
+  factory ChatMessage.pendingPriestMessage({
+    required String tempId,
+    required String priestId,
+    required String priestName,
+    required String text,
+  }) {
+    return ChatMessage(
+      id: tempId,
+      senderId: priestId,
+      senderName: priestName,
+      text: text,
+      createdAt: DateTime.now(),
+      isPending: true,
+      kind: ChatMessageKind.priestMessage,
+    );
+  }
+
+  // Returns a copy with `sessionId` stamped — used by the cubit when
+  // it merges the live messages stream (which doesn't carry the id
+  // through the snapshot) with prefetched past messages.
+  ChatMessage withSessionId(String sessionId) {
+    if (this.sessionId == sessionId) return this;
+    return ChatMessage(
+      id: id,
+      senderId: senderId,
+      senderName: senderName,
+      text: text,
+      createdAt: createdAt,
+      reactions: reactions,
+      isPending: isPending,
+      sessionId: sessionId,
+      kind: kind,
+      delivered: delivered,
+    );
+  }
+
+  bool get isPriestMessage => kind == ChatMessageKind.priestMessage;
+}
+
+// Per-session metadata for past-session dividers in the live chat.
+// Holds just what the divider widget needs — date and duration —
+// so the chat state can carry a tiny lookup map without dragging
+// the full SessionModel around.
+class PastSessionMeta {
+  final DateTime date;
+  final int durationMinutes;
+
+  const PastSessionMeta({
+    required this.date,
+    required this.durationMinutes,
+  });
 }
 
 // Return shape of the billingTick Cloud Function. `shouldEnd` is

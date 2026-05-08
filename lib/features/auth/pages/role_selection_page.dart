@@ -11,7 +11,6 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
 import 'package:gospel_vox/features/auth/widgets/admin_login_bottom_sheet.dart';
@@ -99,6 +98,7 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
 
   void _onContinue() {
     if (_selectedRole == null) return;
+    HapticFeedback.mediumImpact();
     context.push('/onboarding', extra: _selectedRole);
   }
 
@@ -124,25 +124,11 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
 
     return BlocProvider(
       create: (_) => sl<AuthCubit>(),
-      child: BlocConsumer<AuthCubit, AuthState>(
-        listener: (context, state) {
-          if (state is AuthAuthenticated) {
-            // context.go() replaces the entire route stack — any open
-            // bottom sheet is dismissed automatically. Do NOT call
-            // Navigator.pop() here; mixing pop + go in the same frame
-            // causes framework lifecycle assertion failures.
-            switch (state.role) {
-              case 'admin':
-                context.go('/admin');
-              case 'priest':
-                context.go('/priest');
-              default:
-                context.go('/user');
-            }
-          } else if (state is AuthError) {
-            AppSnackBar.error(context, state.message);
-          }
-        },
+      // No listener at this level — the only auth interaction reachable
+      // from this page is the admin login bottom sheet, which owns its
+      // own listener. Having two listeners on the same cubit was racing
+      // navigation calls on AuthAuthenticated.
+      child: BlocBuilder<AuthCubit, AuthState>(
         builder: (context, state) {
           return Stack(
             children: [
@@ -289,8 +275,9 @@ class _RoleCard extends StatelessWidget {
     final subtitle = isUser
         ? 'connect with a\nspiritual guide'
         : 'counsel and\nspiritually lead';
-    final iconData =
-        isUser ? Icons.person_outline : Icons.record_voice_over_outlined;
+    final imageAsset = isUser
+        ? 'assets/Generated_Image_April_30__2026_-_10_05AM-removebg-preview.png'
+        : 'assets/Generated_Image_April_30__2026_-_10_07AM-removebg-preview.png';
 
     return FadeTransition(
       opacity: fadeAnimation,
@@ -391,7 +378,7 @@ class _RoleCard extends StatelessWidget {
                           right: isUser ? null : 16,
                           width: iconPlaceholderWidth,
                           height: 190,
-                          child: _IconPlaceholder(icon: iconData),
+                          child: _RoleIllustration(assetPath: imageAsset),
                         ),
                       ],
                     ),
@@ -470,28 +457,18 @@ class _CardText extends StatelessWidget {
   }
 }
 
-class _IconPlaceholder extends StatelessWidget {
-  final IconData icon;
+class _RoleIllustration extends StatelessWidget {
+  final String assetPath;
 
-  const _IconPlaceholder({required this.icon});
+  const _RoleIllustration({required this.assetPath});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: Colors.white.withValues(alpha: 0.3),
-          width: 1,
-        ),
-      ),
-      child: Center(
-        child: Icon(
-          icon,
-          size: 40,
-          color: Colors.white.withValues(alpha: 0.6),
-        ),
+    return Center(
+      child: Image.asset(
+        assetPath,
+        fit: BoxFit.contain,
+        filterQuality: FilterQuality.high,
       ),
     );
   }

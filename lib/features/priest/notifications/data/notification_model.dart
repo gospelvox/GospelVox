@@ -2,9 +2,9 @@
 //
 // Cloud Functions are the only writers (createSessionRequest,
 // approveRejectPriest, requestWithdrawal, sessionWatchdog,
-// verifyActivationFee, etc). The shape here mirrors what those
-// functions actually write, so renaming a field on either side
-// will surface as a runtime miss the next time we render.
+// verifyActivationFee, sendFollowUp, etc). The shape here mirrors
+// what those functions actually write, so renaming a field on either
+// side will surface as a runtime miss the next time we render.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -18,6 +18,37 @@ class NotificationModel {
   final String? sessionId;
   final DateTime? createdAt;
 
+  // Set only by the sendFollowUp CF — every other writer leaves
+  // these null. The user-side notifications page uses priestId for
+  // the deep link to /user/priest/:id, and priestPhotoUrl to swap
+  // the icon square for an actual avatar on follow_up cards.
+  final String? priestId;
+  final String? priestName;
+  final String? priestPhotoUrl;
+
+  // Set only by notifyPriestMissedRequest CF. Stored separately
+  // from priest* fields above so the inbox renderer can show the
+  // *user's* avatar on a missed-request card without confusing it
+  // with a priest-sent message. sessionType is 'chat' or 'voice'
+  // and drives the "Tried to call/chat" copy.
+  final String? requesterId;
+  final String? requesterName;
+  final String? requesterPhotoUrl;
+  final String? sessionType;
+
+  // Set only when the priest dismisses a missed_request from the
+  // My Users page. Both fields are null until dismiss; once set,
+  // isRead is also true so the doc no longer shows up in the
+  // unread missed-request stream.
+  final String? dismissReason;
+  final DateTime? dismissedAt;
+
+  // For type='priest_message' only: the CF writes false when the
+  // recipient had muted the sender at send time. The user-side
+  // inbox filters these out so a muted priest's messages never
+  // surface; the priest still sees them in their own outbox.
+  final bool delivered;
+
   const NotificationModel({
     required this.id,
     required this.type,
@@ -26,6 +57,16 @@ class NotificationModel {
     required this.isRead,
     this.sessionId,
     this.createdAt,
+    this.priestId,
+    this.priestName,
+    this.priestPhotoUrl,
+    this.requesterId,
+    this.requesterName,
+    this.requesterPhotoUrl,
+    this.sessionType,
+    this.dismissReason,
+    this.dismissedAt,
+    this.delivered = true,
   });
 
   factory NotificationModel.fromFirestore(
@@ -33,6 +74,7 @@ class NotificationModel {
     Map<String, dynamic> data,
   ) {
     final ts = data['createdAt'];
+    final dts = data['dismissedAt'];
     return NotificationModel(
       id: docId,
       type: data['type'] as String? ?? '',
@@ -41,6 +83,18 @@ class NotificationModel {
       isRead: data['isRead'] as bool? ?? false,
       sessionId: data['sessionId'] as String?,
       createdAt: ts is Timestamp ? ts.toDate() : null,
+      priestId: data['priestId'] as String?,
+      priestName: data['priestName'] as String?,
+      priestPhotoUrl: data['priestPhotoUrl'] as String?,
+      requesterId: data['requesterId'] as String?,
+      requesterName: data['requesterName'] as String?,
+      requesterPhotoUrl: data['requesterPhotoUrl'] as String?,
+      sessionType: data['sessionType'] as String?,
+      dismissReason: data['dismissReason'] as String?,
+      dismissedAt: dts is Timestamp ? dts.toDate() : null,
+      // Default true so legacy follow_up docs (pre-dating mute)
+      // continue to render correctly — they were always delivered.
+      delivered: data['delivered'] as bool? ?? true,
     );
   }
 
@@ -53,6 +107,16 @@ class NotificationModel {
       isRead: isRead ?? this.isRead,
       sessionId: sessionId,
       createdAt: createdAt,
+      priestId: priestId,
+      priestName: priestName,
+      priestPhotoUrl: priestPhotoUrl,
+      requesterId: requesterId,
+      requesterName: requesterName,
+      requesterPhotoUrl: requesterPhotoUrl,
+      sessionType: sessionType,
+      dismissReason: dismissReason,
+      dismissedAt: dismissedAt,
+      delivered: delivered,
     );
   }
 
@@ -77,6 +141,11 @@ class NotificationModel {
         return Icons.account_balance_outlined;
       case 'withdrawal_sent':
         return Icons.payments_outlined;
+      case 'follow_up':
+      case 'priest_message':
+        return Icons.message_outlined;
+      case 'missed_request':
+        return Icons.phone_missed_rounded;
       default:
         return Icons.notifications_none_rounded;
     }
@@ -98,7 +167,14 @@ class NotificationModel {
       case 'withdrawal_sent':
         return const Color(0xFFC8902A);
       case 'session_request':
+      case 'follow_up':
+      case 'priest_message':
         return const Color(0xFF6B3A2A);
+      case 'missed_request':
+        // Same amber as the dashboard badge + My Users dot — the
+        // "you missed something" colour the priest learns to scan
+        // for across surfaces.
+        return const Color(0xFFC8902A);
       default:
         return const Color(0xFF6B3A2A);
     }

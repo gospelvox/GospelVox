@@ -3,19 +3,23 @@
 // the same time so switching between them feels instant and preserves
 // scroll position; only the active tab paints.
 //
-// Why expose the tab-switcher via an InheritedWidget: the home tab's
-// coin pill (and the Me tab's "Transaction History" row) need to jump
-// to the wallet tab without navigating routes — a route push would
-// put the wallet on top of the shell and hide the nav bar.
-// `UserShellScope.of(context)?.switchToTab(i)` gives child widgets a
-// clean, typed way to ask the shell to change its selected index,
-// without passing callbacks through the tree.
+// Why expose the tab-switcher via an InheritedWidget: the Me tab's
+// "My Sessions" row needs to jump to the Sessions tab without
+// navigating routes — a route push would put the page on top of the
+// shell and hide the nav bar. `UserShellScope.of(context)?.switchToTab(i)`
+// gives child widgets a clean, typed way to ask the shell to change
+// its selected index, without passing callbacks through the tree.
 //
-// Tab indices (4-tab beta layout — Matrimony hidden):
+// Tab indices:
 //   0  Home
-//   1  Bible (placeholder until that week ships)
-//   2  Wallet
+//   1  Sessions (WhatsApp-style priest history)
+//   2  Bible
 //   3  Me
+//
+// Sessions sits next to Home because it's a daily-use surface;
+// Bible is a weekly cadence. Wallet is no longer a tab — it lives
+// at /user/wallet as a push route, reached from the Home coin pill
+// and the Me tab.
 
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
@@ -26,7 +30,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/user/bible/pages/bible_tab.dart';
 import 'package:gospel_vox/features/user/home/pages/home_page.dart';
 import 'package:gospel_vox/features/user/profile/pages/me_tab.dart';
-import 'package:gospel_vox/features/user/wallet/pages/wallet_page.dart';
+import 'package:gospel_vox/features/user/sessions/pages/sessions_tab.dart';
 
 class UserShellPage extends StatefulWidget {
   const UserShellPage({super.key});
@@ -73,8 +77,8 @@ class _UserShellPageState extends State<UserShellPage> {
           index: _currentIndex,
           children: const [
             HomePage(),
+            SessionsTab(),
             BibleTab(),
-            WalletPage(),
             MeTab(),
           ],
         ),
@@ -100,31 +104,31 @@ class _UserShellPageState extends State<UserShellPage> {
                 index: 0,
                 currentIndex: _currentIndex,
                 inactiveIcon: Icons.home_outlined,
-                activeIcon: Icons.home,
+                activeIcon: Icons.home_rounded,
                 label: "Home",
                 onTap: () => _switchToTab(0),
               ),
               _NavItem(
                 index: 1,
                 currentIndex: _currentIndex,
-                inactiveIcon: Icons.menu_book_outlined,
-                activeIcon: Icons.menu_book,
-                label: "Bible",
+                inactiveIcon: Icons.chat_outlined,
+                activeIcon: Icons.chat_rounded,
+                label: "Sessions",
                 onTap: () => _switchToTab(1),
               ),
               _NavItem(
                 index: 2,
                 currentIndex: _currentIndex,
-                inactiveIcon: Icons.account_balance_wallet_outlined,
-                activeIcon: Icons.account_balance_wallet,
-                label: "Wallet",
+                inactiveIcon: Icons.menu_book_outlined,
+                activeIcon: Icons.menu_book_rounded,
+                label: "Bible",
                 onTap: () => _switchToTab(2),
               ),
               _NavItem(
                 index: 3,
                 currentIndex: _currentIndex,
                 inactiveIcon: Icons.person_outline,
-                activeIcon: Icons.person,
+                activeIcon: Icons.person_rounded,
                 label: "Me",
                 onTap: () => _switchToTab(3),
               ),

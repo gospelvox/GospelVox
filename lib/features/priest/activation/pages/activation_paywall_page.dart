@@ -26,6 +26,7 @@ import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/razorpay_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_cubit.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_state.dart';
 import 'package:gospel_vox/features/user/wallet/widgets/payment_failure_sheet.dart';
@@ -141,6 +142,12 @@ class _ActivationPaywallViewState extends State<_ActivationPaywallView>
     _payTapLocked = false;
     _lastPaymentId = null;
 
+    // The page may be unmounted between Razorpay closing and this
+    // callback (priest backed out fast), in which case `context.read`
+    // would throw because the cubit lives inside this page's
+    // BlocProvider. Bail before any context use.
+    if (!mounted) return;
+
     // Reset cubit so the Pay button becomes interactive again.
     context.read<ActivationCubit>().setPaymentInProgress(false);
 
@@ -148,7 +155,6 @@ class _ActivationPaywallViewState extends State<_ActivationPaywallView>
     // hit back). Not an error — don't show the failure sheet.
     if (response.code == 2) return;
 
-    if (!mounted) return;
     _showPaymentFailure(null);
   }
 
@@ -174,6 +180,7 @@ class _ActivationPaywallViewState extends State<_ActivationPaywallView>
   Future<void> _proceedToPay() async {
     if (_payTapLocked) return;
     _payTapLocked = true;
+    HapticFeedback.mediumImpact();
 
     final cubit = context.read<ActivationCubit>();
     final state = cubit.state;
@@ -237,8 +244,11 @@ class _ActivationPaywallViewState extends State<_ActivationPaywallView>
   // ── Sign-out escape hatch ───────────────────────────────────────
 
   Future<void> _signOutAndLeave() async {
-    await FirebaseAuth.instance.signOut();
+    // Full repo sign-out so the FCM token gets pulled off priests/{uid}
+    // and Google's cached account is dropped. The previous direct
+    // FirebaseAuth.signOut() left both stuck on the device.
     clearCachedRole();
+    await sl<AuthRepository>().signOut();
     if (!mounted) return;
     context.go('/select-role');
   }

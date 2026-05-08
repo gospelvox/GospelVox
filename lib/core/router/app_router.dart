@@ -19,6 +19,7 @@ import 'package:gospel_vox/features/auth/pages/role_selection_page.dart';
 import 'package:gospel_vox/features/priest/activation/pages/activation_paywall_page.dart';
 import 'package:gospel_vox/features/priest/activation/pages/activation_success_page.dart';
 import 'package:gospel_vox/features/priest/dashboard/pages/priest_dashboard_page.dart';
+import 'package:gospel_vox/features/priest/missed/pages/missed_requests_page.dart';
 import 'package:gospel_vox/features/priest/notifications/pages/notifications_page.dart';
 import 'package:gospel_vox/features/priest/profile/pages/priest_profile_page.dart'
     as priest_profile;
@@ -35,6 +36,8 @@ import 'package:gospel_vox/features/priest/session/pages/session_dropped_page.da
 import 'package:gospel_vox/features/priest/session/pages/session_summary_page.dart';
 import 'package:gospel_vox/features/priest/settings/pages/priest_availability_page.dart';
 import 'package:gospel_vox/features/priest/settings/pages/priest_settings_page.dart';
+import 'package:gospel_vox/features/priest/users/pages/my_users_page.dart';
+import 'package:gospel_vox/features/priest/users/pages/priest_chat_page.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart';
@@ -47,15 +50,17 @@ import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/user/bible/pages/bible_session_detail_page.dart';
 import 'package:gospel_vox/features/shared/pages/chat_transcript_page.dart';
 import 'package:gospel_vox/features/shared/pages/session_detail_page.dart';
+import 'package:gospel_vox/features/user/sessions/pages/chat_history_page.dart';
+import 'package:gospel_vox/features/user/wallet/pages/wallet_page.dart';
 import 'package:gospel_vox/features/shared/pages/session_history_page.dart';
 import 'package:gospel_vox/features/user/home/pages/priest_profile_page.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/features/user/notifications/pages/user_notifications_page.dart';
 import 'package:gospel_vox/features/user/profile/pages/about_page.dart';
 import 'package:gospel_vox/features/user/profile/pages/edit_profile_page.dart';
 import 'package:gospel_vox/features/user/profile/pages/user_settings_page.dart';
 import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
 import 'package:gospel_vox/features/user/session/pages/chat_session_page.dart';
-import 'package:gospel_vox/features/user/session/pages/post_session_page.dart';
 import 'package:gospel_vox/features/user/session/pages/session_waiting_page.dart';
 import 'package:gospel_vox/features/user/session/pages/voice_call_page.dart';
 import 'package:gospel_vox/features/user/wallet/pages/payment_success_page.dart';
@@ -76,8 +81,11 @@ Future<String?> _getUserRole(String uid) async {
   // we must re-fetch from Firestore instead of returning the old role.
   if (_cachedRole != null && _cachedUid == uid) return _cachedRole;
 
-  final doc =
-      await FirebaseFirestore.instance.collection('users').doc(uid).get();
+  final doc = await FirebaseFirestore.instance
+      .collection('users')
+      .doc(uid)
+      .get()
+      .timeout(const Duration(seconds: 10));
 
   if (!doc.exists || doc.data()?['role'] == null) return null;
 
@@ -103,7 +111,10 @@ String _roleToPath(String role) {
 // avoids a flash of "Priest Dashboard" before the redirect happens.
 Future<String> _resolvePriestDestination(String uid) async {
   try {
-    final doc = await FirebaseFirestore.instance.doc('priests/$uid').get();
+    final doc = await FirebaseFirestore.instance
+        .doc('priests/$uid')
+        .get()
+        .timeout(const Duration(seconds: 10));
     if (!doc.exists) return '/priest/register';
 
     final data = doc.data() ?? const <String, dynamic>{};
@@ -169,6 +180,28 @@ final appRouter = GoRouter(
           return await _resolvePriestDestination(user.uid);
         }
         return _roleToPath(role);
+      }
+
+      // Role-vs-route guard. The redirect previously only checked
+      // auth-flow paths, so a logged-in user who deep-linked to /admin
+      // (or a priest to /user) would mount the wrong shell — Firestore
+      // rules blocked the data fetches but the broken-looking UI still
+      // rendered. This is the in-router gate; rules remain the
+      // backstop.
+      //
+      // Shared routes (/session/*, /bible/*) are intentionally NOT
+      // gated here — both user and priest sides legitimately use them.
+      if (role == 'user' &&
+          (path.startsWith('/admin') || path.startsWith('/priest'))) {
+        return '/user';
+      }
+      if (role == 'priest' &&
+          (path.startsWith('/admin') || path.startsWith('/user'))) {
+        return '/priest';
+      }
+      if (role == 'admin' &&
+          (path.startsWith('/user') || path.startsWith('/priest'))) {
+        return '/admin';
       }
 
       // Priest-specific gating: when a speaker lands on the dashboard
@@ -261,6 +294,10 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/user/about',
       builder: (context, state) => const AboutPage(),
+    ),
+    GoRoute(
+      path: '/user/notifications',
+      builder: (context, state) => const UserNotificationsPage(),
     ),
     GoRoute(
       path: '/priest',
@@ -362,28 +399,6 @@ final appRouter = GoRouter(
         return PriestVoiceCallPage(sessionId: sessionId);
       },
     ),
-    // User's post-session summary + rating screen. Landed on via
-    // context.go (not push) so the chat can't be reached back.
-    GoRoute(
-      path: '/session/post',
-      builder: (context, state) {
-        final extra = state.extra;
-        if (extra is! Map<String, dynamic>) {
-          return const _MissingSessionPlaceholder();
-        }
-        final summary = extra['summary'] as SessionSummary?;
-        final session = extra['session'] as SessionModel?;
-        if (summary == null || session == null) {
-          return const _MissingSessionPlaceholder();
-        }
-        return PostSessionPage(
-          summary: summary,
-          session: session,
-          endReason:
-              (extra['endReason'] as String?) ?? 'user_ended',
-        );
-      },
-    ),
     // Priest's summary — earnings/commission/net.
     GoRoute(
       path: '/session/priest-summary',
@@ -452,6 +467,39 @@ final appRouter = GoRouter(
         );
       },
     ),
+    // Wallet — was a tab at index 2 in earlier builds, now lives as
+    // a push route so the Sessions tab can take that slot. WalletPage
+    // creates and loads its own WalletCubit internally, so no
+    // BlocProvider wrap is needed here (would only allocate a
+    // duplicate cubit the page never reads).
+    GoRoute(
+      path: '/user/wallet',
+      builder: (context, state) => const WalletPage(),
+    ),
+    // Chat history — opens when the user taps a row in the Chats
+    // sub-tab of the Sessions tab. Renders every message from
+    // completed chat sessions with this priest in the last 14 days,
+    // grouped by session with date separators. Read-only — the
+    // sticky bottom button hands off to /user/priest/:id where rate
+    // is disclosed and the new paid session begins.
+    //
+    // Calls sub-tab does NOT use this page — voice calls have no
+    // text history, so tapping a Calls row goes straight to the
+    // priest profile.
+    GoRoute(
+      path: '/user/chat-history/:priestId',
+      builder: (context, state) {
+        final priestId = state.pathParameters['priestId'] ?? '';
+        final extra = state.extra;
+        final extraMap =
+            extra is Map<String, dynamic> ? extra : const <String, dynamic>{};
+        return ChatHistoryPage(
+          priestId: priestId,
+          priestName: extraMap['priestName'] as String? ?? '',
+          priestPhotoUrl: extraMap['priestPhotoUrl'] as String? ?? '',
+        );
+      },
+    ),
     GoRoute(
       path: '/priest/session-history',
       builder: (context, state) {
@@ -460,6 +508,40 @@ final appRouter = GoRouter(
           create: (_) => sl<SessionHistoryCubit>()
             ..loadPriestSessions(uid),
           child: const SessionHistoryPage(isUserSide: false),
+        );
+      },
+    ),
+    // Priest's primary relationship surface — WhatsApp-style list
+    // grouped by user. The session-history route above is kept for
+    // deep links and any analytics surface that still needs the
+    // per-session view, but the dashboard now points at this one.
+    GoRoute(
+      path: '/priest/my-users',
+      builder: (context, state) => const PriestMyUsersPage(),
+    ),
+    // Dedicated inbox for unread missed-request notifications.
+    // Reached from the dashboard amber banner, foreground in-app
+    // banner, FCM tap, and the notifications inbox row. Lives at a
+    // separate route from My Users because missed requests are
+    // pending ACTIONS (respond / dismiss), not relationships.
+    GoRoute(
+      path: '/priest/missed-requests',
+      builder: (context, state) => const MissedRequestsPage(),
+    ),
+    // Priest-side per-user chat view. Tap a row in My Users → here.
+    // Pushes a fresh page each time so back-stack behavior matches
+    // every other priest sub-route.
+    GoRoute(
+      path: '/priest/chat/:userId',
+      builder: (context, state) {
+        final userId = state.pathParameters['userId'] ?? '';
+        final extra = state.extra is Map<String, dynamic>
+            ? state.extra as Map<String, dynamic>
+            : const <String, dynamic>{};
+        return PriestChatPage(
+          userId: userId,
+          userName: extra['userName'] as String? ?? '',
+          userPhotoUrl: extra['userPhotoUrl'] as String? ?? '',
         );
       },
     ),

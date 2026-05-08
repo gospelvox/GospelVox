@@ -12,9 +12,11 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/connectivity_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
+import 'package:gospel_vox/core/services/priest_incoming_request_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/theme/app_theme.dart';
 import 'package:gospel_vox/core/utils/bloc_observer.dart';
+import 'package:gospel_vox/core/widgets/missed_request_foreground_banner.dart';
 import 'package:gospel_vox/core/widgets/offline_banner.dart';
 import 'package:gospel_vox/firebase_options.dart';
 
@@ -56,6 +58,16 @@ void main() async {
   // (token persist, getInitialMessage) without blocking — so a phone
   // with broken DNS still reaches runApp instead of hanging on splash.
   await NotificationService().init();
+
+  // Global priest-side incoming-call router. Owns the pending-
+  // session listener for the priest's whole signed-in lifetime so
+  // a call routes to /priest/incoming regardless of which page
+  // they're currently on (summary, wallet, settings, my-users).
+  // Previously this listener was inside the dashboard widget and
+  // disappeared the moment the priest navigated away — calls then
+  // silently expired without ringing. Synchronous binding to
+  // authStateChanges; no network I/O until a priest signs in.
+  PriestIncomingRequestService().init();
 
   await initDependencies();
 
@@ -110,12 +122,19 @@ class GospelVoxApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       routerConfig: appRouter,
-      // Wrap every screen with the offline banner so the user always
-      // gets a visible explanation when network drops, regardless of
-      // which route they're on. The banner is a Stack overlay — it
-      // doesn't push the page content down, just floats above.
+      // Wrap every screen with two persistent overlays — order
+      // matters for layering, both float above the active route
+      // without pushing it down:
+      //   • OfflineBanner — informational pill when connectivity
+      //     drops. Inner so it sits closer to the page content.
+      //   • MissedRequestForegroundBanner — slide-down pill when an
+      //     FCM missed_request lands while the app is foregrounded.
+      //     Outer so a missed-request banner always wins z-order
+      //     over the offline banner if both fire simultaneously.
       builder: (context, child) {
-        return OfflineBanner(child: child ?? const SizedBox.shrink());
+        return MissedRequestForegroundBanner(
+          child: OfflineBanner(child: child ?? const SizedBox.shrink()),
+        );
       },
     );
   }

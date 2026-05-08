@@ -17,8 +17,10 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
@@ -91,10 +93,37 @@ class _MeTabState extends State<MeTab> {
     if (mounted) _loadProfile();
   }
 
-  void _switchToWalletTab() {
+  void _openWallet() {
+    // Wallet is now a push route, not a shell tab. Tab 2 is the
+    // Sessions tab — see _openSessionsTab below.
+    context.push('/user/wallet');
+  }
+
+  void _openSessionsTab() {
     final shell = UserShellScope.of(context);
     if (shell != null) {
-      shell.switchToTab(2);
+      // Sessions moved from index 2 to index 1 when the bottom nav
+      // was reordered to put it next to Home.
+      shell.switchToTab(1);
+    }
+  }
+
+  Future<void> _openSupportEmail() async {
+    // Opens the user's default email client with a pre-filled
+    // address. mailto: works on both iOS and Android without any
+    // OS-level permission, and is the App Store-friendly fallback
+    // when there's no in-app help center yet.
+    final uri = Uri.parse('mailto:support@gospelvox.com');
+    try {
+      final ok = await launchUrl(uri);
+      if (!ok && mounted) {
+        AppSnackBar.error(
+            context, 'No email app available. support@gospelvox.com');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(
+          context, 'Could not open email. support@gospelvox.com');
     }
   }
 
@@ -184,18 +213,18 @@ class _MeTabState extends State<MeTab> {
                       child: Column(
                         children: [
                           _MenuItem(
-                            icon: Icons.history_rounded,
-                            title: 'Session History',
-                            subtitle: 'View past consultations',
-                            onTap: () =>
-                                context.push('/user/session-history'),
+                            icon: Icons.chat_outlined,
+                            title: 'My Sessions',
+                            subtitle:
+                                'Chat and call history with speakers',
+                            onTap: _openSessionsTab,
                           ),
                           const _MenuDivider(),
                           _MenuItem(
                             icon: Icons.account_balance_wallet_outlined,
-                            title: 'Transaction History',
-                            subtitle: 'Coin purchases and charges',
-                            onTap: _switchToWalletTab,
+                            title: 'My Wallet',
+                            subtitle: 'View balance and buy coins',
+                            onTap: _openWallet,
                           ),
                           const _MenuDivider(),
                           _MenuItem(
@@ -208,13 +237,8 @@ class _MeTabState extends State<MeTab> {
                           _MenuItem(
                             icon: Icons.help_outline_rounded,
                             title: 'Help & Support',
-                            subtitle: 'FAQs and contact us',
-                            onTap: () {
-                              AppSnackBar.info(
-                                context,
-                                'Help center coming soon',
-                              );
-                            },
+                            subtitle: 'Email us at support@gospelvox.com',
+                            onTap: _openSupportEmail,
                           ),
                           const _MenuDivider(),
                           _MenuItem(
@@ -384,7 +408,10 @@ class _MenuItem extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _PressableScale(
-      onTap: onTap,
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
       scale: 0.98,
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),

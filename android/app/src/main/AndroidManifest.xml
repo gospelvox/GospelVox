@@ -55,6 +55,23 @@
     <!-- Keep CPU awake during live sessions so timers don't drift. -->
     <uses-permission android:name="android.permission.WAKE_LOCK"/>
 
+    <!-- Required for full-screen incoming-call notifications on
+         Android 14+. Without this, the OS silently downgrades a
+         fullScreenIntent to a heads-up banner — the priest never
+         sees the lock-screen call UI when their phone is locked
+         and an incoming session_request arrives. We declare the
+         permission unconditionally; older OS versions ignore it.
+         The notification channel category is set to CALL on the
+         Dart side so the OS knows this is a legitimate use. -->
+    <uses-permission android:name="android.permission.USE_FULL_SCREEN_INTENT"/>
+
+    <!-- Optional but useful: lets the app vibrate the device for
+         the incoming-request heads-up + ringtone. firebase_messaging
+         already pulls VIBRATE in some configurations, but declaring
+         it here makes the dependency explicit and survives plugin
+         upgrades. -->
+    <uses-permission android:name="android.permission.VIBRATE"/>
+
     <!-- Foreground service that keeps a voice call alive when the
          user backgrounds the app or locks the screen. Without this,
          aggressive OEM battery managers (Xiaomi/Oppo/Samsung) kill

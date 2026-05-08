@@ -210,10 +210,13 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     if (source == null) return;
     try {
       final picker = ImagePicker();
+      // Match every other picker in the app — 800×800 is plenty for a
+      // profile avatar and decoding 1600 wastes memory before
+      // ImageUtils.compressImage shrinks it again.
       final picked = await picker.pickImage(
         source: source,
-        maxWidth: 1600,
-        maxHeight: 1600,
+        maxWidth: 800,
+        maxHeight: 800,
         imageQuality: 85,
       );
       if (picked == null || !mounted) return;
@@ -272,6 +275,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       return;
     }
 
+    HapticFeedback.lightImpact();
     FocusScope.of(context).unfocus();
 
     final phone = _phoneController.text.trim();

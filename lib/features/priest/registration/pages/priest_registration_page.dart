@@ -11,6 +11,7 @@
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -19,6 +20,7 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/priest/registration/bloc/priest_registration_cubit.dart';
 import 'package:gospel_vox/features/priest/registration/bloc/priest_registration_state.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_model.dart';
@@ -137,6 +139,7 @@ class _PriestRegistrationViewState extends State<_PriestRegistrationView> {
   }
 
   Future<void> _handleFinalSubmit() async {
+    HapticFeedback.mediumImpact();
     // The gravity check. Priest has seen every field, ticked "all
     // accurate" — one last explicit confirmation before we actually
     // upload anything.
@@ -225,8 +228,11 @@ class _PriestRegistrationViewState extends State<_PriestRegistrationView> {
     );
 
     if (confirmed == true && mounted) {
-      await FirebaseAuth.instance.signOut();
+      // Full repo sign-out so the FCM token comes off priests/{uid}
+      // and Google's session is cleared — direct
+      // FirebaseAuth.signOut() skipped both.
       clearCachedRole();
+      await sl<AuthRepository>().signOut();
       if (!mounted) return;
       context.go('/select-role');
     }

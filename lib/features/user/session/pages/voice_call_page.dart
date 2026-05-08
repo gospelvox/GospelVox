@@ -19,6 +19,7 @@ import 'package:gospel_vox/features/shared/bloc/voice_call_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/voice_call_state.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/features/shared/widgets/voice_call_view.dart';
+import 'package:gospel_vox/features/user/session/widgets/session_rating_dialog.dart';
 
 class VoiceCallPage extends StatelessWidget {
   final String sessionId;
@@ -40,16 +41,15 @@ class VoiceCallPage extends StatelessWidget {
     );
   }
 
-  void _onEnded(BuildContext context, VoiceCallEnded state) {
-    // go (not push) so the call screen can't be reached via back —
-    // the post-session screen is a fresh starting point.
-    context.go(
-      '/session/post',
-      extra: {
-        'summary': state.summary,
-        'session': state.session,
-        'endReason': state.endReason,
-      },
-    );
+  // Show the rating dialog inline instead of routing to a dedicated
+  // post-session page. The dialog has no easy dismiss path other
+  // than Submit / "Maybe later", so the user is nudged to rate but
+  // never trapped. Once the dialog closes (either path) we replace
+  // the route with /user so the back stack can't bounce into the
+  // settled call screen.
+  Future<void> _onEnded(BuildContext context, VoiceCallEnded state) async {
+    await SessionRatingDialog.show(context, state.session);
+    if (!context.mounted) return;
+    context.go('/user');
   }
 }

@@ -78,11 +78,29 @@ class AuthCubit extends Cubit<AuthState> {
 
     try {
       final userCredential = await _authRepository.signInWithGoogle();
+      // Repo returns null when the user cancels the Google chooser —
+      // that's not an error, just bring the UI back to a clean state.
+      if (userCredential == null) {
+        emit(AuthUnauthenticated());
+        return;
+      }
       final user = userCredential.user!;
 
       final role = await _authRepository.getUserRole(user.uid);
 
       if (role != null) {
+        // Existing account. If the user picked a role on the previous
+        // screen and it doesn't match, surface a friendly mismatch
+        // sheet rather than silently dropping them on the wrong shell.
+        if (selectedRole != null && role != selectedRole) {
+          emit(AuthRoleMismatch(
+            email: user.email ?? '',
+            existingRole: role,
+            selectedRole: selectedRole,
+            provider: 'google',
+          ));
+          return;
+        }
         emit(AuthAuthenticated(uid: user.uid, role: role));
       } else if (selectedRole != null) {
         await _authRepository.createUserDocument(
@@ -131,6 +149,15 @@ class AuthCubit extends Cubit<AuthState> {
       final role = await _authRepository.getUserRole(user.uid);
 
       if (role != null) {
+        if (selectedRole != null && role != selectedRole) {
+          emit(AuthRoleMismatch(
+            email: user.email ?? '',
+            existingRole: role,
+            selectedRole: selectedRole,
+            provider: 'apple',
+          ));
+          return;
+        }
         emit(AuthAuthenticated(uid: user.uid, role: role));
       } else if (selectedRole != null) {
         await _authRepository.createUserDocument(
@@ -180,18 +207,16 @@ class AuthCubit extends Cubit<AuthState> {
       final role = await _authRepository.getUserRole(user.uid);
 
       if (role == null) {
-        // First email login → auto-create admin doc.
-        await _authRepository.createUserDocument(
-          uid: user.uid,
-          displayName: user.displayName ?? 'Admin',
-          email: user.email ?? email,
-          photoUrl: user.photoURL ?? '',
-          role: 'admin',
-        );
-        emit(AuthAuthenticated(uid: user.uid, role: 'admin'));
+        // No Firestore profile → not an admin account. Admin docs must
+        // be provisioned manually (Firebase console or seed script);
+        // auto-promoting any FB-Auth user that signs in here would be
+        // a vertical-privilege escalation if the hidden form leaks.
+        await _authRepository.signOut();
+        emit(AuthError(
+            'Admin account not found. Contact the administrator.'));
       } else if (role != 'admin') {
         await _authRepository.signOut();
-        emit(AuthError('This account is not an admin. Contact support.'));
+        emit(AuthError('This account does not have admin access.'));
       } else {
         emit(AuthAuthenticated(uid: user.uid, role: 'admin'));
       }
@@ -242,6 +267,27 @@ class AuthCubit extends Cubit<AuthState> {
       emit(AuthUnauthenticated());
     } catch (e) {
       emit(AuthError(_kGenericMessage));
+    }
+  }
+
+  // Used by the role-mismatch sheet's "Use a different account"
+  // button. Signs out the current account first so the social
+  // provider's account picker re-prompts, then re-runs the same
+  // sign-in flow with the same selectedRole.
+  Future<void> signInWithDifferentAccount({
+    required String selectedRole,
+    required String provider,
+  }) async {
+    try {
+      await _authRepository.signOut();
+    } catch (_) {
+      // Best-effort cleanup; proceed to the picker either way.
+    }
+
+    if (provider == 'apple') {
+      await signInWithApple(selectedRole: selectedRole);
+    } else {
+      await signInWithGoogle(selectedRole: selectedRole);
     }
   }
 

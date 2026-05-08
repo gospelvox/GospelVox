@@ -9,11 +9,14 @@
 // the BlocListener turns into a bottom sheet — see
 // IncomingRequestError in the cubit.
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/services/ring_service.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_state.dart';
@@ -59,10 +62,17 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
       duration: const Duration(milliseconds: 1400),
       vsync: this,
     )..repeat();
+    // Fire-and-forget: RingService swallows asset errors internally
+    // so a missing audio file can't crash the page.
+    RingService().startIncomingRing();
   }
 
   @override
   void dispose() {
+    // Safety net for any exit path that didn't already stop the
+    // ring (e.g. router popping the page from elsewhere). The
+    // service short-circuits if it's already silent.
+    RingService().stopIncomingRing();
     _ringController.dispose();
     super.dispose();
   }
@@ -89,6 +99,9 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
           child: BlocConsumer<IncomingRequestCubit, IncomingRequestState>(
             listener: (context, state) {
               if (state is IncomingRequestAccepted) {
+                // Stop the ring before navigating so Agora doesn't
+                // briefly fight just_audio for the audio session.
+                RingService().stopIncomingRing();
                 // Branch on session type so voice requests land on
                 // the Agora call screen, not the chat screen.
                 if (state.session.isVoice) {
@@ -101,11 +114,14 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
                   );
                 }
               } else if (state is IncomingRequestDeclined) {
+                RingService().stopIncomingRing();
                 if (context.canPop()) context.pop();
               } else if (state is IncomingRequestExpired) {
+                RingService().stopIncomingRing();
                 AppSnackBar.info(context, 'Request expired');
                 if (context.canPop()) context.pop();
               } else if (state is IncomingRequestUserCancelled) {
+                RingService().stopIncomingRing();
                 // The user withdrew before we reacted. Distinct
                 // copy from "expired" so the priest understands
                 // why the screen disappeared.
@@ -118,7 +134,13 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
                 if (state.message == '__needs_activation__') {
                   ActivationPromptSheet.show(context);
                 } else {
+                  // PopScope blocks hardware back, so a non-popping
+                  // error branch leaves the priest stranded. Stop
+                  // the ring and pop back to the dashboard — the
+                  // session expires server-side either way.
+                  RingService().stopIncomingRing();
                   AppSnackBar.error(context, state.message);
+                  if (context.canPop()) context.pop();
                 }
               }
             },
@@ -189,9 +211,15 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
                 size: 64,
                 labelColor: _kBeigeText.withValues(alpha: 0.5),
                 enabled: !accepting,
-                onTap: () => context
-                    .read<IncomingRequestCubit>()
-                    .declineRequest(session.id),
+                onTap: () async {
+                  HapticFeedback.mediumImpact();
+                  // Capture before await — context.read after an
+                  // await can hit a deactivated element if the
+                  // page pops out from under us mid-frame.
+                  final cubit = context.read<IncomingRequestCubit>();
+                  await RingService().stopIncomingRing();
+                  cubit.declineRequest(session.id);
+                },
               ),
               const Spacer(),
               _ActionCircle(
@@ -204,9 +232,15 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
                 labelColor: _kAccentGreen,
                 labelWeight: FontWeight.w600,
                 enabled: !accepting,
-                onTap: () => context
-                    .read<IncomingRequestCubit>()
-                    .acceptRequest(session.id, widget.isActivated),
+                onTap: () async {
+                  HapticFeedback.heavyImpact();
+                  final cubit = context.read<IncomingRequestCubit>();
+                  // Stop ring BEFORE the cubit fires so the audio
+                  // session is fully released by the time Agora
+                  // initialises on the next screen.
+                  await RingService().stopIncomingRing();
+                  cubit.acceptRequest(session.id, widget.isActivated);
+                },
               ),
             ],
           ),
@@ -249,27 +283,31 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
             color: _kGold.withValues(alpha: 0.3),
             width: 2,
           ),
-          image: session.userPhotoUrl.isNotEmpty
-              ? DecorationImage(
-                  image: NetworkImage(session.userPhotoUrl),
-                  fit: BoxFit.cover,
-                )
-              : null,
         ),
-        child: session.userPhotoUrl.isEmpty
-            ? Center(
-                child: Text(
-                  session.userName.isNotEmpty
-                      ? session.userName[0].toUpperCase()
-                      : '?',
-                  style: GoogleFonts.inter(
-                    fontSize: 32,
-                    fontWeight: FontWeight.w700,
-                    color: _kBeigeText,
-                  ),
-                ),
+        clipBehavior: Clip.antiAlias,
+        child: session.userPhotoUrl.isNotEmpty
+            ? CachedNetworkImage(
+                imageUrl: session.userPhotoUrl,
+                fit: BoxFit.cover,
+                placeholder: (_, _) => const SizedBox.shrink(),
+                errorWidget: (_, _, _) => _buildAvatarFallback(session),
               )
-            : null,
+            : _buildAvatarFallback(session),
+      ),
+    );
+  }
+
+  Widget _buildAvatarFallback(SessionModel session) {
+    return Center(
+      child: Text(
+        session.userName.isNotEmpty
+            ? session.userName[0].toUpperCase()
+            : '?',
+        style: GoogleFonts.inter(
+          fontSize: 32,
+          fontWeight: FontWeight.w700,
+          color: _kBeigeText,
+        ),
       ),
     );
   }

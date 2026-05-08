@@ -75,5 +75,17 @@
 	     blocks the route silently. -->
 	<key>NSBluetoothAlwaysUsageDescription</key>
 	<string>Gospel Vox uses Bluetooth to connect with audio devices during voice calls.</string>
+	<!-- image_picker camera path. iOS 10+ crashes with a hard
+	     "this app has crashed because it attempted to access
+	     privacy-sensitive data without a usage description"
+	     the moment ImagePicker(source: .camera) is invoked
+	     without this key. App Store rejects builds missing it. -->
+	<key>NSCameraUsageDescription</key>
+	<string>Gospel Vox needs camera access to take profile photos and upload documents.</string>
+	<!-- image_picker photo library path. iOS 11+ requires the
+	     same usage-string treatment for PHPhotoLibrary access;
+	     missing key = crash on first photo pick. -->
+	<key>NSPhotoLibraryUsageDescription</key>
+	<string>Gospel Vox needs photo library access to select profile photos and upload documents.</string>
 </dict>
 </plist>

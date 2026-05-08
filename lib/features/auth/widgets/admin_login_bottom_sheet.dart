@@ -5,6 +5,7 @@
 // to /admin on success.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -77,7 +78,7 @@ class _AdminLoginBottomSheetState extends State<AdminLoginBottomSheet> {
   // to accept real-world admin emails without overcomplicating with full
   // RFC 5322 validation.
   bool _isValidEmail(String email) {
-    final regex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,}$');
+    final regex = RegExp(r'^[\w\+\-\.]+@([\w-]+\.)+[\w-]{2,}$');
     return regex.hasMatch(email.trim());
   }
 
@@ -110,6 +111,7 @@ class _AdminLoginBottomSheetState extends State<AdminLoginBottomSheet> {
 
     if (emailError != null || passwordError != null) return;
 
+    HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
     context.read<AuthCubit>().signInWithEmail(
           _emailController.text.trim(),

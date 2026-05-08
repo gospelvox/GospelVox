@@ -8,11 +8,14 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 
 class ApplicationRejectedPage extends StatelessWidget {
   const ApplicationRejectedPage({super.key});
@@ -75,14 +78,22 @@ class ApplicationRejectedPage extends StatelessWidget {
                       _RejectionReasonCard(uid: user?.uid),
                       const SizedBox(height: 32),
                       _ApplyAgainButton(
-                        onTap: () => context.go('/priest/register'),
+                        onTap: () {
+                          HapticFeedback.lightImpact();
+                          context.go('/priest/register');
+                        },
                       ),
                       const SizedBox(height: 16),
                       GestureDetector(
                         behavior: HitTestBehavior.opaque,
                         onTap: () async {
-                          await FirebaseAuth.instance.signOut();
+                          HapticFeedback.lightImpact();
+                          // Full repo sign-out so the FCM token is
+                          // pulled off priests/{uid} and Google's
+                          // cached account is dropped — see comment
+                          // in pending_approval_page for context.
                           clearCachedRole();
+                          await sl<AuthRepository>().signOut();
                           if (!context.mounted) return;
                           context.go('/select-role');
                         },
@@ -146,7 +157,10 @@ class _RejectionReasonCard extends StatelessWidget {
             _reasonText(context, 'No specific reason provided.')
           else
             FutureBuilder<DocumentSnapshot<Map<String, dynamic>>>(
-              future: FirebaseFirestore.instance.doc('priests/$uid').get(),
+              future: FirebaseFirestore.instance
+                  .doc('priests/$uid')
+                  .get()
+                  .timeout(const Duration(seconds: 10)),
               builder: (ctx, snap) {
                 if (snap.connectionState != ConnectionState.done) {
                   return _reasonText(context, 'Loading...');

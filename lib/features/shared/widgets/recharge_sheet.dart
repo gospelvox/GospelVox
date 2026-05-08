@@ -212,9 +212,15 @@ class _RechargeSheetState extends State<RechargeSheet> {
     _pendingPack = null;
     if (!mounted) return;
     setState(() => _payInFlight = false);
-    // Both user-cancelled and real failures land here — for the
-    // sheet we treat both as "didn't go through" and stay open so
-    // the user can retry without re-opening.
+    // Code 2 is Razorpay's "user dismissed the sheet" signal —
+    // matches the wallet_page pattern. Returning silently keeps the
+    // recharge sheet open so the user can pick another pack without
+    // any error banner shouting at them for a deliberate cancel.
+    if (response.code == 2) return;
+    // Real failures still leave the sheet open (so the user can
+    // retry) but a future change might want to surface a banner here
+    // — keeping the early-return explicit prevents that change from
+    // accidentally snackbar-ing a cancel.
   }
 
   @override

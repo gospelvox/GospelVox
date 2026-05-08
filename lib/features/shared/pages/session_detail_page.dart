@@ -1,16 +1,20 @@
-// Per-session detail page. Shared between user and priest sides —
+// Per-session detail page. Read-only summary of a single session:
+// header, info card, rating (when present), transcript shortcut
+// (chat completed only), and a user-side "Chat Again" CTA.
+//
 // `isUserSide` flips:
 //   • whose name + photo appears at the top
-//   • whether we show denomination (priest profile field, only relevant
-//     when the user is the viewer)
-//   • the financial breakdown (user sees a single charged total, priest
-//     sees gross / commission / net)
+//   • whether we show denomination (priest profile field, only
+//     relevant when the user is the viewer)
+//   • the financial breakdown (user sees a single charged total,
+//     priest sees gross / commission / net)
 //   • the rating-section header copy
 //
-// The "View Chat Transcript" button is only rendered for completed
-// chat sessions because voice sessions have no text to show, and an
-// in-progress session would expose live data the live-chat screen
-// already renders.
+// The priest's templated "Send Follow-up" flow used to live here
+// but was replaced by freeform priest messaging — priests now go
+// to My Users → tap user → text input. As a result this page is
+// purely informational on the priest side; there are no priest-
+// initiated actions.
 
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
@@ -19,12 +23,13 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 
 const Color _kCompletedGreen = Color(0xFF059669);
 const Color _kDeclinedRed = Color(0xFFDC2626);
 const Color _kEarningsGreen = Color(0xFF2E7D4F);
 
-class SessionDetailPage extends StatelessWidget {
+class SessionDetailPage extends StatefulWidget {
   final SessionModel session;
   final bool isUserSide;
 
@@ -34,10 +39,21 @@ class SessionDetailPage extends StatelessWidget {
     required this.isUserSide,
   });
 
+  @override
+  State<SessionDetailPage> createState() => _SessionDetailPageState();
+}
+
+class _SessionDetailPageState extends State<SessionDetailPage> {
+  SessionModel get _session => widget.session;
+  bool get _isUserSide => widget.isUserSide;
+
   String get _otherName =>
-      isUserSide ? session.priestName : session.userName;
+      _isUserSide ? _session.priestName : _session.userName;
   String get _otherPhotoUrl =>
-      isUserSide ? session.priestPhotoUrl : session.userPhotoUrl;
+      _isUserSide ? _session.priestPhotoUrl : _session.userPhotoUrl;
+
+  bool get _hasRating =>
+      _session.userRating != null && _session.userRating! > 0;
 
   @override
   Widget build(BuildContext context) {
@@ -57,10 +73,28 @@ class SessionDetailPage extends StatelessWidget {
               const SizedBox(height: 20),
               _buildRatingCard(),
             ],
-            if (session.isChat && session.status == 'completed') ...[
+            if (_session.isChat && _session.status == 'completed') ...[
               const SizedBox(height: 20),
               _ViewTranscriptButton(
                 onTap: () => _openTranscript(context),
+              ),
+            ],
+            // User-side re-engagement entry point. Fires the new
+            // session request directly — no profile detour. Runs the
+            // 5-minute balance preflight first; if short, the user
+            // sees the recharge sheet pre-filled with the deficit
+            // amount instead of bouncing off the CF after a round-
+            // trip. The waiting screen handles every server-side
+            // outcome (insufficient-balance, priest-offline,
+            // priest-busy, accepted, expired). "Chat Again" always
+            // launches a chat session, even if the original session
+            // was voice — users wanting voice can still tap into
+            // the priest profile.
+            if (_isUserSide && _session.status == 'completed') ...[
+              const SizedBox(height: 16),
+              _ChatAgainButton(
+                priestName: _session.priestName,
+                onTap: () => _startChatAgain(context),
               ),
             ],
             const SizedBox(height: 40),
@@ -69,9 +103,6 @@ class SessionDetailPage extends StatelessWidget {
       ),
     );
   }
-
-  bool get _hasRating =>
-      session.userRating != null && session.userRating! > 0;
 
   PreferredSizeWidget _buildAppBar(BuildContext context) {
     return AppBar(
@@ -159,10 +190,10 @@ class SessionDetailPage extends StatelessWidget {
               color: AppColors.deepDarkBrown,
             ),
           ),
-          if (isUserSide && session.priestDenomination.isNotEmpty) ...[
+          if (_isUserSide && _session.priestDenomination.isNotEmpty) ...[
             const SizedBox(height: 4),
             Text(
-              session.priestDenomination,
+              _session.priestDenomination,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: GoogleFonts.inter(
@@ -173,7 +204,7 @@ class SessionDetailPage extends StatelessWidget {
             ),
           ],
           const SizedBox(height: 8),
-          _StatusBadge(status: session.status),
+          _StatusBadge(status: _session.status),
         ],
       ),
     );
@@ -193,8 +224,8 @@ class SessionDetailPage extends StatelessWidget {
   }
 
   Widget _buildInfoCard() {
-    final hasEndReason =
-        session.endReason.isNotEmpty && session.status != 'completed';
+    final hasEndReason = _session.endReason.isNotEmpty &&
+        _session.status != 'completed';
 
     return Container(
       width: double.infinity,
@@ -210,48 +241,48 @@ class SessionDetailPage extends StatelessWidget {
         children: [
           _DetailRow(
             label: 'Type',
-            value: session.isChat ? '💬 Chat' : '🎙 Voice Call',
+            value: _session.isChat ? '💬 Chat' : '🎙 Voice Call',
           ),
           const _RowDivider(),
           _DetailRow(
             label: 'Date',
-            value: _formatFullDate(session.createdAt),
+            value: _formatFullDate(_session.createdAt),
           ),
           const _RowDivider(),
           _DetailRow(
             label: 'Duration',
-            value: session.durationMinutes > 0
-                ? '${session.durationMinutes} min'
+            value: _session.durationMinutes > 0
+                ? '${_session.durationMinutes} min'
                 : '—',
           ),
           const _RowDivider(),
           _DetailRow(
             label: 'Rate',
-            value: '${session.ratePerMinute} coins/min',
+            value: '${_session.ratePerMinute} coins/min',
           ),
           const _RowDivider(),
-          if (isUserSide)
+          if (_isUserSide)
             _DetailRow(
               label: 'Total Charged',
-              value: '${session.totalCharged} coins',
+              value: '${_session.totalCharged} coins',
               valueBold: true,
               valueColor: AppColors.deepDarkBrown,
             )
           else ...[
             _DetailRow(
               label: 'Gross Earnings',
-              value: '₹${session.totalCharged}',
+              value: '₹${_session.totalCharged}',
             ),
             const _RowDivider(),
             _DetailRow(
-              label: 'Commission (${session.commissionPercent}%)',
+              label: 'Commission (${_session.commissionPercent}%)',
               value:
-                  '-₹${session.totalCharged - session.priestEarnings}',
+                  '-₹${_session.totalCharged - _session.priestEarnings}',
             ),
             const _RowDivider(),
             _DetailRow(
               label: 'Net Earnings',
-              value: '₹${session.priestEarnings}',
+              value: '₹${_session.priestEarnings}',
               valueBold: true,
               valueColor: _kEarningsGreen,
             ),
@@ -260,7 +291,7 @@ class SessionDetailPage extends StatelessWidget {
             const _RowDivider(),
             _DetailRow(
               label: 'End Reason',
-              value: _humanizeEndReason(session.endReason),
+              value: _humanizeEndReason(_session.endReason),
             ),
           ],
         ],
@@ -269,7 +300,7 @@ class SessionDetailPage extends StatelessWidget {
   }
 
   Widget _buildRatingCard() {
-    final stars = session.userRating!.round();
+    final stars = _session.userRating!.round();
 
     return Container(
       width: double.infinity,
@@ -285,7 +316,7 @@ class SessionDetailPage extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           Text(
-            isUserSide ? 'Your Rating' : "User's Rating",
+            _isUserSide ? 'Your Rating' : "User's Rating",
             style: GoogleFonts.inter(
               fontSize: 13,
               fontWeight: FontWeight.w600,
@@ -311,8 +342,8 @@ class SessionDetailPage extends StatelessWidget {
               );
             }),
           ),
-          if (session.userFeedback != null &&
-              session.userFeedback!.isNotEmpty) ...[
+          if (_session.userFeedback != null &&
+              _session.userFeedback!.isNotEmpty) ...[
             const SizedBox(height: 14),
             Container(
               width: double.infinity,
@@ -322,7 +353,7 @@ class SessionDetailPage extends StatelessWidget {
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(
-                session.userFeedback!,
+                _session.userFeedback!,
                 style: GoogleFonts.inter(
                   fontSize: 13,
                   fontWeight: FontWeight.w400,
@@ -338,12 +369,110 @@ class SessionDetailPage extends StatelessWidget {
   }
 
   void _openTranscript(BuildContext context) {
-    context.push('/session/transcript/${session.id}', extra: {
+    context.push('/session/transcript/${_session.id}', extra: {
       'otherName': _otherName,
-      'sessionDate': _formatFullDate(session.createdAt),
+      'sessionDate': _formatFullDate(_session.createdAt),
+    });
+  }
+
+  // "Chat Again" tap path. Runs the preflight balance gate, then
+  // hands off to the waiting screen. Pulled out of the inline
+  // closure because the preflight is async and the closure inside
+  // the build was getting tangled.
+  Future<void> _startChatAgain(BuildContext context) async {
+    final canStart = await SessionPreflight.check(
+      context,
+      type: 'chat',
+      priestName: _session.priestName,
+    );
+    if (!canStart || !context.mounted) return;
+    context.push('/session/waiting', extra: <String, dynamic>{
+      'priestId': _session.priestId,
+      'priestName': _session.priestName,
+      'priestPhotoUrl': _session.priestPhotoUrl,
+      'priestDenomination': _session.priestDenomination,
+      'type': 'chat',
     });
   }
 }
+
+// ─── Chat Again button (user side, completed sessions) ────
+
+class _ChatAgainButton extends StatefulWidget {
+  final String priestName;
+  final VoidCallback onTap;
+
+  const _ChatAgainButton({
+    required this.priestName,
+    required this.onTap,
+  });
+
+  @override
+  State<_ChatAgainButton> createState() => _ChatAgainButtonState();
+}
+
+class _ChatAgainButtonState extends State<_ChatAgainButton> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final name = widget.priestName.isNotEmpty
+        ? widget.priestName
+        : 'this speaker';
+
+    return Listener(
+      onPointerDown: (_) => setState(() => _scale = 0.97),
+      onPointerUp: (_) => setState(() => _scale = 1.0),
+      onPointerCancel: (_) => setState(() => _scale = 1.0),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: widget.onTap,
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            width: double.infinity,
+            height: 48,
+            decoration: BoxDecoration(
+              color: AppColors.primaryBrown.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: AppColors.primaryBrown.withValues(alpha: 0.15),
+              ),
+            ),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Icon(
+                  Icons.chat_bubble_outline_rounded,
+                  size: 16,
+                  color: AppColors.primaryBrown,
+                ),
+                const SizedBox(width: 8),
+                Flexible(
+                  child: Text(
+                    'Chat Again with $name',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.primaryBrown,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
 
 // ─── Status badge (mirrors the list version) ───────────────
 
@@ -560,6 +689,16 @@ String _humanizeEndReason(String reason) {
       return 'Network disconnected';
     case 'connection_failed':
       return 'Failed to connect';
+    case 'request_timeout':
+    case 'watchdog_pending_timeout':
+      // Same human-visible outcome — the priest never responded in
+      // time. The two server-side codes distinguish which path
+      // expired the request (user-side CF vs. cron safety net) for
+      // debugging, but the user opening their session detail just
+      // wants the plain story.
+      return 'Speaker did not respond in time';
+    case 'superseded_by_new_request':
+      return 'Replaced by a newer request';
     default:
       return reason;
   }

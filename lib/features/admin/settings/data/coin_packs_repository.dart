@@ -40,7 +40,8 @@ class CoinPacksRepository {
 
   Future<void> setPopular(String packId) async {
     final batch = FirebaseFirestore.instance.batch();
-    final allPacks = await _packsRef.get();
+    final allPacks =
+        await _packsRef.get().timeout(const Duration(seconds: 10));
     for (final doc in allPacks.docs) {
       batch.update(doc.reference, {'isPopular': doc.id == packId});
     }

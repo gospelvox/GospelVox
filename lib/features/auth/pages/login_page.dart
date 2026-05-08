@@ -6,6 +6,7 @@
 // ignored — this page only handles admin sign-in.
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -92,7 +93,7 @@ class _AdminLoginScreenState extends State<_AdminLoginScreen> {
 
   // user@domain.tld with TLD ≥ 2 chars. Permissive for real-world admin emails.
   bool _isValidEmail(String email) {
-    final regex = RegExp(r'^[\w-\.]+@([\w-]+\.)+[\w-]{2,}$');
+    final regex = RegExp(r'^[\w\+\-\.]+@([\w-]+\.)+[\w-]{2,}$');
     return regex.hasMatch(email.trim());
   }
 
@@ -125,6 +126,7 @@ class _AdminLoginScreenState extends State<_AdminLoginScreen> {
 
     if (emailError != null || passwordError != null) return;
 
+    HapticFeedback.mediumImpact();
     FocusScope.of(context).unfocus();
     context.read<AuthCubit>().signInWithEmail(
           _emailController.text.trim(),

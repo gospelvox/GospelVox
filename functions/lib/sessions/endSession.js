@@ -96,9 +96,14 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
     });
     // Bump the priest's session count on the priest doc so the
     // dashboard stat reflects this session immediately, without
-    // waiting for an aggregation job.
+    // waiting for an aggregation job. Also clear isBusy — the
+    // session system owns isBusy (acceptSession sets it true,
+    // we clear it here) so the user-feed reflection of "this
+    // priest is busy" drops the moment the session ends, no
+    // matter who ended it.
     await db.doc(`priests/${session.priestId}`).update({
         totalSessions: admin.firestore.FieldValue.increment(1),
+        isBusy: false,
     });
     const finalUserSnap = await db.doc(`users/${session.userId}`).get();
     const finalUserBalance = Number((_r = (_q = finalUserSnap.data()) === null || _q === void 0 ? void 0 : _q.coinBalance) !== null && _r !== void 0 ? _r : 0);

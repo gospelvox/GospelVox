@@ -14,6 +14,7 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 
@@ -29,6 +30,11 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
   final BibleSessionRepository _repository = BibleSessionRepository();
   List<BibleSessionModel> _sessions = [];
   bool _isLoading = true;
+  // Read once on load so the "+" tap can gate before the priest
+  // fills out a long form. Stays as a bool (not a stream) because
+  // activation flips at most once during a session and a stale
+  // negative re-prompts harmlessly — the paywall is idempotent.
+  bool _isActivated = false;
   String? _error;
 
   @override
@@ -49,10 +55,26 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
     }
 
     try {
-      final list = await _repository.getPriestSessions(uid);
+      // Two parallel reads: the session list AND the priest's own
+      // doc for the activation flag. We swallow priest-doc errors —
+      // if the read fails, default to !activated and let the
+      // paywall sheet surface the right message instead of letting
+      // the form open and fail at submit.
+      final results = await Future.wait([
+        _repository.getPriestSessions(uid),
+        FirebaseFirestore.instance
+            .doc('priests/$uid')
+            .get()
+            .timeout(const Duration(seconds: 8)),
+      ]);
       if (!mounted) return;
+      final list = results[0] as List<BibleSessionModel>;
+      final priestDoc =
+          results[1] as DocumentSnapshot<Map<String, dynamic>>;
       setState(() {
         _sessions = list;
+        _isActivated =
+            (priestDoc.data()?['isActivated'] as bool?) ?? false;
         _isLoading = false;
         _error = null;
       });
@@ -66,6 +88,15 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
   }
 
   Future<void> _showCreateSheet() async {
+    // Activation gate. An unactivated priest cannot publish a Bible
+    // session (Firestore rules deny the write), so we surface the
+    // paywall sheet at the "+" tap instead of letting them fill the
+    // entire form and fail at submit.
+    if (!_isActivated) {
+      await ActivationPromptSheet.show(context);
+      return;
+    }
+
     final created = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,

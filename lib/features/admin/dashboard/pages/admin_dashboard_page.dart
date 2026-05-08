@@ -1,5 +1,6 @@
 // Admin dashboard — home hub for the admin role
 
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
@@ -186,7 +187,8 @@ class _HeaderState extends State<_Header> {
                               fontSize: 15,
                               fontWeight: FontWeight.w600,
                               color: AdminColors.textPrimary)),
-                      Text('gospelvox1@gmail.com',
+                      Text(
+                          FirebaseAuth.instance.currentUser?.email ?? 'Admin',
                           style: GoogleFonts.inter(
                               fontSize: 12,
                               fontWeight: FontWeight.w400,

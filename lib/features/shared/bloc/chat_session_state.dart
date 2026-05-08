@@ -20,6 +20,13 @@ class ChatSessionLoading extends ChatSessionState {
 
 class ChatSessionActive extends ChatSessionState {
   final SessionModel session;
+  // Flat list of bubbles, oldest first. Past-session bubbles are at
+  // the front (each carries its own sessionId so the view can render
+  // a divider at every session boundary), live-session bubbles + any
+  // optimistic outbound bubbles are at the end. The view uses each
+  // bubble's `sessionId` to decide whether long-press reactions are
+  // allowed (current session only) — past bubbles render exactly the
+  // same as live ones, just inert.
   final List<ChatMessage> messages;
   final int elapsedSeconds;
   final int remainingBalance;
@@ -33,6 +40,12 @@ class ChatSessionActive extends ChatSessionState {
   // their next message arrives.
   final bool showIdleWarning;
 
+  // { pastSessionId → date + duration } for the divider widget.
+  // Built once at session start by the cubit's prefetch and then
+  // immutable for the lifetime of the chat — past sessions can't
+  // gain new messages, so there's nothing to update.
+  final Map<String, PastSessionMeta> pastMeta;
+
   const ChatSessionActive({
     required this.session,
     required this.messages,
@@ -42,6 +55,7 @@ class ChatSessionActive extends ChatSessionState {
     this.isSendingMessage = false,
     this.isEnding = false,
     this.showIdleWarning = false,
+    this.pastMeta = const {},
   });
 
   // MM:SS used by the top-bar timer pill. We pad both halves so the
@@ -73,6 +87,7 @@ class ChatSessionActive extends ChatSessionState {
     bool? isSendingMessage,
     bool? isEnding,
     bool? showIdleWarning,
+    Map<String, PastSessionMeta>? pastMeta,
   }) {
     return ChatSessionActive(
       session: session ?? this.session,
@@ -83,6 +98,7 @@ class ChatSessionActive extends ChatSessionState {
       isSendingMessage: isSendingMessage ?? this.isSendingMessage,
       isEnding: isEnding ?? this.isEnding,
       showIdleWarning: showIdleWarning ?? this.showIdleWarning,
+      pastMeta: pastMeta ?? this.pastMeta,
     );
   }
 }

@@ -61,15 +61,33 @@ class SessionRepository {
   // billingTick CF can use it as the billing epoch. lastHeartbeat
   // gets the same timestamp so the watchdog doesn't kill a
   // session that's one second old.
+  //
+  // We also flip the priest's isBusy=true atomically with the
+  // session activation. isBusy is owned by the session system —
+  // not by the dashboard or the availability page — so user-side
+  // home rendering ("Busy · in session") matches the actual
+  // session state without any client-side reconciliation.
+  // endSession + sessionWatchdog clear isBusy=false when the
+  // session terminates.
   Future<void> acceptSession(String sessionId) async {
-    await _db
-        .doc('sessions/$sessionId')
-        .update({
-          'status': 'active',
-          'startedAt': FieldValue.serverTimestamp(),
-          'lastHeartbeat': FieldValue.serverTimestamp(),
-        })
+    final sessionRef = _db.doc('sessions/$sessionId');
+    final sessionSnap = await sessionRef
+        .get()
         .timeout(const Duration(seconds: 10));
+    final priestId = sessionSnap.data()?['priestId'] as String?;
+
+    final batch = _db.batch();
+    batch.update(sessionRef, {
+      'status': 'active',
+      'startedAt': FieldValue.serverTimestamp(),
+      'lastHeartbeat': FieldValue.serverTimestamp(),
+    });
+    if (priestId != null && priestId.isNotEmpty) {
+      batch.update(_db.doc('priests/$priestId'), {
+        'isBusy': true,
+      });
+    }
+    await batch.commit().timeout(const Duration(seconds: 10));
   }
 
   Future<void> declineSession(String sessionId) async {
@@ -82,10 +100,13 @@ class SessionRepository {
         .timeout(const Duration(seconds: 10));
   }
 
-  // User taps Cancel while waiting, or the 60-second client-side
-  // countdown hits zero. Best-effort — the session may already be
-  // accepted/declined by the time this fires, in which case the
-  // update throws and the caller swallows it.
+  // User taps Cancel while waiting. Best-effort — the session may
+  // already be accepted/declined by the time this fires, in which
+  // case the update throws and the caller swallows it.
+  //
+  // Note: 60-second client-side timeout uses expireSessionRequest
+  // (CF) instead so the priest gets a "missed request" notification.
+  // Active user-cancel writes 'cancelled' (no notification).
   Future<void> cancelSession(String sessionId) async {
     await _db
         .doc('sessions/$sessionId')
@@ -93,6 +114,23 @@ class SessionRepository {
           'status': 'cancelled',
           'endedAt': FieldValue.serverTimestamp(),
         })
+        .timeout(const Duration(seconds: 10));
+  }
+
+  // Fires the expireSessionRequest CF when the user-side 60-second
+  // countdown elapses without a priest response. The CF atomically
+  // marks the session as expired AND writes a missed_request
+  // notification + push to the priest, so a successful call always
+  // produces a priest-side signal that someone tried to reach them.
+  //
+  // Fire-and-forget from the cubit — the user-visible state already
+  // transitioned to "Session expired" locally before this resolves,
+  // and the watchdog 5-minute cron is a safety net for any failed
+  // call so the priest still gets notified.
+  Future<void> expireSessionRequest(String sessionId) async {
+    await _functions
+        .httpsCallable('expireSessionRequest')
+        .call({'sessionId': sessionId})
         .timeout(const Duration(seconds: 10));
   }
 
@@ -137,15 +175,133 @@ class SessionRepository {
 
   // Live stream of messages ordered oldest → newest so ListView can
   // render top-down without having to reverse the list every tick.
+  // Each message is stamped with its `sessionId` so the chat surface
+  // can tell live bubbles apart from prefetched history when the two
+  // are merged into a single list.
   Stream<List<ChatMessage>> watchMessages(String sessionId) {
     return _db
         .collection('sessions/$sessionId/messages')
         .orderBy('createdAt', descending: false)
         .snapshots()
         .map((snap) => snap.docs
-            .map((doc) =>
-                ChatMessage.fromFirestore(doc.id, doc.data()))
+            .map((doc) => ChatMessage.fromFirestore(
+                  doc.id,
+                  doc.data(),
+                  sessionId: sessionId,
+                ))
             .toList());
+  }
+
+  // Prefetch every chat message from this user-priest pair's prior
+  // completed sessions, capped to the most recent `cap`. Powers the
+  // "WhatsApp-style continuity" inside the live chat — past bubbles
+  // appear above the new ones with session dividers between them.
+  //
+  // Querying on the (userId, priestId) pair uses two equality
+  // filters with no composite index needed; status / type / current-
+  // session exclusion are applied client-side because the per-pair
+  // result set is bounded.
+  //
+  // Returns a paired record:
+  //   • messages — chronological, oldest first, with sessionId
+  //     stamped on each so the view layer can split by session
+  //     boundary for dividers.
+  //   • meta     — { sessionId → PastSessionMeta(date, duration) }
+  //     for divider rendering ("Session · May 1 · 15 min").
+  Future<({
+    List<ChatMessage> messages,
+    Map<String, PastSessionMeta> meta,
+  })> getPastChatMessages({
+    required String userId,
+    required String priestId,
+    required String excludeSessionId,
+    int cap = 200,
+  }) async {
+    final snap = await _db
+        .collection('sessions')
+        .where('userId', isEqualTo: userId)
+        .where('priestId', isEqualTo: priestId)
+        .get()
+        .timeout(const Duration(seconds: 10));
+
+    // Eligible = completed chats only, ordered oldest → newest so
+    // older context reads top-down once we slice for the cap.
+    final eligible = snap.docs
+        .map((d) => SessionModel.fromFirestore(d.id, d.data()))
+        .where((s) {
+          if (s.id == excludeSessionId) return false;
+          if (s.status != 'completed') return false;
+          if (s.type != 'chat') return false;
+          final ended = s.endedAt ?? s.createdAt;
+          return ended != null;
+        })
+        .toList()
+      ..sort((a, b) {
+        final aTime = a.endedAt ?? a.createdAt ?? DateTime(2000);
+        final bTime = b.endedAt ?? b.createdAt ?? DateTime(2000);
+        return aTime.compareTo(bTime);
+      });
+
+    if (eligible.isEmpty) {
+      return (
+        messages: const <ChatMessage>[],
+        meta: const <String, PastSessionMeta>{},
+      );
+    }
+
+    // Fan out subcollection reads in parallel — for a typical
+    // user-priest pair (1–10 sessions) this lands in 200–400ms
+    // regardless of count, way better than serial round-trips.
+    final perSessionMessages = await Future.wait(eligible.map((s) async {
+      try {
+        final msgSnap = await _db
+            .collection('sessions/${s.id}/messages')
+            .orderBy('createdAt', descending: false)
+            .get()
+            .timeout(const Duration(seconds: 8));
+        return msgSnap.docs
+            .map((d) => ChatMessage.fromFirestore(
+                  d.id,
+                  d.data(),
+                  sessionId: s.id,
+                ))
+            .toList();
+      } catch (_) {
+        // A single failed subcollection read shouldn't blank the
+        // entire history — return empty for that session and let
+        // the rest render.
+        return const <ChatMessage>[];
+      }
+    }));
+
+    final all = <ChatMessage>[];
+    for (final list in perSessionMessages) {
+      all.addAll(list);
+    }
+
+    // Apply cap from the END (most recent kept). Keeps newer
+    // context closest to the live conversation, drops the oldest
+    // bubbles when the user has a very long history.
+    final capped = all.length > cap ? all.sublist(all.length - cap) : all;
+
+    // Build meta only for sessions whose messages survived the cap —
+    // a divider for a session whose bubbles all got truncated would
+    // dangle in the UI.
+    final survivingSessionIds = <String>{
+      for (final m in capped) m.sessionId,
+    };
+    final meta = <String, PastSessionMeta>{};
+    for (final s in eligible) {
+      if (!survivingSessionIds.contains(s.id)) continue;
+      final ts = s.endedAt ?? s.createdAt;
+      if (ts == null) continue;
+      meta[s.id] = PastSessionMeta(
+        date: ts,
+        durationMinutes: s.durationMinutes,
+      );
+    }
+
+    return (messages: capped, meta: meta);
   }
 
   // Deduct one minute's worth of coins and credit the priest. Kept
@@ -270,6 +426,170 @@ class SessionRepository {
     return _db.doc('users/$userId').snapshots().map(
           (snap) => (snap.data()?['coinBalance'] as num?)?.toInt() ?? 0,
         );
+  }
+
+  // ─── Priest free messaging ──────────────────────────────
+
+  // Fires the sendPriestMessage CF. Returns the full callable result
+  // so the caller can decide what to do on `delivered: false` (the
+  // CF reports this when the user has muted the priest — the send
+  // technically succeeded but no notification or push went out).
+  Future<({
+    bool success,
+    bool delivered,
+    int remainingPerUserToday,
+    int remainingTotalToday,
+  })> sendPriestMessage({
+    required String userId,
+    required String text,
+  }) async {
+    final result = await _functions
+        .httpsCallable('sendPriestMessage')
+        .call({
+          'userId': userId,
+          'text': text,
+        })
+        .timeout(const Duration(seconds: 15));
+
+    final raw = result.data;
+    final data = raw is Map
+        ? Map<String, dynamic>.from(raw)
+        : const <String, dynamic>{};
+    return (
+      success: data['success'] as bool? ?? false,
+      delivered: data['delivered'] as bool? ?? false,
+      remainingPerUserToday:
+          (data['remainingPerUserToday'] as num?)?.toInt() ?? 0,
+      remainingTotalToday:
+          (data['remainingTotalToday'] as num?)?.toInt() ?? 0,
+    );
+  }
+
+  // Reads every priest-initiated free message between this user and
+  // this priest. Renders them as ChatMessages (kind=priestMessage)
+  // so the chat thread can merge them by timestamp with session
+  // bubbles. Includes both the new 'priest_message' type and the
+  // legacy 'follow_up' type — old follow-up notifications stay
+  // visible for backwards compatibility.
+  //
+  // We query without orderBy because pairing equality + orderBy
+  // would require a composite index; one user-priest pair has at
+  // most ~hundreds of free messages, so client-side sorting is
+  // negligible. Same approach SessionHistoryRepository uses.
+  Future<List<ChatMessage>> getPriestFreeMessages({
+    required String userId,
+    required String priestId,
+  }) async {
+    final snap = await _db
+        .collection('notifications')
+        .where('userId', isEqualTo: userId)
+        .where('priestId', isEqualTo: priestId)
+        .where('type', whereIn: ['priest_message', 'follow_up'])
+        .get()
+        .timeout(const Duration(seconds: 8));
+
+    final messages = snap.docs
+        .map((d) => ChatMessage.fromNotification(d.id, d.data()))
+        .where((m) => m.text.isNotEmpty)
+        .toList()
+      ..sort((a, b) {
+        final aTime = a.createdAt ?? DateTime(2000);
+        final bTime = b.createdAt ?? DateTime(2000);
+        return aTime.compareTo(bTime);
+      });
+
+    return messages;
+  }
+
+  // Live stream of free messages for this (user, priest) pair —
+  // used by the priest-side per-user chat view AND the user-side
+  // live chat so a freshly-sent free message lands on both screens
+  // within ~1s without a manual refresh. Same query as
+  // getPriestFreeMessages but as a snapshot stream.
+  Stream<List<ChatMessage>> watchPriestFreeMessages({
+    required String userId,
+    required String priestId,
+  }) {
+    return _db
+        .collection('notifications')
+        .where('userId', isEqualTo: userId)
+        .where('priestId', isEqualTo: priestId)
+        .where('type', whereIn: ['priest_message', 'follow_up'])
+        .snapshots()
+        .map((snap) {
+      final messages = snap.docs
+          .map((d) => ChatMessage.fromNotification(d.id, d.data()))
+          .where((m) => m.text.isNotEmpty)
+          .toList()
+        ..sort((a, b) {
+          final aTime = a.createdAt ?? DateTime(2000);
+          final bTime = b.createdAt ?? DateTime(2000);
+          return aTime.compareTo(bTime);
+        });
+      return messages;
+    });
+  }
+
+  // ─── User mute (per priest) ─────────────────────────────
+
+  // Live stream of the current user's muted-priest list. Drives the
+  // chat header's mute toggle state and lets the priest_message
+  // merger filter out messages from muted priests purely on the
+  // client (the CF also enforces this, so the filter is defence in
+  // depth, not the only line of safety).
+  Stream<Set<String>> watchMutedPriestIds(String userId) {
+    return _db.doc('users/$userId').snapshots().map((snap) {
+      final raw = snap.data()?['mutedPriestIds'];
+      if (raw is List) {
+        return raw.whereType<String>().toSet();
+      }
+      return const <String>{};
+    });
+  }
+
+  Future<void> setPriestMuted({
+    required String userId,
+    required String priestId,
+    required bool muted,
+  }) async {
+    await _db
+        .doc('users/$userId')
+        .set(
+          {
+            'mutedPriestIds': muted
+                ? FieldValue.arrayUnion([priestId])
+                : FieldValue.arrayRemove([priestId]),
+          },
+          SetOptions(merge: true),
+        )
+        .timeout(const Duration(seconds: 5));
+  }
+
+  // Files a report against a single priest free message. The admin
+  // reports queue picks it up via the existing reports collection —
+  // no admin-side changes needed.
+  Future<void> reportPriestMessage({
+    required String reportedPriestId,
+    required String reportedPriestName,
+    required String reporterUserId,
+    required String reporterName,
+    required String messageText,
+    required String messageId,
+  }) async {
+    await _db.collection('reports').add({
+      'reportedBy': reporterUserId,
+      'reporterName': reporterName,
+      'reportedUser': reportedPriestId,
+      'reportedUserName': reportedPriestName,
+      'reason': 'priest_message',
+      'description': messageText,
+      // Tag the source message id so the admin can correlate the
+      // report back to the exact notifications/{id} doc.
+      'sessionId': null,
+      'messageId': messageId,
+      'status': 'pending',
+      'createdAt': FieldValue.serverTimestamp(),
+    }).timeout(const Duration(seconds: 8));
   }
 
   // ─── Voice (Agora) ──────────────────────────────────────

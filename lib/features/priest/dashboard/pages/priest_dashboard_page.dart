@@ -1,25 +1,34 @@
 // Priest dashboard — home surface for an approved priest.
 //
-// Availability model (important — this is the authoritative flow):
+// Availability model (3 states, NO derived flags):
 //
-//   • Online is AUTOMATIC. App foregrounded & priest is activated
-//     ⇒ isOnline=true. App paused for 2 minutes ⇒ isOnline=false.
-//     There is NO manual online/offline toggle anywhere in the app.
+//   • ONLINE — isOnline=true, isBusy=false. The default for an
+//     activated priest with the app open. Set on dashboard mount
+//     and refreshed via the 30s heartbeat. Stays true through
+//     backgrounding and force-kill — only the watchdog (after a
+//     stale-heartbeat sweep) or the priest's own "Go Offline"
+//     toggle / sign-out can flip it false.
 //
-//   • Busy is MANUAL and set in Settings > Pause Requests. A busy
-//     priest is still online (they can finish ongoing work) but
-//     users see them as "Busy" and can't start new sessions. The
-//     dashboard reflects the current state; the actual toggle lives
-//     on the Settings page so the dashboard stays focused on
-//     read-only status + quick actions.
+//   • BUSY — isOnline=true, isBusy=true. Set ONLY by the session
+//     system when an active session begins (acceptSession writes
+//     the flag) and cleared when the session ends (endSession +
+//     watchdog clear it). Never written by this dashboard.
 //
-//   • A 30-second heartbeat runs while online so a Cloud Function
-//     watchdog can kick stale priests when the app is force-killed
-//     instead of gracefully backgrounded.
+//   • OFFLINE — isOnline=false. Either the priest manually
+//     toggled "Go Offline" in Settings, or the watchdog detected
+//     no heartbeat for >5 minutes (network drop, force-kill).
 //
-//   • Unactivated priests do NOT auto-go-online. An activation CTA
-//     sits at the top of the dashboard until they activate; the
-//     status card reads "Not Activated" with explanation.
+// 30-second heartbeat runs while the dashboard is mounted and
+// foregrounded. It refreshes lastHeartbeat so the watchdog can
+// distinguish a live priest from one whose phone died. Heartbeat
+// stops when the app is backgrounded but isOnline stays true —
+// the priest is still "available," they just don't have the app
+// in front of them. The watchdog's 5-minute window catches truly-
+// dead priests; backgrounding for 1-4 minutes is normal usage.
+//
+// Unactivated priests do NOT auto-go-online. An activation CTA
+// sits at the top of the dashboard until they activate; the
+// status card reads "Not Activated" with explanation.
 
 import 'dart:async';
 
@@ -27,12 +36,12 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/features/shared/data/session_model.dart';
 
 class PriestDashboardPage extends StatefulWidget {
   const PriestDashboardPage({super.key});
@@ -44,7 +53,6 @@ class PriestDashboardPage extends StatefulWidget {
 class _PriestDashboardPageState extends State<PriestDashboardPage>
     with WidgetsBindingObserver {
   Timer? _heartbeatTimer;
-  Timer? _offlineGraceTimer;
 
   bool _loading = true;
 
@@ -58,19 +66,42 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   double _rating = 0.0;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
-  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _requestSub;
 
-  // Track which request IDs we've already routed to so a stream
-  // refire (e.g. another field changing on the same doc) doesn't
-  // push the incoming-request screen twice for the same session.
-  final Set<String> _seenRequestIds = <String>{};
+  // Latches once the first auto-online write of this dashboard
+  // mount has fired. Without this, EVERY snapshot showing
+  // isOnline=false would re-trigger _goOnlineIfEligible() — which
+  // means the moment the priest taps Go Offline on the settings
+  // page, this listener observes the resulting false snapshot and
+  // immediately writes true back, fighting the manual toggle.
+  // First-mount auto-online still works (and so does the
+  // "activation just flipped on" path); subsequent snapshots
+  // respect whatever the priest's last write said.
+  bool _didInitialAutoOnline = false;
+  // Live stream of unread missed-request notifications from the last
+  // 24 hours. Drives the amber missed-request banner that sits below
+  // the greeting and above the status card. The banner is the priest's
+  // single, glanceable signal that "someone tried to reach you" — it
+  // stays visible until they respond or dismiss each one from the My
+  // Users page (no longer cleared by simply opening My Users).
+  //
+  // We hold the latest requester name as well as the count so the
+  // banner can render the "Asha tried to reach you" single-name
+  // variant without a second query.
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _missedSub;
+  int _missedRequestCount = 0;
+  String _missedRequesterName = '';
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _attachDocStream();
-    _attachPendingRequestStream();
+    // Pending-request routing now lives in
+    // PriestIncomingRequestService (initialised in main.dart) so
+    // that incoming calls route to /priest/incoming regardless of
+    // which page the priest is currently on. Keeping a duplicate
+    // listener here would just double-push the same session.
+    _attachMissedRequestStream();
 
     // Drain any pending notification-tap route. A tap from terminated
     // state stashes the route during NotificationService.init(); the
@@ -94,13 +125,12 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _heartbeatTimer?.cancel();
-    _offlineGraceTimer?.cancel();
     _docSub?.cancel();
-    _requestSub?.cancel();
-    // Best-effort mark offline on unmount. Fire-and-forget is
-    // intentional — if the widget is gone the priest is gone, and
-    // the watchdog CF catches anything this write misses.
-    _markOffline();
+    _missedSub?.cancel();
+    // No isOnline write on dispose — see availability-model header.
+    // The watchdog CF sweeps stale heartbeats as the safety net for
+    // force-killed priests; sign-out writes offline directly via
+    // AuthRepository before clearing auth state.
     super.dispose();
   }
 
@@ -108,10 +138,18 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   void didChangeAppLifecycleState(AppLifecycleState state) {
     if (state == AppLifecycleState.paused ||
         state == AppLifecycleState.hidden) {
-      _startOfflineGrace();
+      // Backgrounding does NOT change isOnline anymore — the priest
+      // is still "available" while the app is in their pocket. We
+      // just stop the heartbeat: the watchdog will pick up a truly-
+      // dead device after 5 stale minutes.
+      _heartbeatTimer?.cancel();
+      _heartbeatTimer = null;
     } else if (state == AppLifecycleState.resumed) {
-      _cancelOfflineGrace();
-      _goOnlineIfEligible();
+      // Send one fresh heartbeat immediately so a priest who just
+      // came back doesn't sit at "watchdog about to flip me offline"
+      // for 30 seconds, then restart the periodic timer.
+      _sendHeartbeatOnce();
+      _ensureHeartbeatRunning();
     }
   }
 
@@ -140,11 +178,20 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         _loading = false;
       });
 
-      // First snapshot (or activation just flipped on): attempt to
-      // go online. Skipping the initial snapshot would leave a
-      // freshly-resumed priest offline until the next lifecycle
-      // event fires.
-      if (_isActivated && (!wasActivated || !_isOnline)) {
+      // Auto-online runs ONLY:
+      //   • on the first activated snapshot of this dashboard mount
+      //     (the "open the app → become available" intent), OR
+      //   • when activation transitions false→true (priest just
+      //     finished the activation flow).
+      // Crucially, this does NOT re-fire whenever a later snapshot
+      // shows isOnline=false. Without that guard, the priest's
+      // manual Go-Offline toggle would be overwritten within ~1s
+      // because writing isOnline=false produces a snapshot that
+      // satisfies the old condition and re-onlines them.
+      final activationJustEnabled = !wasActivated && _isActivated;
+      if (_isActivated &&
+          (!_didInitialAutoOnline || activationJustEnabled)) {
+        _didInitialAutoOnline = true;
         _goOnlineIfEligible();
       }
 
@@ -178,67 +225,71 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   // We dedupe seen ids because a still-pending doc emits multiple
   // snapshots as metadata propagates, and we don't want to push
   // the incoming screen twice for the same request.
-  void _attachPendingRequestStream() {
+  // Live stream of unread missed_request notifications from the last
+  // 24 hours. The 24h floor is a server-side range filter so stale
+  // requests don't keep accruing on the dashboard banner forever
+  // even if the priest never explicitly dismisses them. Pairing
+  // four equality filters + a range + orderBy needs a composite
+  // index — Firebase emits a one-click create link in the console
+  // logs the first time this query runs.
+  //
+  // We capture the most recent requester's name (first doc of a
+  // descending-by-createdAt result) so the banner can render the
+  // "Asha tried to reach you" single-name variant without firing
+  // a second query.
+  void _attachMissedRequestStream() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    _requestSub = FirebaseFirestore.instance
-        .collection('sessions')
-        .where('priestId', isEqualTo: uid)
-        .where('status', isEqualTo: 'pending')
+    final since = Timestamp.fromDate(
+      DateTime.now().subtract(const Duration(hours: 24)),
+    );
+
+    _missedSub = FirebaseFirestore.instance
+        .collection('notifications')
+        .where('userId', isEqualTo: uid)
+        .where('type', isEqualTo: 'missed_request')
+        .where('isRead', isEqualTo: false)
+        .where('createdAt', isGreaterThan: since)
+        .orderBy('createdAt', descending: true)
+        .limit(99)
         .snapshots()
         .listen((snap) {
       if (!mounted) return;
-      if (snap.docs.isEmpty) return;
-
-      // Pick the newest pending by createdAt (client-side sort).
-      // Docs with no timestamp yet rank last — they'll float to
-      // the top on the next snapshot once the server stamps them.
-      final docs = snap.docs.toList()
-        ..sort((a, b) {
-          final aTime = a.data()['createdAt'] as Timestamp?;
-          final bTime = b.data()['createdAt'] as Timestamp?;
-          if (aTime == null && bTime == null) return 0;
-          if (aTime == null) return 1;
-          if (bTime == null) return -1;
-          return bTime.compareTo(aTime);
-        });
-
-      final doc = docs.first;
-      if (_seenRequestIds.contains(doc.id)) return;
-
-      final session = SessionModel.fromFirestore(doc.id, doc.data());
-
-      // Only react to genuinely fresh requests. A session that's
-      // already >60s old is about to expire anyway — routing to
-      // the incoming screen would just flash the expired sheet.
-      if (session.createdAt != null) {
-        final age = DateTime.now().difference(session.createdAt!);
-        if (age.inSeconds > 60) return;
+      final nextCount = snap.size;
+      final nextName = snap.docs.isNotEmpty
+          ? (snap.docs.first.data()['requesterName'] as String? ?? '')
+          : '';
+      if (nextCount == _missedRequestCount &&
+          nextName == _missedRequesterName) {
+        return;
       }
-
-      _seenRequestIds.add(doc.id);
-      debugPrint(
-        '[PriestDashboard] Incoming request ${doc.id} '
-        'from ${session.userName}',
-      );
-      context.push('/priest/incoming', extra: {
-        'session': session,
-        'isActivated': _isActivated,
+      setState(() {
+        _missedRequestCount = nextCount;
+        _missedRequesterName = nextName;
       });
     }, onError: (e, st) {
-      // Surface the real error in logs. The most common cause now
-      // (after dropping orderBy) is a Firestore security rule that
-      // denies `sessions` collection reads — without this line the
-      // priest would just sit on a silent dashboard.
+      // Surface the real error in logs — without this we'd silently
+      // hide a misconfigured query forever. The most common failure
+      // here is the FAILED_PRECONDITION you get the first time the
+      // query runs in a project: Firestore embeds a one-click
+      // create-index URL in the error message. Open the Flutter
+      // console (Logcat / `flutter run` output), click the link,
+      // and the banner starts working ~1-3 minutes after the
+      // index finishes building.
       debugPrint(
-        '[PriestDashboard] pending-session stream failed: $e\n$st',
+        '[PriestDashboard] missed-request stream failed: $e\n$st',
       );
     });
   }
 
-  // ─── Automatic online/offline lifecycle ───────────────────
+  // ─── Online / busy / offline lifecycle ─────────────────────
 
+  // Called on first snapshot of the priest doc and whenever
+  // activation flips on. Writes isOnline=true and refreshes
+  // lastHeartbeat. Does NOT touch isBusy — that field is owned
+  // entirely by the session system (acceptSession sets, endSession
+  // clears). Skipped entirely until the priest is activated.
   Future<void> _goOnlineIfEligible() async {
     if (!_isActivated) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
@@ -254,19 +305,6 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
       // and watchdog tolerates transient write failures.
     }
     _ensureHeartbeatRunning();
-  }
-
-  Future<void> _markOffline() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    try {
-      await FirebaseFirestore.instance.doc('priests/$uid').update({
-        'isOnline': false,
-      });
-    } catch (_) {
-      // Same logic as _goOnlineIfEligible — swallow, watchdog is
-      // the authoritative safety net.
-    }
   }
 
   void _ensureHeartbeatRunning() {
@@ -290,22 +328,6 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     }
   }
 
-  void _startOfflineGrace() {
-    _offlineGraceTimer?.cancel();
-    // 2 minutes of grace so a quick app switch doesn't drop us from
-    // the feed — users would see a priest flicker out and back in
-    // every time the priest reads a notification.
-    _offlineGraceTimer = Timer(const Duration(minutes: 2), () async {
-      await _markOffline();
-      _heartbeatTimer?.cancel();
-    });
-  }
-
-  void _cancelOfflineGrace() {
-    _offlineGraceTimer?.cancel();
-    _offlineGraceTimer = null;
-  }
-
   // ─── Helpers ───────────────────────────────────────────────
 
   String _getGreeting() {
@@ -325,11 +347,13 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
 
   _StatusVariant get _statusVariant {
     if (!_isActivated) return _StatusVariant.notActivated;
-    if (_isOnline && _isBusy) return _StatusVariant.busy;
-    if (_isOnline) return _StatusVariant.online;
-    // Shouldn't normally land here while dashboard is mounted — lifecycle
-    // observer will flip isOnline=true within a few hundred ms of resume.
-    return _StatusVariant.offline;
+    if (!_isOnline) {
+      // Manual stop is the canonical "offline" — auto-go-online
+      // skips this state until the priest taps Resume Accepting.
+      return _StatusVariant.offline;
+    }
+    if (_isBusy) return _StatusVariant.busy;
+    return _StatusVariant.online;
   }
 
   // ─── Build ─────────────────────────────────────────────────
@@ -359,6 +383,11 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
                       _buildActivationCta(),
                       const SizedBox(height: 20),
                     ],
+                    _MissedRequestBanner(
+                      count: _missedRequestCount,
+                      requesterName: _missedRequesterName,
+                      onTap: () => context.push('/priest/missed-requests'),
+                    ),
                     _StatusCard(variant: _statusVariant),
                     const SizedBox(height: 20),
                     _buildStatsRow(),
@@ -383,6 +412,8 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   }
 
   Widget _buildHeader() {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
@@ -412,6 +443,10 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
             ],
           ),
         ),
+        if (uid != null) ...[
+          _NotificationBell(uid: uid),
+          const SizedBox(width: 12),
+        ],
         GestureDetector(
           behavior: HitTestBehavior.opaque,
           onTap: () => context.push('/priest/profile'),
@@ -510,7 +545,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
           ),
           const SizedBox(height: 10),
           Text(
-            'Pay a one-time ₹500 fee to appear in the user feed '
+            'Pay a one-time activation fee to appear in the user feed '
             'and start accepting sessions. Until then your account '
             'stays private.',
             style: GoogleFonts.inter(
@@ -578,10 +613,18 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
           title: 'My Profile',
           onTap: () => context.push('/priest/profile'),
         ),
+        // My Users is the priest's primary relationship surface —
+        // grouped by counterparty rather than by individual session
+        // so they think in PEOPLE, not transactions. Old session-
+        // history route remains reachable via deep link / settings.
+        //
+        // No badge here: the dedicated _MissedRequestBanner above
+        // the status card surfaces the unread missed-request count.
+        // Showing the same number twice on one screen was confusing.
         _QuickAction(
-          icon: Icons.history_rounded,
-          title: 'Session History',
-          onTap: () => context.push('/priest/session-history'),
+          icon: Icons.forum_outlined,
+          title: 'My Users',
+          onTap: () => context.push('/priest/my-users'),
         ),
         _QuickAction(
           icon: Icons.menu_book_outlined,
@@ -658,7 +701,9 @@ class _StatusCard extends StatelessWidget {
                     variant == _StatusVariant.busy) ...[
                   const SizedBox(height: 10),
                   Text(
-                    'Manage availability in Settings → Pause Requests.',
+                    variant == _StatusVariant.busy
+                        ? 'Manage in Settings → Pause / Stop Accepting.'
+                        : 'Manage availability in Settings.',
                     style: GoogleFonts.inter(
                       fontSize: 11,
                       fontWeight: FontWeight.w500,
@@ -678,7 +723,7 @@ class _StatusCard extends StatelessWidget {
     switch (v) {
       case _StatusVariant.online:
         return _StatusSpec(
-          title: "You're Online",
+          title: 'Online · Accepting requests',
           subtitle: 'Users can start chat or voice sessions with you '
               'right now.',
           dot: const Color(0xFF2E7D4F),
@@ -688,9 +733,9 @@ class _StatusCard extends StatelessWidget {
         );
       case _StatusVariant.busy:
         return _StatusSpec(
-          title: "You're Busy",
-          subtitle: "You're online, but requests are paused. Existing "
-              'conversations still work.',
+          title: 'Busy · Requests paused',
+          subtitle: "You're still on the platform — users see you as "
+              'Busy. Active sessions continue normally.',
           dot: AppColors.amberGold,
           titleColor: AppColors.amberGold,
           background: AppColors.amberGold.withValues(alpha: 0.1),
@@ -698,13 +743,13 @@ class _StatusCard extends StatelessWidget {
         );
       case _StatusVariant.offline:
         return _StatusSpec(
-          title: 'Reconnecting…',
-          subtitle: 'Your status is syncing. If this persists, check '
-              'your connection.',
-          dot: AppColors.muted.withValues(alpha: 0.4),
+          title: 'Offline · Not accepting requests',
+          subtitle: "You're hidden from the user feed. Tap Resume "
+              'Accepting in Settings to come back online.',
+          dot: AppColors.muted.withValues(alpha: 0.5),
           titleColor: AppColors.deepDarkBrown,
           background: AppColors.surfaceWhite,
-          border: AppColors.muted.withValues(alpha: 0.1),
+          border: AppColors.muted.withValues(alpha: 0.15),
         );
       case _StatusVariant.notActivated:
         return _StatusSpec(
@@ -822,7 +867,10 @@ class _QuickActionState extends State<_QuickAction> {
       onPointerCancel: (_) => setState(() => _scale = 1.0),
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
-        onTap: widget.onTap,
+        onTap: () {
+          HapticFeedback.lightImpact();
+          widget.onTap();
+        },
         child: AnimatedScale(
           scale: _scale,
           duration: const Duration(milliseconds: 120),
@@ -844,13 +892,15 @@ class _QuickActionState extends State<_QuickAction> {
                   width: 36,
                   height: 36,
                   decoration: BoxDecoration(
-                    color: AppColors.primaryBrown.withValues(alpha: 0.06),
+                    color:
+                        AppColors.primaryBrown.withValues(alpha: 0.06),
                     borderRadius: BorderRadius.circular(10),
                   ),
                   child: Icon(
                     widget.icon,
                     size: 18,
-                    color: AppColors.primaryBrown.withValues(alpha: 0.6),
+                    color:
+                        AppColors.primaryBrown.withValues(alpha: 0.6),
                   ),
                 ),
                 const SizedBox(height: 10),
@@ -867,6 +917,298 @@ class _QuickActionState extends State<_QuickAction> {
           ),
         ),
       ),
+    );
+  }
+}
+
+// Compact missed-request banner that sits between the greeting
+// and the status card. Three states:
+//   • count == 0 → SizedBox.shrink (banner gone)
+//   • count == 1 → "Asha tried to reach you" (single name)
+//   • count >= 2 → "You missed N requests" (with count chip on icon)
+//
+// AnimatedSwitcher fades + size-tweens between states so the dashboard
+// reflows smoothly when the count changes — no jump, no flicker. The
+// outer ValueKey includes the count *and* requester name so going
+// 1→1 with a different name (a fresh missed request lands while the
+// previous one is still pending) still triggers the transition.
+class _MissedRequestBanner extends StatefulWidget {
+  final int count;
+  final String requesterName;
+  final VoidCallback onTap;
+
+  const _MissedRequestBanner({
+    required this.count,
+    required this.requesterName,
+    required this.onTap,
+  });
+
+  @override
+  State<_MissedRequestBanner> createState() => _MissedRequestBannerState();
+}
+
+class _MissedRequestBannerState extends State<_MissedRequestBanner> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    final count = widget.count;
+    return AnimatedSwitcher(
+      duration: const Duration(milliseconds: 300),
+      switchInCurve: Curves.easeOutCubic,
+      switchOutCurve: Curves.easeInCubic,
+      transitionBuilder: (child, animation) {
+        return FadeTransition(
+          opacity: animation,
+          child: SizeTransition(
+            sizeFactor: animation,
+            axisAlignment: -1.0,
+            child: child,
+          ),
+        );
+      },
+      child: count <= 0
+          ? const SizedBox.shrink(key: ValueKey('missed-empty'))
+          : Padding(
+              key: ValueKey('missed-$count-${widget.requesterName}'),
+              padding: const EdgeInsets.only(bottom: 12),
+              child: Listener(
+                onPointerDown: (_) => setState(() => _scale = 0.98),
+                onPointerUp: (_) => setState(() => _scale = 1.0),
+                onPointerCancel: (_) => setState(() => _scale = 1.0),
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    HapticFeedback.lightImpact();
+                    widget.onTap();
+                  },
+                  child: AnimatedScale(
+                    scale: _scale,
+                    duration: const Duration(milliseconds: 120),
+                    curve: Curves.easeOut,
+                    child: _buildBanner(count),
+                  ),
+                ),
+              ),
+            ),
+    );
+  }
+
+  Widget _buildBanner(int count) {
+    final isMulti = count >= 2;
+    final title = isMulti
+        ? 'You missed $count requests'
+        : '${_displayName()} tried to reach you';
+    final subtitle =
+        isMulti ? 'Tap to view & respond' : 'Tap to respond';
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: [
+            AppColors.amberGold.withValues(alpha: 0.12),
+            AppColors.amberGold.withValues(alpha: 0.06),
+          ],
+          begin: Alignment.centerLeft,
+          end: Alignment.centerRight,
+        ),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppColors.amberGold.withValues(alpha: 0.2),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Phone-missed circle — with a count chip when there are
+          // multiple. Stack overhang is small (only 2px) so the
+          // banner's vertical bounds aren't blown out.
+          SizedBox(
+            width: 36,
+            height: 36,
+            child: Stack(
+              clipBehavior: Clip.none,
+              children: [
+                Container(
+                  width: 36,
+                  height: 36,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: AppColors.amberGold.withValues(alpha: 0.15),
+                  ),
+                  child: Icon(
+                    Icons.phone_missed_rounded,
+                    size: 18,
+                    color: AppColors.amberGold,
+                  ),
+                ),
+                if (isMulti)
+                  Positioned(
+                    top: -2,
+                    right: -2,
+                    child: Container(
+                      constraints: const BoxConstraints(minWidth: 16),
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 5,
+                        vertical: 1,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.amberGold,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppColors.background,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Text(
+                        count > 99 ? '99+' : '$count',
+                        textAlign: TextAlign.center,
+                        style: GoogleFonts.inter(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w800,
+                          color: Colors.white,
+                          height: 1.1,
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  title,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  subtitle,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          const SizedBox(width: 8),
+          Icon(
+            Icons.chevron_right_rounded,
+            size: 20,
+            color: AppColors.amberGold.withValues(alpha: 0.5),
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Trim a long name down to a single first-name token so the banner
+  // doesn't ellipsis on a 320px viewport. Falls back to "Someone" for
+  // the rare case the CF wrote an empty requesterName.
+  String _displayName() {
+    final raw = widget.requesterName.trim();
+    if (raw.isEmpty) return 'Someone';
+    final firstSpace = raw.indexOf(' ');
+    if (firstSpace <= 0) return raw;
+    return raw.substring(0, firstSpace);
+  }
+}
+
+// Bell + live unread count for the priest dashboard header. Streams
+// the notifications collection filtered by uid + isRead==false. We
+// stream rather than `.count()`-aggregate because the inbox is small
+// (≤50 unread realistically) and a stream gives instant feedback when
+// a CF writes a new notification, without a manual refresh.
+class _NotificationBell extends StatelessWidget {
+  final String uid;
+  const _NotificationBell({required this.uid});
+
+  @override
+  Widget build(BuildContext context) {
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('notifications')
+          .where('userId', isEqualTo: uid)
+          .where('isRead', isEqualTo: false)
+          .snapshots(),
+      builder: (context, snap) {
+        final count = snap.data?.docs.length ?? 0;
+        return GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: () => context.push('/priest/notifications'),
+          child: SizedBox(
+            width: 44,
+            height: 44,
+            child: Stack(
+              clipBehavior: Clip.none,
+              alignment: Alignment.center,
+              children: [
+                Container(
+                  width: 40,
+                  height: 40,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color: const Color(0xFFF7F5F2),
+                    border: Border.all(
+                      color: AppColors.muted.withValues(alpha: 0.15),
+                    ),
+                  ),
+                  child: const Icon(
+                    Icons.notifications_none_rounded,
+                    size: 20,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                if (count > 0)
+                  Positioned(
+                    top: 2,
+                    right: 2,
+                    child: Container(
+                      constraints: const BoxConstraints(
+                        minWidth: 16,
+                        minHeight: 16,
+                      ),
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      decoration: BoxDecoration(
+                        color: AppColors.errorRed,
+                        borderRadius: BorderRadius.circular(8),
+                        border: Border.all(
+                          color: AppColors.background,
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Center(
+                        child: Text(
+                          count > 9 ? '9+' : '$count',
+                          style: GoogleFonts.inter(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                            height: 1.0,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+              ],
+            ),
+          ),
+        );
+      },
     );
   }
 }
@@ -911,7 +1253,10 @@ class _ActivationCtaState extends State<_ActivationCta> {
             ),
             child: Center(
               child: Text(
-                'Activate for ₹500',
+                // Label intentionally amount-free — the paywall page
+                // shows the live fee from app_config so the dashboard
+                // copy doesn't drift if admin changes it.
+                'Activate Now',
                 style: GoogleFonts.inter(
                   fontSize: 14,
                   fontWeight: FontWeight.w700,

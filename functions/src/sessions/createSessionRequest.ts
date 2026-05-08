@@ -5,6 +5,48 @@ import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
+// Helper invoked when we reject a request because the priest is
+// already busy (mid-session). The priest didn't see the request,
+// but the user's intent was real, so we still want it to surface
+// on the priest's missed-requests page after their current session
+// ends. Mirrors the shape that notifyPriestMissedRequest writes
+// for expired sessions, minus the session-bound fields (there's
+// no session doc to anchor to — the request was rejected before
+// creation). Push is intentionally skipped: the priest is busy
+// right now, no point waking them mid-session.
+async function writeBusyMissedRequest(args: {
+  priestId: string;
+  requesterId: string;
+  requesterName: string;
+  requesterPhotoUrl: string;
+  type: string;
+}): Promise<void> {
+  try {
+    const action = args.type === "voice" ? "call" : "chat with";
+    await db.collection("notifications").add({
+      userId: args.priestId,
+      type: "missed_request",
+      title: "Missed Request",
+      body:
+        `${args.requesterName} tried to ${action} you while you ` +
+        "were in another session",
+      requesterId: args.requesterId,
+      requesterName: args.requesterName,
+      requesterPhotoUrl: args.requesterPhotoUrl,
+      sessionType: args.type,
+      // No sessionId — there is no session doc; this notification
+      // is purely the intent record.
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  } catch (e) {
+    // Swallow — failing to write the missed-request notification
+    // shouldn't change the user-facing error from this CF, which
+    // is "priest-busy" regardless. The intent record is best-effort.
+    console.error("[createSessionRequest] busy-miss write failed:", e);
+  }
+}
+
 // Creates a pending session between a user and a priest. This is
 // the ONLY entry point for session creation — the Flutter client
 // never writes to the sessions collection directly, because we need
@@ -66,9 +108,17 @@ export const createSessionRequest = onCall(
         ? Number(settings.chatRatePerMinute ?? 10)
         : Number(settings.voiceRatePerMinute ?? 15);
     const commissionPercent = Number(settings.commissionPercent ?? 20);
+    // Minimum balance gate — user must have enough coins for at
+    // least N minutes of conversation. Prevents the "session ends
+    // 30 seconds in" frustration the previous one-minute floor
+    // allowed. Configurable from the admin settings doc; defaults
+    // to 5 to match the AstroTalk-style "5-minute minimum" pattern
+    // users expect from this category.
+    const minSessionMinutes = Number(settings.minSessionMinutes ?? 5);
+    const minRequiredBalance = ratePerMinute * minSessionMinutes;
 
-    // 3. Affordability — at least one minute's worth
-    if (coinBalance < ratePerMinute) {
+    // 3. Affordability — at least the minimum-minutes floor
+    if (coinBalance < minRequiredBalance) {
       throw new HttpsError(
         "failed-precondition",
         "insufficient-balance"
@@ -83,12 +133,23 @@ export const createSessionRequest = onCall(
     const priestData = priestSnap.data() ?? {};
 
     if (!priestData.isOnline) {
+      // No missed-request write here — the priest deliberately
+      // chose to be offline (or the watchdog flipped them so via
+      // stale heartbeat). Surfacing every offline-priest tap as
+      // a missed-request would spam them when they come back.
       throw new HttpsError(
         "failed-precondition",
         "priest-offline"
       );
     }
     if (priestData.isBusy === true) {
+      await writeBusyMissedRequest({
+        priestId: priestId,
+        requesterId: uid,
+        requesterName: (userData.displayName as string | undefined) ?? "",
+        requesterPhotoUrl: (userData.photoUrl as string | undefined) ?? "",
+        type: type,
+      });
       throw new HttpsError(
         "failed-precondition",
         "priest-busy"
@@ -96,7 +157,9 @@ export const createSessionRequest = onCall(
     }
 
     // 5. Priest already mid-session? Block so two users can't call
-    //    the same priest at once.
+    //    the same priest at once. Same intent-capture as the
+    //    isBusy branch above — the priest is mid-session and
+    //    shouldn't be interrupted, but the user's tap was real.
     const activeSessions = await db
       .collection("sessions")
       .where("priestId", "==", priestId)
@@ -105,6 +168,13 @@ export const createSessionRequest = onCall(
       .get();
 
     if (!activeSessions.empty) {
+      await writeBusyMissedRequest({
+        priestId: priestId,
+        requesterId: uid,
+        requesterName: (userData.displayName as string | undefined) ?? "",
+        requesterPhotoUrl: (userData.photoUrl as string | undefined) ?? "",
+        type: type,
+      });
       throw new HttpsError(
         "failed-precondition",
         "priest-busy"
@@ -140,11 +210,18 @@ export const createSessionRequest = onCall(
       );
     }
 
-    // 7. Finally, create the session doc. All denormalised display
-    //    fields come from the already-fetched priest + user snaps
-    //    so the UI can render both ends without a second read.
+    // 7. Finally, create the session doc AND mark the priest busy
+    //    in a single atomic batch. Setting isBusy at request time
+    //    (not at accept time) is what gives the user feed correct
+    //    phone-call semantics: the moment user A starts dialling
+    //    priest B, user C trying to dial B sees them as Busy and
+    //    is blocked at step 4 above. Without this, B looks Online
+    //    to C until B taps Accept, allowing concurrent rings.
+    //    The cleanup is handled by onSessionTerminal, which clears
+    //    isBusy whenever the session reaches any terminal status.
     const sessionRef = db.collection("sessions").doc();
-    await sessionRef.set({
+    const createBatch = db.batch();
+    createBatch.set(sessionRef, {
       userId: uid,
       priestId: priestId,
       type: type,
@@ -166,6 +243,10 @@ export const createSessionRequest = onCall(
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
     });
+    createBatch.update(db.doc(`priests/${priestId}`), {
+      isBusy: true,
+    });
+    await createBatch.commit();
 
     // 8. Drop a notification for the priest. sendNotification reads
     //    this collection and dispatches the push; keeping it as a

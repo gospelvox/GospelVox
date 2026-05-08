@@ -170,10 +170,23 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
         if (_secondsRemaining <= 0) {
           _terminalEmitted = true;
           _stopCountdown();
-          // Best-effort cancel — the CF might beat us to it with an
-          // "expired" flip, in which case this write harmlessly
-          // errors on the already-terminal doc.
-          unawaited(_repository.cancelSession(sessionId).catchError((_) {}));
+          // Fire-and-forget call to expireSessionRequest. The CF
+          // marks the session 'expired' AND writes a missed_request
+          // notification + push to the priest in one atomic op, so
+          // the priest always gets a signal that someone tried to
+          // reach them. If this call fails (network blip, app
+          // killed before it lands), the watchdog's 5-minute cron
+          // catches the stuck pending session as a safety net.
+          //
+          // This deliberately does NOT use cancelSession — that
+          // writes status='cancelled' which we reserve for the
+          // user actively tapping Cancel. The two are
+          // semantically different: 'expired' means the priest
+          // didn't respond in time, 'cancelled' means the user
+          // changed their mind.
+          unawaited(_repository
+              .expireSessionRequest(sessionId)
+              .catchError((_) {}));
           if (!isClosed) emit(const SessionRequestExpired());
           return;
         }
@@ -192,6 +205,24 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
   }
 
   // User taps "Cancel Request" in the waiting UI.
+  //
+  // Every cancel — at any elapsed time, including 1-second mistaps —
+  // routes through expireSessionRequest so the priest gets a
+  // missed_request notification. The intent ladder is:
+  //   1. The user opened the priest's profile.
+  //   2. They tapped Chat or Call.
+  //   3. They saw the rate, the wait UI, the connection animation.
+  //   4. They cancelled.
+  // That is intent. The priest deserves to know someone tried.
+  //
+  // We deliberately don't gate this on elapsed time. A previous
+  // 8-second threshold treated <8s as "real cancel, no notify"
+  // and >8s as "user waited and gave up", but it under-counted
+  // missed opportunities — most users who change their mind in
+  // 3 seconds still represent a priest who wasn't responsive
+  // enough. Routing every cancel through the expire path turns
+  // ~95% of all "user tried to reach me" events into visible
+  // missed-request cards.
   Future<void> cancelRequest() async {
     _terminalEmitted = true;
     _stopCountdown();
@@ -199,10 +230,11 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
     final current = state;
     if (current is SessionRequestWaiting) {
       try {
-        await _repository.cancelSession(current.session.id);
+        await _repository.expireSessionRequest(current.session.id);
       } catch (_) {
         // Swallow — the session may already be accepted/expired. The
         // stream listener will reconcile whatever the real state is.
+        // Watchdog catches anything this missed.
       }
     }
 
@@ -214,20 +246,17 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
     _stopCountdown();
     _sessionSubscription?.cancel();
 
-    // If the widget dies while we're still in Waiting (user kills
-    // app, taps a deep link, etc.), fire a best-effort cancel so
-    // the session doc doesn't sit pending forever. Without this
-    // the next Chat tap would hit "already-exists" on the CF
-    // until the server's 60s auto-expire kicks in.
+    // If the widget dies while we're still in Waiting (user backs
+    // out, taps a deep link, navigates elsewhere, etc.), fire
+    // expireSessionRequest the same way cancelRequest does so the
+    // priest gets a missed_request notification. Fire-and-forget —
+    // close() can't await; the watchdog 5-minute cron is the
+    // safety net.
     final current = state;
     if (current is SessionRequestWaiting) {
       _repository
-          .cancelSession(current.session.id)
-          .catchError((_) {
-        // Swallow — nothing to recover from here; the server-side
-        // stale-pending cleanup in createSessionRequest is the
-        // authoritative safety net.
-      });
+          .expireSessionRequest(current.session.id)
+          .catchError((_) {});
     }
 
     return super.close();

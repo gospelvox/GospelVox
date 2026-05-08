@@ -8,11 +8,14 @@
 // redundant. A PopScope guards the hardware back button so the
 // confirmation sheet is the only exit.
 
+import 'package:cached_network_image/cached_network_image.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/services/ring_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
@@ -69,6 +72,10 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
 
   @override
   void dispose() {
+    // Safety net — every terminal state listener already stops the
+    // outgoing tone, but the page can also leave the tree via a
+    // route swap from outside (deep link, redirect). Idempotent.
+    RingService().stopOutgoingRing();
     _pulseController.dispose();
     super.dispose();
   }
@@ -86,7 +93,14 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
         backgroundColor: AppColors.background,
         body: BlocConsumer<SessionRequestCubit, SessionRequestState>(
           listener: (context, state) {
-            if (state is SessionRequestAccepted) {
+            if (state is SessionRequestWaiting) {
+              // Idempotent — RingService short-circuits when the
+              // outgoing tone is already playing, so re-entering
+              // this branch on a countdown tick is safe.
+              RingService().startOutgoingRing();
+            } else if (state is SessionRequestAccepted) {
+              RingService().stopOutgoingRing();
+              HapticFeedback.mediumImpact();
               // Branch on session type so voice requests land on
               // the Agora call screen, not the chat screen.
               if (state.session.isVoice) {
@@ -95,12 +109,17 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
                 context.go('/session/chat/${state.session.id}');
               }
             } else if (state is SessionRequestDeclined) {
+              RingService().stopOutgoingRing();
+              HapticFeedback.lightImpact();
               _showDeclinedSheet(state.priestName);
             } else if (state is SessionRequestExpired) {
+              RingService().stopOutgoingRing();
               _showExpiredSheet();
             } else if (state is SessionRequestCancelled) {
+              RingService().stopOutgoingRing();
               if (context.canPop()) context.pop();
             } else if (state is SessionRequestError) {
+              RingService().stopOutgoingRing();
               AppSnackBar.error(context, state.message);
               if (context.canPop()) context.pop();
             }
@@ -212,27 +231,31 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
               offset: const Offset(0, 8),
             ),
           ],
-          image: widget.priestPhotoUrl.isNotEmpty
-              ? DecorationImage(
-                  image: NetworkImage(widget.priestPhotoUrl),
-                  fit: BoxFit.cover,
-                )
-              : null,
         ),
-        child: widget.priestPhotoUrl.isEmpty
-            ? Center(
-                child: Text(
-                  widget.priestName.isNotEmpty
-                      ? widget.priestName[0].toUpperCase()
-                      : '?',
-                  style: GoogleFonts.inter(
-                    fontSize: 36,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.primaryBrown,
-                  ),
-                ),
+        clipBehavior: Clip.antiAlias,
+        child: widget.priestPhotoUrl.isNotEmpty
+            ? CachedNetworkImage(
+                imageUrl: widget.priestPhotoUrl,
+                fit: BoxFit.cover,
+                placeholder: (_, _) => const SizedBox.shrink(),
+                errorWidget: (_, _, _) => _buildAvatarFallback(),
               )
-            : null,
+            : _buildAvatarFallback(),
+      ),
+    );
+  }
+
+  Widget _buildAvatarFallback() {
+    return Center(
+      child: Text(
+        widget.priestName.isNotEmpty
+            ? widget.priestName[0].toUpperCase()
+            : '?',
+        style: GoogleFonts.inter(
+          fontSize: 36,
+          fontWeight: FontWeight.w700,
+          color: AppColors.primaryBrown,
+        ),
       ),
     );
   }
@@ -335,7 +358,10 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
   Widget _buildCancelButton() {
     return Padding(
       padding: const EdgeInsets.symmetric(horizontal: 40),
-      child: _CancelButton(onTap: _showCancelConfirmation),
+      child: _CancelButton(onTap: () {
+        HapticFeedback.lightImpact();
+        _showCancelConfirmation();
+      }),
     );
   }
 
@@ -401,11 +427,16 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
                         label: 'Yes, Cancel',
                         filled: true,
                         color: AppColors.errorRed,
-                        onTap: () {
+                        onTap: () async {
+                          HapticFeedback.heavyImpact();
+                          // Capture before the await so we don't
+                          // touch the sheet's context after it's
+                          // popped.
+                          final cubit =
+                              context.read<SessionRequestCubit>();
                           Navigator.of(sheetContext).pop();
-                          context
-                              .read<SessionRequestCubit>()
-                              .cancelRequest();
+                          await RingService().stopOutgoingRing();
+                          cubit.cancelRequest();
                         },
                       ),
                     ),

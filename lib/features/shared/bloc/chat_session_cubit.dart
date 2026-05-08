@@ -35,6 +35,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   StreamSubscription<SessionModel>? _sessionSubscription;
   StreamSubscription<List<ChatMessage>>? _messagesSubscription;
   StreamSubscription<int>? _balanceSubscription;
+  // Live stream of priest-initiated free messages between this
+  // (user, priest) pair. Started on the first active session
+  // snapshot, same time the past-messages prefetch fires. The
+  // subscription stays open for the cubit's lifetime so a free
+  // message landing mid-session shows up in real time.
+  StreamSubscription<List<ChatMessage>>? _freeMessagesSubscription;
+  // Live stream of the user's mutedPriestIds. User-side only; the
+  // free-message merger drops bubbles from any priest in this set
+  // so a mid-session mute takes effect without a manual refresh.
+  StreamSubscription<Set<String>>? _mutedPriestsSubscription;
   Timer? _elapsedTimer;
   Timer? _heartbeatTimer;
   Timer? _billingTimer;
@@ -67,6 +77,27 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // returns a doc whose senderId+text+ts matches, we drop it.
   final List<ChatMessage> _pendingOutbound = [];
 
+  // Past-session messages prefetched once when the chat opens, so
+  // the live surface shows the user's prior conversation with this
+  // priest above any new bubbles. Immutable after load — past
+  // sessions can't gain messages.
+  List<ChatMessage> _pastMessages = const [];
+  Map<String, PastSessionMeta> _pastMeta = const {};
+  // Cache of the most recent live snapshot so we can re-merge with
+  // _pastMessages whenever the prefetch completes mid-session
+  // without losing anything that arrived in between.
+  List<ChatMessage> _liveMessages = const [];
+  // Latest snapshot of priest-initiated free messages between the
+  // two parties. Re-merged into the timeline whenever it changes
+  // OR whenever past/live messages do, since interleaving is by
+  // timestamp.
+  List<ChatMessage> _freeMessages = const [];
+  // User-side: priests the user has muted. Free messages from any
+  // priest in this set are dropped client-side. Empty on the
+  // priest side (their view never filters by mute).
+  Set<String> _mutedPriestIds = const {};
+  bool _pastFetchStarted = false;
+
   ChatSessionCubit(this._repository) : super(const ChatSessionInitial());
 
   Future<void> startSession({
@@ -94,6 +125,105 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       if (isClosed) return;
       emit(const ChatSessionError('Failed to start session.'));
     }
+  }
+
+  // Kicked off once on the first `active` session snapshot. Reads
+  // every prior completed-chat message between this user and this
+  // priest (capped at 200, oldest dropped first), then re-emits the
+  // active state with past + live merged. Failures are swallowed —
+  // a missing past doesn't break the live conversation.
+  Future<void> _loadPastMessages({
+    required String userId,
+    required String priestId,
+  }) async {
+    if (_pastFetchStarted) return;
+    _pastFetchStarted = true;
+
+    try {
+      final result = await _repository.getPastChatMessages(
+        userId: userId,
+        priestId: priestId,
+        excludeSessionId: _sessionId,
+      );
+      if (isClosed) return;
+      _pastMessages = result.messages;
+      _pastMeta = result.meta;
+      _emitMerged();
+    } catch (_) {
+      // Silent — past history is a nice-to-have. If it fails, the
+      // chat still works as a fresh-only surface.
+    }
+  }
+
+  // Re-emits ChatSessionActive with the full timeline merged:
+  //   • past-session bubbles (oldest first, with sessionId stamped)
+  //   • priest free messages (filtered by mute on user side)
+  //   • current session's live bubbles
+  //   • optimistic outbound bubbles awaiting confirmation
+  // The first three are interleaved by createdAt so a free message
+  // sent between two paid sessions lands in the right place
+  // chronologically. Optimistic always tails because they have a
+  // local "now" timestamp ahead of any server doc.
+  void _emitMerged() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive) return;
+
+    emit(current.copyWith(
+      messages: _buildMergedTimeline(current.session.id),
+      pastMeta: _pastMeta,
+    ));
+  }
+
+  // Builds the chronological timeline. Pulled out so both the
+  // emit-merged path and the optimistic-send path produce identical
+  // ordering — duplicating this logic would let the two drift on
+  // edge cases like "a free message arrives the same millisecond as
+  // a live session bubble".
+  List<ChatMessage> _buildMergedTimeline(String currentSessionId) {
+    // Free messages from priests in the user's mute set are dropped
+    // here as well as server-side, so a stale notification doc
+    // already in the cache disappears the moment the user mutes.
+    final visibleFree = _mutedPriestIds.isEmpty
+        ? _freeMessages
+        : _freeMessages
+            .where((m) => !_mutedPriestIds.contains(m.senderId))
+            .toList();
+
+    // Past-session + free messages mix freely by timestamp; only
+    // the live current session sits at the end (always the most
+    // recent slice) and the optimistic queue tails after that.
+    final timestamped = <ChatMessage>[..._pastMessages, ...visibleFree]
+      ..sort((a, b) {
+        final aTime = a.createdAt ?? DateTime(2000);
+        final bTime = b.createdAt ?? DateTime(2000);
+        return aTime.compareTo(bTime);
+      });
+
+    return <ChatMessage>[
+      ...timestamped,
+      ..._liveMessages,
+      ..._pendingOutbound,
+    ];
+  }
+
+  void _onFreeMessagesSnapshot(List<ChatMessage> messages) {
+    if (isClosed) return;
+    // User-side: drop free messages flagged delivered=false (the
+    // user had muted the priest at send time). The CF writes these
+    // anyway so the priest's own view keeps a record, but the user
+    // should never see them. Priest-side keeps everything — they're
+    // looking at their own outbox.
+    _freeMessages = _isUserSide
+        ? messages.where((m) => m.delivered).toList()
+        : messages;
+    _emitMerged();
+  }
+
+  void _onMutedPriestsSnapshot(Set<String> mutedIds) {
+    if (isClosed) return;
+    _mutedPriestIds = mutedIds;
+    _emitMerged();
   }
 
   void _onSessionSnapshot(SessionModel session) {
@@ -142,14 +272,42 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
             .watchUserBalance(session.userId)
             .listen(_onBalanceSnapshot);
       }
+      // Fire the past-messages prefetch in parallel with whatever
+      // the live messages stream is already doing. The merge in
+      // _emitMerged tolerates either arriving first.
+      unawaited(_loadPastMessages(
+        userId: session.userId,
+        priestId: session.priestId,
+      ));
+
+      // Subscribe to priest-initiated free messages between the
+      // two parties. Lands in the timeline by timestamp alongside
+      // session bubbles and past-session bubbles.
+      _freeMessagesSubscription = _repository
+          .watchPriestFreeMessages(
+            userId: session.userId,
+            priestId: session.priestId,
+          )
+          .listen(_onFreeMessagesSnapshot);
+
+      // User-side only: track this user's mutedPriestIds so a
+      // mid-session mute drops the priest's free messages from the
+      // timeline immediately. The priest's own view never filters
+      // by user-side mute (they're allowed to see their own sends).
+      if (_isUserSide) {
+        _mutedPriestsSubscription = _repository
+            .watchMutedPriestIds(session.userId)
+            .listen(_onMutedPriestsSnapshot);
+      }
     }
 
     emit(ChatSessionActive(
       session: session,
-      messages: const [],
+      messages: _buildMergedTimeline(session.id),
       elapsedSeconds: 0,
       remainingBalance: session.userBalance,
       isLowBalance: _isUserSide && session.userBalance <= 50,
+      pastMeta: _pastMeta,
     ));
   }
 
@@ -157,6 +315,11 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (isClosed) return;
     final current = state;
     if (current is! ChatSessionActive) return;
+
+    // Cache the latest live snapshot so any subsequent re-merge
+    // (past prefetch landing later, optimistic bubble settling)
+    // reuses the freshest server list.
+    _liveMessages = messages;
 
     // Reconcile optimistic bubbles: anything in _pendingOutbound
     // whose text now appears in the server list is settled — drop
@@ -171,7 +334,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
               !m.isPending));
     }
 
-    final merged = <ChatMessage>[...messages, ..._pendingOutbound];
+    final merged = _buildMergedTimeline(current.session.id);
 
     // Update the idle baseline: if the OTHER party has a newer
     // confirmed message, advance our "last other activity"
@@ -202,6 +365,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     emit(current.copyWith(
       messages: merged,
       showIdleWarning: clearIdle ? false : current.showIdleWarning,
+      pastMeta: _pastMeta,
     ));
   }
 
@@ -358,7 +522,9 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // Build an optimistic bubble. Tagged with isPending=true so
     // the UI renders the small ⏱ status icon. tempId uses a
     // microsecond timestamp — colliding with a real Firestore
-    // doc id is effectively impossible.
+    // doc id is effectively impossible. sessionId is stamped so
+    // the view treats it as a current-session bubble (long-press
+    // reactions allowed) rather than a past-session bubble.
     final tempId =
         '__pending_${DateTime.now().microsecondsSinceEpoch}';
     final optimistic = ChatMessage.pending(
@@ -366,12 +532,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       senderId: senderId,
       senderName: senderName,
       text: trimmed,
+      sessionId: _sessionId,
     );
     _pendingOutbound.add(optimistic);
 
     if (!isClosed) {
       emit(current.copyWith(
-        messages: [...current.messages, optimistic],
+        messages: _buildMergedTimeline(current.session.id),
         isSendingMessage: true,
       ));
     }
@@ -395,8 +562,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         final s = state;
         if (s is ChatSessionActive) {
           emit(s.copyWith(
-            messages:
-                s.messages.where((m) => m.id != tempId).toList(),
+            messages: _buildMergedTimeline(s.session.id),
             isSendingMessage: false,
           ));
         }
@@ -537,6 +703,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _sessionSubscription?.cancel();
     _messagesSubscription?.cancel();
     _balanceSubscription?.cancel();
+    _freeMessagesSubscription?.cancel();
+    _mutedPriestsSubscription?.cancel();
     // Best-effort: clear our typing flag on the way out so the
     // other side doesn't see a ghost "typing…" indicator.
     if (_localTypingActive && _sessionId.isNotEmpty) {

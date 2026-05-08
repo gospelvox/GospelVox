@@ -51,6 +51,8 @@ import 'package:shimmer/shimmer.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
@@ -89,51 +91,11 @@ class _C {
   ];
 }
 
-// ─── Bible session stub data ──────────────────────────────
+// ─── Bible carousel ───────────────────────────────────────
 
-// Bible sessions are a Week 5 deliverable; the collection doesn't
-// exist yet. These placeholder cards keep the carousel shipping
-// with the home redesign. Replace with a Firestore stream when
-// the real data model lands.
-class _BibleSessionStub {
-  final String title;
-  final String category;
-  final String priestName;
-  final String date;
-  final int priceCoins;
-
-  const _BibleSessionStub({
-    required this.title,
-    required this.category,
-    required this.priestName,
-    required this.date,
-    required this.priceCoins,
-  });
-}
-
-const _kStubSessions = <_BibleSessionStub>[
-  _BibleSessionStub(
-    title: 'Book of John',
-    category: 'Deep Study',
-    priestName: 'Fr. Thomas',
-    date: 'Mar 20',
-    priceCoins: 50,
-  ),
-  _BibleSessionStub(
-    title: 'Psalms Study',
-    category: 'Daily Living',
-    priestName: 'Dr. James',
-    date: 'Mar 22',
-    priceCoins: 30,
-  ),
-  _BibleSessionStub(
-    title: 'Acts of Apostles',
-    category: 'History',
-    priestName: 'Sr. Maria',
-    date: 'Mar 25',
-    priceCoins: 40,
-  ),
-];
+// Number of upcoming Bible sessions surfaced in the home carousel.
+// 3 keeps the rail tight and matches the original design shape.
+const int _kHomeBibleLimit = 3;
 
 const _kFilterChips = <String>[
   'All',
@@ -181,6 +143,14 @@ class _HomeViewState extends State<_HomeView>
   String _activeFilter = 'All';
   int _carouselIndex = 0;
 
+  // Bible sessions surfaced on the home carousel. One-shot fetch in
+  // initState — keeping it state-local (no cubit) is the lightest
+  // wiring for a single read-only rail. Empty list is a valid
+  // terminal state (just hide the rail) so we don't need an error
+  // bucket here.
+  bool _bibleLoading = true;
+  List<BibleSessionModel> _bibleSessions = const [];
+
   @override
   void initState() {
     super.initState();
@@ -195,6 +165,37 @@ class _HomeViewState extends State<_HomeView>
     _sessionsAnim = _interval(0.22, 0.62);
     _gridLabelAnim = _interval(0.32, 0.7);
     _animController.forward();
+
+    _loadBibleSessions();
+  }
+
+  Future<void> _loadBibleSessions() async {
+    try {
+      final all = await sl<BibleSessionRepository>().getUpcomingSessions();
+      if (!mounted) return;
+      setState(() {
+        _bibleSessions = all.take(_kHomeBibleLimit).toList();
+        _bibleLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      // Failure → render the rail empty rather than show a scary
+      // banner. The Bible tab has its own retry UX for users who
+      // care to dig in.
+      setState(() {
+        _bibleSessions = const [];
+        _bibleLoading = false;
+      });
+    }
+  }
+
+  void _switchToBibleTab() {
+    final shell = UserShellScope.of(context);
+    if (shell != null) {
+      // Bible moved from index 1 to index 2 when Sessions took the
+      // slot next to Home (Sessions is daily-use; Bible is weekly).
+      shell.switchToTab(2);
+    }
   }
 
   Animation<double> _interval(double start, double end) {
@@ -243,18 +244,53 @@ class _HomeViewState extends State<_HomeView>
   }
 
   void _switchToWalletTab() {
-    final shell = UserShellScope.of(context);
-    if (shell != null) {
-      // Wallet is index 2 in the 4-tab beta layout
-      // (Home / Bible / Wallet / Me).
-      shell.switchToTab(2);
-    } else {
-      context.go('/user');
-    }
+    // Wallet is no longer a shell tab — index 2 is now the Sessions
+    // tab. The wallet lives at /user/wallet as a push route, so the
+    // back button takes the user back here cleanly without losing
+    // the Home tab's scroll/search state.
+    context.push('/user/wallet');
   }
 
-  void _comingSoon(String message) {
-    AppSnackBar.info(context, message);
+  // Subscribes the signed-in user to a one-shot "speaker is now
+  // available" push notification. Persists the priestId on the
+  // user's own doc as `notifySubscriptions: [priestId, ...]`. The
+  // CF `notifyAvailableSubscribers` watches priests.isOnline
+  // false→true transitions, fans out a push to every subscriber,
+  // and atomically clears the priestId from each user's array so
+  // they're pinged exactly once per "go online" event.
+  //
+  // Uses update() rather than set(merge:true) for the same reason
+  // the FCM token save does — set(merge:true) on a missing user
+  // doc would be treated as a CREATE by Firestore rules, which
+  // require coinBalance/role and would reject the write. update()
+  // fails fast with not-found instead, which we surface as a
+  // recoverable error instead of a silent permission denial.
+  Future<void> _subscribeToNotifyMe(SpeakerModel priest) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    try {
+      await FirebaseFirestore.instance
+          .doc('users/$uid')
+          .update({
+            'notifySubscriptions':
+                FieldValue.arrayUnion([priest.uid]),
+          })
+          .timeout(const Duration(seconds: 6));
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        "You'll be notified when ${priest.fullName} is available",
+      );
+    } on FirebaseException catch (e) {
+      debugPrint('[Home] notify-me subscribe failed: ${e.code} ${e.message}');
+      if (!mounted) return;
+      AppSnackBar.error(context, "Couldn't subscribe. Try again.");
+    } catch (e) {
+      debugPrint('[Home] notify-me subscribe unexpected: $e');
+      if (!mounted) return;
+      AppSnackBar.error(context, "Couldn't subscribe. Try again.");
+    }
   }
 
   // Mirror of priest_profile_page._requestSession. The card already
@@ -400,11 +436,11 @@ class _HomeViewState extends State<_HomeView>
         ),
         const SizedBox(width: 8),
         _NotificationBell(
-          // False until the notifications collection ships. The dot
-          // is strictly for "you have unread activity" — showing it
-          // permanently would train users to ignore it.
+          // hasUnread stays false until we wire a count query — the
+          // dot is strictly for real unread activity, and a
+          // permanent dot trains users to ignore it.
           hasUnread: false,
-          onTap: () => _comingSoon('Notifications coming soon'),
+          onTap: () => context.push('/user/notifications'),
         ),
         const SizedBox(width: 10),
         _BalancePill(onTap: _switchToWalletTab),
@@ -511,77 +547,97 @@ class _HomeViewState extends State<_HomeView>
   // ─── Sessions rail ────────────────────────────────────
 
   Widget _buildSessionsSection(HomeState state) {
+    final showShimmer = state is HomeLoading || _bibleLoading;
+    final sessions = _bibleSessions;
+    final dotCount = sessions.length;
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _SectionHeader(
           title: 'UPCOMING SESSIONS',
-          onSeeAll: () => _comingSoon('Bible Sessions coming soon'),
+          // "See all" lands the user on the Bible tab — that's where
+          // the full list, filters, and detail page already live.
+          onSeeAll: _switchToBibleTab,
         ),
         SizedBox(
           height: 150,
-          child: state is HomeLoading
+          child: showShimmer
               ? _SessionsCarouselShimmer()
-              // padEnds: false stops the PageView from centring the
-              // first/last card inside its viewport. Combined with a
-              // left gutter of 20 that matches the page padding, the
-              // first card's left edge now lines up with the section
-              // label above it and the priest grid below.
-              : PageView.builder(
-                  controller: _carouselController,
-                  physics: const BouncingScrollPhysics(),
-                  padEnds: false,
-                  itemCount: _kStubSessions.length,
-                  onPageChanged: (i) => setState(() => _carouselIndex = i),
-                  itemBuilder: (_, i) {
-                    return Padding(
-                      padding: EdgeInsets.only(
-                        left: i == 0 ? 20 : 0,
-                        right: 12,
-                      ),
-                      child: _BibleSessionCard(
-                        session: _kStubSessions[i],
-                        gradient: _C.sessionGradients[
-                            i % _C.sessionGradients.length],
-                      ),
-                    );
-                  },
-                ),
+              : sessions.isEmpty
+                  ? const _BibleEmptyRail()
+                  // padEnds: false stops the PageView from centring the
+                  // first/last card inside its viewport. Combined with a
+                  // left gutter of 20 that matches the page padding, the
+                  // first card's left edge now lines up with the section
+                  // label above it and the priest grid below.
+                  : PageView.builder(
+                      controller: _carouselController,
+                      physics: const BouncingScrollPhysics(),
+                      padEnds: false,
+                      itemCount: sessions.length,
+                      onPageChanged: (i) =>
+                          setState(() => _carouselIndex = i),
+                      itemBuilder: (_, i) {
+                        final session = sessions[i];
+                        return Padding(
+                          padding: EdgeInsets.only(
+                            left: i == 0 ? 20 : 0,
+                            right: 12,
+                          ),
+                          child: _BibleSessionCard(
+                            session: session,
+                            gradient: _C.sessionGradients[
+                                i % _C.sessionGradients.length],
+                            onTap: () => context.push(
+                              '/bible/detail/${session.id}',
+                            ),
+                          ),
+                        );
+                      },
+                    ),
         ),
         const SizedBox(height: 14),
-        Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: List.generate(_kStubSessions.length, (i) {
-            final active = i == _carouselIndex;
-            return AnimatedContainer(
-              duration: const Duration(milliseconds: 200),
-              margin: const EdgeInsets.symmetric(horizontal: 3),
-              // 16px active (was 20) reads more proportionate to the
-              // 6px inactive dots in a 3-dot row. 20 felt like a
-              // progress bar segment rather than a pager pill.
-              width: active ? 16 : 6,
-              height: 6,
-              decoration: BoxDecoration(
-                borderRadius: BorderRadius.circular(3),
-                color: active
-                    ? _C.brandBrown
-                    : _C.brandBrown.withValues(alpha: 0.15),
-              ),
-            );
-          }),
-        ),
+        if (!showShimmer && dotCount > 1)
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: List.generate(dotCount, (i) {
+              final active = i == _carouselIndex;
+              return AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                margin: const EdgeInsets.symmetric(horizontal: 3),
+                width: active ? 16 : 6,
+                height: 6,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(3),
+                  color: active
+                      ? _C.brandBrown
+                      : _C.brandBrown.withValues(alpha: 0.15),
+                ),
+              );
+            }),
+          ),
       ],
     );
   }
 
   Widget _buildAvailableNowLabel() {
-    return _SectionHeader(
-      title: 'AVAILABLE NOW',
-      // Tighter top because the carousel dots above already leave
-      // breathing room — the default 24 made this section feel
-      // stranded from the rail.
-      topPadding: 16,
-      onSeeAll: () => _comingSoon('Full speaker list coming soon'),
+    // Plain label — no "See all" link. The full list is the page the
+    // user is already on, so a "See all" button there reads as a
+    // dead button.
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
+      child: Text(
+        'AVAILABLE NOW',
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: GoogleFonts.inter(
+          fontSize: 12,
+          fontWeight: FontWeight.w700,
+          letterSpacing: 0.8,
+          color: _C.brandBrown,
+        ),
+      ),
     );
   }
 
@@ -637,9 +693,7 @@ class _HomeViewState extends State<_HomeView>
               onTap: () => _openProfile(priest.uid),
               onChat: () => _startSession(priest, 'chat'),
               onCall: () => _startSession(priest, 'voice'),
-              onNotify: () => _comingSoon(
-                "You'll be notified when ${priest.fullName} is available",
-              ),
+              onNotify: () => _subscribeToNotifyMe(priest),
             );
           },
           childCount: visible.length,
@@ -759,22 +813,16 @@ class _PressScaleState extends State<_PressScale> {
 class _SectionHeader extends StatelessWidget {
   final String title;
   final VoidCallback onSeeAll;
-  // Section headers default to a 24px top gap (clear separation
-  // between sections), but the header directly below the carousel
-  // dots gets ~14px of pre-existing whitespace already, so callers
-  // can tighten to `topPadding: 16` in that one spot.
-  final double topPadding;
 
   const _SectionHeader({
     required this.title,
     required this.onSeeAll,
-    this.topPadding = 24,
   });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: EdgeInsets.fromLTRB(20, topPadding, 20, 14),
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 14),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -1062,17 +1110,30 @@ class _FilterChip extends StatelessWidget {
 // ─── Bible session card ───────────────────────────────────
 
 class _BibleSessionCard extends StatelessWidget {
-  final _BibleSessionStub session;
+  final BibleSessionModel session;
   final List<Color> gradient;
+  final VoidCallback onTap;
 
-  const _BibleSessionCard({required this.session, required this.gradient});
+  const _BibleSessionCard({
+    required this.session,
+    required this.gradient,
+    required this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
+    final dateLabel = session.formattedDate.isNotEmpty
+        ? session.formattedDate
+        : session.startsInText;
+    final priceLabel = session.price > 0 ? '₹${session.price}' : 'Free';
+    final categoryLine = session.category.isNotEmpty
+        ? session.category
+        : (session.description.isNotEmpty
+            ? session.description
+            : 'Bible study session');
+
     return _PressScale(
-      onTap: () {
-        AppSnackBar.info(context, 'Bible Sessions coming soon');
-      },
+      onTap: onTap,
       scale: 0.97,
       child: Container(
         // No margin — the PageView itemBuilder applies the gutter
@@ -1122,9 +1183,6 @@ class _BibleSessionCard extends StatelessWidget {
                 Icon(
                   Icons.menu_book_rounded,
                   size: 18,
-                  // 0.35 was almost invisible on the darker gradients
-                  // — 0.45 still reads as a decorative accent but
-                  // actually shows up.
                   color: Colors.white.withValues(alpha: 0.45),
                 ),
               ],
@@ -1134,7 +1192,7 @@ class _BibleSessionCard extends StatelessWidget {
               fit: BoxFit.scaleDown,
               alignment: Alignment.centerLeft,
               child: Text(
-                session.title,
+                session.title.isNotEmpty ? session.title : 'Bible Session',
                 maxLines: 1,
                 style: GoogleFonts.inter(
                   fontSize: 18,
@@ -1145,7 +1203,7 @@ class _BibleSessionCard extends StatelessWidget {
             ),
             const SizedBox(height: 2),
             Text(
-              session.category,
+              categoryLine,
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: GoogleFonts.inter(
@@ -1181,7 +1239,9 @@ class _BibleSessionCard extends StatelessWidget {
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(
-                    '${session.priestName} · ${session.date}',
+                    session.priestName.isEmpty
+                        ? dateLabel
+                        : '${session.priestName} · $dateLabel',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.inter(
@@ -1202,7 +1262,7 @@ class _BibleSessionCard extends StatelessWidget {
                     borderRadius: BorderRadius.circular(8),
                   ),
                   child: Text(
-                    '${session.priceCoins} coins',
+                    priceLabel,
                     style: GoogleFonts.inter(
                       fontSize: 11,
                       fontWeight: FontWeight.w600,
@@ -1228,6 +1288,40 @@ class _BibleSessionCard extends StatelessWidget {
     }
     final out = buf.toString();
     return out.isEmpty ? '?' : out;
+  }
+}
+
+// Empty-state filler shown inside the carousel slot when there are
+// no upcoming Bible sessions. Same height as a real card so the
+// layout doesn't jump when sessions are added.
+class _BibleEmptyRail extends StatelessWidget {
+  const _BibleEmptyRail();
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Container(
+        decoration: BoxDecoration(
+          color: _C.surface,
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: _C.muted.withValues(alpha: 0.12),
+          ),
+        ),
+        alignment: Alignment.center,
+        padding: const EdgeInsets.symmetric(horizontal: 24),
+        child: Text(
+          'No upcoming Bible sessions yet — check back soon.',
+          textAlign: TextAlign.center,
+          style: GoogleFonts.inter(
+            fontSize: 13,
+            fontWeight: FontWeight.w400,
+            color: _C.muted,
+          ),
+        ),
+      ),
+    );
   }
 }
 

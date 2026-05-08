@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendNotification = exports.notifyBibleSessionCancellation = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.sendNotification = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -19,6 +19,8 @@ Object.defineProperty(exports, "verifyMatrimonyPayment", { enumerable: true, get
 // ═══ Sessions ═══
 var createSessionRequest_1 = require("./sessions/createSessionRequest");
 Object.defineProperty(exports, "createSessionRequest", { enumerable: true, get: function () { return createSessionRequest_1.createSessionRequest; } });
+var expireSessionRequest_1 = require("./sessions/expireSessionRequest");
+Object.defineProperty(exports, "expireSessionRequest", { enumerable: true, get: function () { return expireSessionRequest_1.expireSessionRequest; } });
 var billingTick_1 = require("./sessions/billingTick");
 Object.defineProperty(exports, "billingTick", { enumerable: true, get: function () { return billingTick_1.billingTick; } });
 var endSession_1 = require("./sessions/endSession");
@@ -27,6 +29,15 @@ var sessionWatchdog_1 = require("./sessions/sessionWatchdog");
 Object.defineProperty(exports, "sessionWatchdog", { enumerable: true, get: function () { return sessionWatchdog_1.sessionWatchdog; } });
 var generateAgoraToken_1 = require("./sessions/generateAgoraToken");
 Object.defineProperty(exports, "generateAgoraToken", { enumerable: true, get: function () { return generateAgoraToken_1.generateAgoraToken; } });
+// Legacy templated follow-up — kept exported for backwards compat
+// while the client transitions to sendPriestMessage. Existing
+// follow_up notifications continue to render in the chat thread.
+var sendFollowUp_1 = require("./sessions/sendFollowUp");
+Object.defineProperty(exports, "sendFollowUp", { enumerable: true, get: function () { return sendFollowUp_1.sendFollowUp; } });
+var sendPriestMessage_1 = require("./sessions/sendPriestMessage");
+Object.defineProperty(exports, "sendPriestMessage", { enumerable: true, get: function () { return sendPriestMessage_1.sendPriestMessage; } });
+var onSessionTerminal_1 = require("./sessions/onSessionTerminal");
+Object.defineProperty(exports, "onSessionTerminal", { enumerable: true, get: function () { return onSessionTerminal_1.onSessionTerminal; } });
 // ═══ Admin ═══
 var approveRejectPriest_1 = require("./admin/approveRejectPriest");
 Object.defineProperty(exports, "approveRejectPriest", { enumerable: true, get: function () { return approveRejectPriest_1.approveRejectPriest; } });
@@ -42,6 +53,8 @@ Object.defineProperty(exports, "requestWithdrawal", { enumerable: true, get: fun
 // ═══ Users ═══
 var onUserCreated_1 = require("./users/onUserCreated");
 Object.defineProperty(exports, "onUserCreated", { enumerable: true, get: function () { return onUserCreated_1.onUserCreated; } });
+var notifyAvailableSubscribers_1 = require("./users/notifyAvailableSubscribers");
+Object.defineProperty(exports, "notifyAvailableSubscribers", { enumerable: true, get: function () { return notifyAvailableSubscribers_1.notifyAvailableSubscribers; } });
 // ═══ Bible sessions ═══
 var notifyBibleSessionCancellation_1 = require("./bible/notifyBibleSessionCancellation");
 Object.defineProperty(exports, "notifyBibleSessionCancellation", { enumerable: true, get: function () { return notifyBibleSessionCancellation_1.notifyBibleSessionCancellation; } });

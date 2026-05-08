@@ -6,6 +6,41 @@ const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
 const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
+// Helper invoked when we reject a request because the priest is
+// already busy (mid-session). The priest didn't see the request,
+// but the user's intent was real, so we still want it to surface
+// on the priest's missed-requests page after their current session
+// ends. Mirrors the shape that notifyPriestMissedRequest writes
+// for expired sessions, minus the session-bound fields (there's
+// no session doc to anchor to — the request was rejected before
+// creation). Push is intentionally skipped: the priest is busy
+// right now, no point waking them mid-session.
+async function writeBusyMissedRequest(args) {
+    try {
+        const action = args.type === "voice" ? "call" : "chat with";
+        await db.collection("notifications").add({
+            userId: args.priestId,
+            type: "missed_request",
+            title: "Missed Request",
+            body: `${args.requesterName} tried to ${action} you while you ` +
+                "were in another session",
+            requesterId: args.requesterId,
+            requesterName: args.requesterName,
+            requesterPhotoUrl: args.requesterPhotoUrl,
+            sessionType: args.type,
+            // No sessionId — there is no session doc; this notification
+            // is purely the intent record.
+            isRead: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+    catch (e) {
+        // Swallow — failing to write the missed-request notification
+        // shouldn't change the user-facing error from this CF, which
+        // is "priest-busy" regardless. The intent record is best-effort.
+        console.error("[createSessionRequest] busy-miss write failed:", e);
+    }
+}
 // Creates a pending session between a user and a priest. This is
 // the ONLY entry point for session creation — the Flutter client
 // never writes to the sessions collection directly, because we need
@@ -20,7 +55,7 @@ const db = admin.firestore();
 // The function also writes a notification doc so the priest's
 // sendNotification CF can wake up their push channel in parallel.
 exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -52,8 +87,16 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
         ? Number((_e = settings.chatRatePerMinute) !== null && _e !== void 0 ? _e : 10)
         : Number((_f = settings.voiceRatePerMinute) !== null && _f !== void 0 ? _f : 15);
     const commissionPercent = Number((_g = settings.commissionPercent) !== null && _g !== void 0 ? _g : 20);
-    // 3. Affordability — at least one minute's worth
-    if (coinBalance < ratePerMinute) {
+    // Minimum balance gate — user must have enough coins for at
+    // least N minutes of conversation. Prevents the "session ends
+    // 30 seconds in" frustration the previous one-minute floor
+    // allowed. Configurable from the admin settings doc; defaults
+    // to 5 to match the AstroTalk-style "5-minute minimum" pattern
+    // users expect from this category.
+    const minSessionMinutes = Number((_h = settings.minSessionMinutes) !== null && _h !== void 0 ? _h : 5);
+    const minRequiredBalance = ratePerMinute * minSessionMinutes;
+    // 3. Affordability — at least the minimum-minutes floor
+    if (coinBalance < minRequiredBalance) {
         throw new https_1.HttpsError("failed-precondition", "insufficient-balance");
     }
     // 4. Priest exists, is online, and isn't busy
@@ -61,15 +104,28 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
     if (!priestSnap.exists) {
         throw new https_1.HttpsError("not-found", "Speaker not found");
     }
-    const priestData = (_h = priestSnap.data()) !== null && _h !== void 0 ? _h : {};
+    const priestData = (_j = priestSnap.data()) !== null && _j !== void 0 ? _j : {};
     if (!priestData.isOnline) {
+        // No missed-request write here — the priest deliberately
+        // chose to be offline (or the watchdog flipped them so via
+        // stale heartbeat). Surfacing every offline-priest tap as
+        // a missed-request would spam them when they come back.
         throw new https_1.HttpsError("failed-precondition", "priest-offline");
     }
     if (priestData.isBusy === true) {
+        await writeBusyMissedRequest({
+            priestId: priestId,
+            requesterId: uid,
+            requesterName: (_k = userData.displayName) !== null && _k !== void 0 ? _k : "",
+            requesterPhotoUrl: (_l = userData.photoUrl) !== null && _l !== void 0 ? _l : "",
+            type: type,
+        });
         throw new https_1.HttpsError("failed-precondition", "priest-busy");
     }
     // 5. Priest already mid-session? Block so two users can't call
-    //    the same priest at once.
+    //    the same priest at once. Same intent-capture as the
+    //    isBusy branch above — the priest is mid-session and
+    //    shouldn't be interrupted, but the user's tap was real.
     const activeSessions = await db
         .collection("sessions")
         .where("priestId", "==", priestId)
@@ -77,6 +133,13 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
         .limit(1)
         .get();
     if (!activeSessions.empty) {
+        await writeBusyMissedRequest({
+            priestId: priestId,
+            requesterId: uid,
+            requesterName: (_m = userData.displayName) !== null && _m !== void 0 ? _m : "",
+            requesterPhotoUrl: (_o = userData.photoUrl) !== null && _o !== void 0 ? _o : "",
+            type: type,
+        });
         throw new https_1.HttpsError("failed-precondition", "priest-busy");
     }
     // 6. Reconcile any prior pending requests from this user.
@@ -104,11 +167,18 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
         console.log(`[createSessionRequest] Expired ${pendingRequests.size} ` +
             `prior pending session(s) for user ${uid}`);
     }
-    // 7. Finally, create the session doc. All denormalised display
-    //    fields come from the already-fetched priest + user snaps
-    //    so the UI can render both ends without a second read.
+    // 7. Finally, create the session doc AND mark the priest busy
+    //    in a single atomic batch. Setting isBusy at request time
+    //    (not at accept time) is what gives the user feed correct
+    //    phone-call semantics: the moment user A starts dialling
+    //    priest B, user C trying to dial B sees them as Busy and
+    //    is blocked at step 4 above. Without this, B looks Online
+    //    to C until B taps Accept, allowing concurrent rings.
+    //    The cleanup is handled by onSessionTerminal, which clears
+    //    isBusy whenever the session reaches any terminal status.
     const sessionRef = db.collection("sessions").doc();
-    await sessionRef.set({
+    const createBatch = db.batch();
+    createBatch.set(sessionRef, {
         userId: uid,
         priestId: priestId,
         type: type,
@@ -119,14 +189,18 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
         durationMinutes: 0,
         totalCharged: 0,
         priestEarnings: 0,
-        userName: (_j = userData.displayName) !== null && _j !== void 0 ? _j : "",
-        userPhotoUrl: (_k = userData.photoUrl) !== null && _k !== void 0 ? _k : "",
-        priestName: (_l = priestData.fullName) !== null && _l !== void 0 ? _l : "",
-        priestPhotoUrl: (_m = priestData.photoUrl) !== null && _m !== void 0 ? _m : "",
-        priestDenomination: (_o = priestData.denomination) !== null && _o !== void 0 ? _o : "",
+        userName: (_p = userData.displayName) !== null && _p !== void 0 ? _p : "",
+        userPhotoUrl: (_q = userData.photoUrl) !== null && _q !== void 0 ? _q : "",
+        priestName: (_r = priestData.fullName) !== null && _r !== void 0 ? _r : "",
+        priestPhotoUrl: (_s = priestData.photoUrl) !== null && _s !== void 0 ? _s : "",
+        priestDenomination: (_t = priestData.denomination) !== null && _t !== void 0 ? _t : "",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
         lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
     });
+    createBatch.update(db.doc(`priests/${priestId}`), {
+        isBusy: true,
+    });
+    await createBatch.commit();
     // 8. Drop a notification for the priest. sendNotification reads
     //    this collection and dispatches the push; keeping it as a
     //    separate write so this CF stays fast on the critical path.

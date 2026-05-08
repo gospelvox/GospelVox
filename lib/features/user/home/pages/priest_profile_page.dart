@@ -21,6 +21,7 @@ import 'package:shimmer/shimmer.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
 
@@ -84,19 +85,35 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
     }
   }
 
-  int get _minCost => _chatRate;
+  // Floor for the low-balance banner — 5 minutes' worth of chat at
+  // the current global rate. Matches the server-side gate in
+  // createSessionRequest.ts so banner and CF agree on what
+  // "insufficient" means.
+  int get _minCost => _chatRate * 5;
   // Users can only start a session if the priest is truly available
-  // (online AND not paused) AND the user has enough coins. Mirrors
-  // the home feed's "Available Now" bucket exactly so there's no
-  // inconsistency between the list and the profile.
+  // (online AND not paused). Balance is NOT part of this gate — the
+  // button stays tappable on low balance so the tap can open the
+  // recharge sheet with contextual deficit copy (AstroTalk pattern).
+  // The red banner above the buttons is the visual cue; the action
+  // surfaces the recharge.
   bool get _canStart =>
-      _priest != null &&
-      _priest!.isAvailable &&
-      _balance >= _minCost;
+      _priest != null && _priest!.isAvailable;
 
-  void _requestSession(String type) {
+  Future<void> _requestSession(String type) async {
     final priest = _priest;
     if (priest == null) return;
+    // Preflight: opens RechargeSheet pre-filled with the deficit if
+    // the user is short of the 5-minute floor. Returns true once the
+    // user has enough (either they always did, or they topped up
+    // inside the sheet).
+    final canStart = await SessionPreflight.check(
+      context,
+      type: type,
+      priestName: priest.fullName,
+      prefetchedBalance: _balance,
+      prefetchedRatePerMinute: type == 'chat' ? _chatRate : _voiceRate,
+    );
+    if (!canStart || !mounted) return;
     // Pass denormalized priest info through so the waiting screen
     // can render instantly without a second Firestore read. The
     // actual session doc is created by the CF inside the cubit.

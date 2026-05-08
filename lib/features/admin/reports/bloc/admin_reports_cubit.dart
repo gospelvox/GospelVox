@@ -58,7 +58,8 @@ class AdminReportsCubit extends Cubit<AdminReportsState> {
           .collection('reports')
           .where('status', isEqualTo: 'pending')
           .count()
-          .get();
+          .get()
+          .timeout(const Duration(seconds: 10));
       return agg.count ?? 0;
     } catch (_) {
       // A failed count shouldn't take the whole screen down — fall

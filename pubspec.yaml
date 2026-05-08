@@ -65,6 +65,22 @@ dependencies:
   url_launcher: any
   flutter_local_notifications: ^21.0.0
 
+  # Audio playback for incoming/outgoing ringtones.
+  #
+  # We started on just_audio but it uses ExoPlayer on Android, and
+  # ExoPlayer's MP3Extractor sniff routine rejected the user's
+  # 48 kHz/256 kbps custom ringtone with UnrecognizedInputFormatException
+  # on a Samsung A05M (and reportedly other handsets). Same MP3
+  # plays cleanly through Android's system MediaPlayer.
+  #
+  # audioplayers uses MediaPlayer on Android by default, which
+  # accepts a much wider range of MP3 encodings without re-encoding
+  # the user's source file. The ring is always stopped before
+  # Agora's playAndRecord session takes over the audio device, so
+  # the original concern about audio-session conflicts doesn't
+  # actually materialise in practice.
+  audioplayers: ^6.1.0
+
 dev_dependencies:
   flutter_test:
     sdk: flutter
@@ -78,6 +94,9 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/
+    - assets/audio/
 
 # Launcher icon config. Source is the 512x512 Play Store graphic —
 # flutter_launcher_icons rescales it for every Android mipmap

@@ -24,9 +24,11 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/shared/data/session_repository.dart';
 
 class UserSettingsPage extends StatefulWidget {
   const UserSettingsPage({super.key});
@@ -40,11 +42,95 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
   bool _isLoading = true;
   // Guards against rapid-fire toggling racing the Firestore write.
   bool _toggleInFlight = false;
+  // Muted speakers list — pairs of (priestId, displayName). Loaded
+  // once on mount and refreshed after every unmute. The display
+  // name is read from priests/{id}.fullName so we render something
+  // human-readable; falls back to the uid when unavailable.
+  List<({String priestId, String name})> _mutedPriests = const [];
+  bool _mutedLoading = true;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
+    _loadMutedPriests();
+  }
+
+  Future<void> _loadMutedPriests() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      if (mounted) setState(() => _mutedLoading = false);
+      return;
+    }
+    try {
+      final db = FirebaseFirestore.instance;
+      final userSnap = await db
+          .doc('users/$uid')
+          .get()
+          .timeout(const Duration(seconds: 8));
+      final raw = userSnap.data()?['mutedPriestIds'];
+      final ids = raw is List ? raw.whereType<String>().toList() : <String>[];
+
+      if (ids.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _mutedPriests = const [];
+          _mutedLoading = false;
+        });
+        return;
+      }
+
+      // Resolve priest display names in parallel — same fan-out
+      // pattern session_history_repository uses for priest groups,
+      // so a power user with 20 muted speakers still loads in
+      // ~300ms instead of 20 sequential round-trips.
+      final names = await Future.wait(ids.map((id) async {
+        try {
+          final p = await db
+              .doc('priests/$id')
+              .get()
+              .timeout(const Duration(seconds: 5));
+          final n = p.data()?['fullName'] as String?;
+          return (priestId: id, name: n != null && n.isNotEmpty ? n : id);
+        } catch (_) {
+          return (priestId: id, name: id);
+        }
+      }));
+
+      if (!mounted) return;
+      setState(() {
+        _mutedPriests = names;
+        _mutedLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _mutedLoading = false);
+    }
+  }
+
+  Future<void> _unmute(String priestId, String priestName) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      await sl<SessionRepository>().setPriestMuted(
+        userId: uid,
+        priestId: priestId,
+        muted: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _mutedPriests = _mutedPriests
+            .where((p) => p.priestId != priestId)
+            .toList();
+      });
+      AppSnackBar.success(
+        context,
+        "You'll see new messages from $priestName.",
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'Could not unmute. Try again.');
+    }
   }
 
   Future<void> _loadSettings() async {
@@ -203,6 +289,39 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                       ],
                     ),
                   ),
+                  // Muted Speakers section is hidden when the user
+                  // hasn't muted anyone yet — keeps the settings page
+                  // clean for the common case while still surfacing
+                  // a single source of truth for unmuting.
+                  if (!_mutedLoading && _mutedPriests.isNotEmpty) ...[
+                    const SizedBox(height: 32),
+                    _SectionLabel('MUTED SPEAKERS'),
+                    const SizedBox(height: 12),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceWhite,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: AppColors.muted.withValues(alpha: 0.08),
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          for (var i = 0; i < _mutedPriests.length; i++) ...[
+                            _MutedRow(
+                              name: _mutedPriests[i].name,
+                              onUnmute: () => _unmute(
+                                _mutedPriests[i].priestId,
+                                _mutedPriests[i].name,
+                              ),
+                            ),
+                            if (i != _mutedPriests.length - 1)
+                              const _RowDivider(),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 32),
                   _SectionLabel('ACCOUNT'),
                   const SizedBox(height: 12),
@@ -482,6 +601,72 @@ class _RowDivider extends StatelessWidget {
       child: Container(
         height: 1,
         color: AppColors.muted.withValues(alpha: 0.06),
+      ),
+    );
+  }
+}
+
+class _MutedRow extends StatelessWidget {
+  final String name;
+  final VoidCallback onUnmute;
+
+  const _MutedRow({required this.name, required this.onUnmute});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.muted.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Icon(
+              Icons.notifications_off_outlined,
+              size: 18,
+              color: AppColors.muted,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onUnmute,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 7,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.primaryBrown.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Unmute',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryBrown,
+                ),
+              ),
+            ),
+          ),
+        ],
       ),
     );
   }

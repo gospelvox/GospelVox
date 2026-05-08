@@ -34,3 +34,25 @@ class AuthError extends AuthState {
 
   AuthError(this.message);
 }
+
+// Surfaces when an authenticated account already exists with a role
+// that differs from the one the user picked on the role selection
+// screen (e.g. "Member" tapped, but the Google account is registered
+// as a Speaker). The user remains authenticated — the UI shows a
+// bottom sheet that lets them either continue as their existing
+// role, or sign out and pick a different account.
+class AuthRoleMismatch extends AuthState {
+  final String email;
+  final String existingRole;
+  final String selectedRole;
+  // 'google' or 'apple' — drives which sign-in flow re-runs when the
+  // user taps "Use a different account".
+  final String provider;
+
+  AuthRoleMismatch({
+    required this.email,
+    required this.existingRole,
+    required this.selectedRole,
+    required this.provider,
+  });
+}

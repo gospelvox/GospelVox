@@ -14,6 +14,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
+import 'package:gospel_vox/features/auth/widgets/role_mismatch_bottom_sheet.dart';
 
 const double _kCardWidth = 280;
 const double _kCardHeight = 320;
@@ -88,6 +89,44 @@ class _OnboardingPageState extends State<OnboardingPage>
     super.dispose();
   }
 
+  // Triggered when the signed-in account already has a different role
+  // than the one the user picked on the role-selection screen. The
+  // user is still authenticated when this opens — the sheet routes
+  // them to their existing shell or signs out and re-prompts.
+  void _showRoleMismatchSheet(
+      BuildContext context, AuthRoleMismatch state) {
+    final cubit = context.read<AuthCubit>();
+    showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => RoleMismatchBottomSheet(
+        email: state.email,
+        existingRole: state.existingRole,
+        selectedRole: state.selectedRole,
+        onContinueAsExisting: () {
+          Navigator.pop(sheetCtx);
+          if (!mounted) return;
+          switch (state.existingRole) {
+            case 'priest':
+              context.go('/priest');
+            case 'admin':
+              context.go('/admin');
+            default:
+              context.go('/user');
+          }
+        },
+        onUseDifferentAccount: () async {
+          Navigator.pop(sheetCtx);
+          await cubit.signInWithDifferentAccount(
+            selectedRole: state.selectedRole,
+            provider: state.provider,
+          );
+        },
+      ),
+    );
+  }
+
   Color _headerColorFor(int index) =>
       index == 4 ? AppColors.warmBeige : AppColors.deepDarkBrown;
 
@@ -117,6 +156,9 @@ class _OnboardingPageState extends State<OnboardingPage>
               default:
                 context.go('/user');
             }
+          } else if (state is AuthRoleMismatch) {
+            _autoSelectInProgress = false;
+            _showRoleMismatchSheet(context, state);
           } else if (state is AuthError) {
             _autoSelectInProgress = false;
             AppSnackBar.error(context, state.message);
@@ -229,10 +271,16 @@ class _OnboardingPageState extends State<OnboardingPage>
                           ),
                           _SignInButtons(
                             enabled: !isBusy,
-                            onGoogleTap: () => cubit.signInWithGoogle(
-                                selectedRole: widget.presetRole),
-                            onAppleTap: () => cubit.signInWithApple(
-                                selectedRole: widget.presetRole),
+                            onGoogleTap: () {
+                              HapticFeedback.lightImpact();
+                              cubit.signInWithGoogle(
+                                  selectedRole: widget.presetRole);
+                            },
+                            onAppleTap: () {
+                              HapticFeedback.lightImpact();
+                              cubit.signInWithApple(
+                                  selectedRole: widget.presetRole);
+                            },
                           ),
                           const SizedBox(height: 40),
                         ],

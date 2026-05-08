@@ -46,7 +46,8 @@ class DashboardRepository {
         .collection('priests')
         .where('status', isEqualTo: 'pending')
         .count()
-        .get();
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 
@@ -55,7 +56,8 @@ class DashboardRepository {
         .collection('matrimony_profiles')
         .where('status', isEqualTo: 'pending')
         .count()
-        .get();
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 
@@ -68,7 +70,8 @@ class DashboardRepository {
         .collection('reports')
         .where('status', isEqualTo: 'pending')
         .count()
-        .get();
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 
@@ -77,7 +80,8 @@ class DashboardRepository {
         .collection('withdrawals')
         .where('status', isEqualTo: 'pending')
         .count()
-        .get();
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 
@@ -90,12 +94,17 @@ class DashboardRepository {
         .collection('sessions')
         .where('status', isEqualTo: 'active')
         .count()
-        .get();
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 
   Future<int> _getTotalUsersCount() async {
-    final snap = await _db.collection('users').count().get();
+    final snap = await _db
+        .collection('users')
+        .count()
+        .get()
+        .timeout(const Duration(seconds: 10));
     return snap.count ?? 0;
   }
 

@@ -1,20 +1,19 @@
-// Priest's availability sub-page. Owns the single "Pause Requests"
-// toggle that controls whether they're shown as Busy in the user
-// feed and whether createSessionRequest CF lets new requests
-// through.
+// Priest's availability sub-page — single Go Offline toggle.
 //
-// Field shape: writes the boolean to priests/{uid}.isBusy.
-// We deliberately keep the existing field name even though the
-// UI label is "Pause Requests" — every consumer (the CF, the
-// home feed sort, the priest dashboard's status card, the
-// SpeakerModel) already reads `isBusy`. Renaming would silently
-// break the actual gate.
+// Three-state availability model (kept simple):
+//   • Online  — isOnline=true, isBusy=false. The default for an
+//     activated priest with the app open. Set on dashboard mount,
+//     refreshed via the 30s heartbeat.
+//   • Busy    — isOnline=true, isBusy=true. Owned entirely by the
+//     session system (acceptSession sets, endSession clears).
+//     Never written from this page.
+//   • Offline — isOnline=false. Either via the toggle here or via
+//     the watchdog detecting >5 minutes of stale heartbeat.
 //
-// Days/hours selectors are intentionally NOT here: the CF
-// doesn't enforce them yet, and shipping UI for unenforced
-// preferences would create a "set it and still get pinged"
-// trust failure. They land alongside CF enforcement in a future
-// release.
+// The Go Offline toggle is the priest's only manual control. There
+// is no "pause requests" mid-state any more — if you want to be
+// unavailable, you go offline. Simpler model, fewer ways for the
+// priest's actual availability to drift away from what users see.
 
 import 'dart:async';
 
@@ -41,7 +40,7 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
 
   bool _loading = true;
   bool _writing = false;
-  bool _isPaused = false;
+  bool _isOffline = false;
 
   @override
   void initState() {
@@ -55,8 +54,6 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
     super.dispose();
   }
 
-  // Live stream so the toggle reflects changes made from another
-  // device or by an admin in real time.
   void _attach() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
@@ -68,7 +65,11 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
       if (!mounted) return;
       final data = snap.data() ?? const <String, dynamic>{};
       setState(() {
-        _isPaused = data['isBusy'] as bool? ?? false;
+        // Offline state is the inverse of isOnline. We don't track
+        // any other flags — the watchdog can flip isOnline=false on
+        // stale heartbeat, the toggle here can flip it either way,
+        // and that's the entire universe of inputs.
+        _isOffline = !(data['isOnline'] as bool? ?? false);
         _loading = false;
       });
     }, onError: (_) {
@@ -77,48 +78,62 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
     });
   }
 
+  // Toggle between Online and Offline. Going offline:
+  //   isOnline=false. lastHeartbeat is left alone — it would only
+  //   matter for the watchdog, which already skips priests whose
+  //   isOnline is false.
+  // Going back online:
+  //   isOnline=true, lastHeartbeat=now. The fresh heartbeat keeps
+  //   the watchdog from immediately re-flipping us offline if the
+  //   priest had been stale before manually toggling.
   Future<void> _toggle() async {
     if (_writing) return;
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
 
-    final newValue = !_isPaused;
-    // Optimistic UI: flip immediately so the toggle feels instant.
-    // Roll back on failure.
+    final goingOffline = !_isOffline;
     setState(() {
-      _isPaused = newValue;
+      _isOffline = goingOffline;
       _writing = true;
     });
 
     try {
+      // Always include lastHeartbeat so the write payload matches the
+      // dashboard's known-working pattern. Single-field updates have
+      // tripped restrictive rules in the past — keeping the shape
+      // identical avoids that whole class of regression.
+      final updates = <String, dynamic>{
+        'isOnline': !goingOffline,
+        'lastHeartbeat': FieldValue.serverTimestamp(),
+      };
       await FirebaseFirestore.instance
           .doc('priests/$uid')
-          .update({'isBusy': newValue})
+          .update(updates)
           .timeout(const Duration(seconds: 8));
 
       if (!mounted) return;
       setState(() => _writing = false);
       AppSnackBar.success(
         context,
-        newValue
-            ? "Requests paused. You'll stay online but won't receive "
-                'new sessions.'
-            : "You're available again. New requests will come through.",
+        goingOffline
+            ? "You're offline. Users won't see you in the feed."
+            : "You're back online. Users can send you requests.",
       );
     } on TimeoutException {
       if (!mounted) return;
       setState(() {
-        _isPaused = !newValue;
+        _isOffline = !goingOffline;
         _writing = false;
       });
       AppSnackBar.error(
         context,
         'Save timed out. Check your connection.',
       );
-    } catch (_) {
+    } catch (e, st) {
+      debugPrint('[PriestAvailability] toggle failed: $e\n$st');
       if (!mounted) return;
       setState(() {
-        _isPaused = !newValue;
+        _isOffline = !goingOffline;
         _writing = false;
       });
       AppSnackBar.error(
@@ -147,17 +162,20 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _PauseRequestsCard(
-                      isPaused: _isPaused,
+                    _GoOfflineCard(
+                      isOffline: _isOffline,
                       writing: _writing,
                       onToggle: _toggle,
                     ),
                     const SizedBox(height: 12),
-                    const InfoTipBlock(
-                      'When paused, you stay online but new requests '
-                      "won't reach you. Active sessions are not "
-                      "affected. Users see you as 'Busy' on the home "
-                      'feed.',
+                    InfoTipBlock(
+                      _isOffline
+                          ? "While offline you're hidden from the user "
+                              "feed. Active sessions still work; new "
+                              "requests can't reach you."
+                          : "When online, users can send you chat or "
+                              "voice requests. Toggle off to drop out "
+                              "of the feed temporarily.",
                     ),
                   ],
                 ),
@@ -223,15 +241,15 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
   }
 }
 
-// ─── Pause Requests card ─────────────────────────────────
+// ─── Go Offline / Go Online card ──────────────────────────────
 
-class _PauseRequestsCard extends StatelessWidget {
-  final bool isPaused;
+class _GoOfflineCard extends StatelessWidget {
+  final bool isOffline;
   final bool writing;
   final VoidCallback onToggle;
 
-  const _PauseRequestsCard({
-    required this.isPaused,
+  const _GoOfflineCard({
+    required this.isOffline,
     required this.writing,
     required this.onToggle,
   });
@@ -244,13 +262,13 @@ class _PauseRequestsCard extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(20),
       decoration: BoxDecoration(
-        color: isPaused
-            ? AppColors.amberGold.withValues(alpha: 0.06)
+        color: isOffline
+            ? AppColors.muted.withValues(alpha: 0.06)
             : AppColors.surfaceWhite,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: isPaused
-              ? AppColors.amberGold.withValues(alpha: 0.25)
+          color: isOffline
+              ? AppColors.muted.withValues(alpha: 0.2)
               : AppColors.muted.withValues(alpha: 0.08),
         ),
         boxShadow: [
@@ -269,7 +287,7 @@ class _PauseRequestsCard extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  isPaused ? 'Requests Paused' : 'Accepting Requests',
+                  isOffline ? 'Offline' : 'Online',
                   style: GoogleFonts.inter(
                     fontSize: 16,
                     fontWeight: FontWeight.w600,
@@ -278,11 +296,10 @@ class _PauseRequestsCard extends StatelessWidget {
                 ),
                 const SizedBox(height: 4),
                 Text(
-                  isPaused
-                      ? "You're shown as 'Busy' to users. New "
-                          "requests won't reach you."
-                      : "You'll receive session requests when "
-                          "you're online.",
+                  isOffline
+                      ? "You're hidden from the user feed. New "
+                          "requests can't reach you."
+                      : "You'll receive session requests from users.",
                   style: GoogleFonts.inter(
                     fontSize: 12,
                     fontWeight: FontWeight.w400,
@@ -295,7 +312,7 @@ class _PauseRequestsCard extends StatelessWidget {
           ),
           const SizedBox(width: 16),
           _Toggle(
-            value: isPaused,
+            value: isOffline,
             disabled: writing,
             onChanged: onToggle,
           ),
@@ -318,11 +335,11 @@ class _Toggle extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Track color tells the priest the *current* state at a glance:
-    //   amber-gold = paused (matches the warning palette)
-    //   forest-green = accepting (matches the "live" pill in chat)
+    // value == true means "offline" so the visual cue is muted
+    // grey; value == false means "online" so we use the green
+    // pill from chat's live-state palette.
     final trackColor = value
-        ? AppColors.amberGold
+        ? AppColors.muted
         : const Color(0xFF2E7D4F);
 
     return GestureDetector(

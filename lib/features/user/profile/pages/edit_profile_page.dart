@@ -26,6 +26,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:firebase_storage/firebase_storage.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
@@ -217,11 +218,16 @@ class _EditProfilePageState extends State<EditProfilePage> {
 
   Future<void> _save() async {
     final name = _nameController.text.trim();
-    if (name.isEmpty || name.length < 2) {
+    if (name.isEmpty) {
+      AppSnackBar.error(context, 'Display name is required');
+      return;
+    }
+    if (name.length < 2) {
       AppSnackBar.error(context, 'Name must be at least 2 characters');
       return;
     }
 
+    HapticFeedback.mediumImpact();
     setState(() => _isSaving = true);
 
     try {

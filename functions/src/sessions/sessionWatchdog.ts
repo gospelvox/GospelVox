@@ -2,6 +2,7 @@ import {onSchedule} from "firebase-functions/v2/scheduler";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
 import {sendPushNotification} from "../notifications/sendPush";
+import {notifyPriestMissedRequest} from "./missedRequestNotif";
 
 const db = admin.firestore();
 
@@ -11,6 +12,18 @@ const db = admin.firestore();
 // absorb slow networks and brief OEM doze. Don't shrink without
 // also shrinking the client heartbeat cadence (currently 30s).
 const HEARTBEAT_TIMEOUT_MS = 2 * 60 * 1000;
+
+// Pending requests stuck without a priest response are eligible
+// for expiry once they're older than this. Matches the user-side
+// 60s countdown — anything older means either:
+//   • the priest never responded AND the user-side
+//     expireSessionRequest CF call failed (network blip, app
+//     killed before the fire-and-forget landed), OR
+//   • the user closed the waiting screen without expireSessionRequest
+//     running (e.g. force-quit during the 60s window).
+// Either way, the priest deserves the missed-request notification
+// — this watchdog branch is the safety net that ensures it.
+const PENDING_REQUEST_TIMEOUT_MS = 60 * 1000;
 
 // Scheduled every 5 minutes. The runtime is happy to tolerate the
 // occasional slow tick — losing one cycle just delays the cleanup
@@ -36,7 +49,7 @@ export const sessionWatchdog = onSchedule(
       `cutoff: ${cutoffTime.toDate().toISOString()}`
     );
 
-    // STEP 1 — Find every active session whose last heartbeat is
+    // STEP 1A — Find every active session whose last heartbeat is
     // older than the cutoff. Composite index required:
     //   sessions: status (asc), lastHeartbeat (asc)
     // Firebase will surface a console URL the first time this runs
@@ -48,35 +61,134 @@ export const sessionWatchdog = onSchedule(
       .get();
 
     if (staleSessions.empty) {
-      console.log("[Watchdog] No stale sessions found. All clear.");
+      console.log("[Watchdog] No stale active sessions found.");
+    } else {
+      console.log(
+        `[Watchdog] Found ${staleSessions.size} stale active session(s)`
+      );
+    }
+
+    // STEP 1B — Find pending sessions older than 60s. These are
+    // requests where the priest never responded AND the user-side
+    // expireSessionRequest call didn't land. Composite index:
+    //   sessions: status (asc), createdAt (asc)
+    // First production run will log a console URL to provision.
+    const pendingCutoff = admin.firestore.Timestamp.fromMillis(
+      now.toMillis() - PENDING_REQUEST_TIMEOUT_MS
+    );
+    const stuckPending = await db
+      .collection("sessions")
+      .where("status", "==", "pending")
+      .where("createdAt", "<", pendingCutoff)
+      .get();
+
+    if (stuckPending.empty) {
+      console.log("[Watchdog] No stuck pending requests found.");
+    } else {
+      console.log(
+        `[Watchdog] Found ${stuckPending.size} stuck pending request(s)`
+      );
+    }
+
+    if (staleSessions.empty && stuckPending.empty) {
+      console.log("[Watchdog] All clear.");
       return;
     }
 
-    console.log(`[Watchdog] Found ${staleSessions.size} stale session(s)`);
-
-    // STEP 2 — Process each stale session independently. We catch
-    // per-session errors so a single bad doc (e.g. malformed data
-    // from an old build) doesn't block the watchdog from cleaning
-    // up the rest of the queue.
-    const results: Array<{sessionId: string; result: string}> = [];
+    // STEP 2 — Process each session / priest independently.
+    // Per-doc try/catch so a single bad doc doesn't block the
+    // watchdog from cleaning up the rest of the queue.
+    const results: Array<{id: string; result: string}> = [];
 
     for (const sessionDoc of staleSessions.docs) {
       const sessionId = sessionDoc.id;
       try {
         await processStaleSession(sessionId, sessionDoc.data());
-        results.push({sessionId, result: "ended"});
+        results.push({id: sessionId, result: "ended"});
       } catch (error) {
         console.error(
-          `[Watchdog] Failed to process session ${sessionId}:`,
+          `[Watchdog] Failed to process active session ${sessionId}:`,
           error
         );
-        results.push({sessionId, result: `error: ${error}`});
+        results.push({id: sessionId, result: `error: ${error}`});
+      }
+    }
+
+    for (const sessionDoc of stuckPending.docs) {
+      const sessionId = sessionDoc.id;
+      try {
+        await processStuckPending(sessionId, sessionDoc.data());
+        results.push({id: sessionId, result: "expired"});
+      } catch (error) {
+        console.error(
+          `[Watchdog] Failed to process stuck pending ${sessionId}:`,
+          error
+        );
+        results.push({id: sessionId, result: `error: ${error}`});
       }
     }
 
     console.log("[Watchdog] Results:", JSON.stringify(results));
   }
 );
+
+// Marks a stuck pending request as expired and notifies the priest.
+// Mirrors what expireSessionRequest does for the user-side cubit
+// path — kept as a separate function rather than calling the
+// HTTPS callable internally because admin SDK writes are simpler
+// than re-routing through the request stack, and we want this to
+// run regardless of any client auth state.
+//
+// TOCTOU-safe: status flip happens inside a transaction so a race
+// with expireSessionRequest CF can't produce duplicate
+// notifications. The loser of the race retries the transaction,
+// sees status != 'pending' on the second pass, and exits before
+// the notify step ever runs.
+async function processStuckPending(
+  sessionId: string,
+  fallbackSession: admin.firestore.DocumentData
+): Promise<void> {
+  const sessionRef = db.doc(`sessions/${sessionId}`);
+
+  type TxOutcome =
+    | {kind: "won"; session: admin.firestore.DocumentData}
+    | {kind: "alreadyTerminal"};
+
+  const outcome: TxOutcome = await db.runTransaction(async (tx) => {
+    const snap = await tx.get(sessionRef);
+    if (!snap.exists) return {kind: "alreadyTerminal"};
+    const session = snap.data()!;
+    if (session.status !== "pending") return {kind: "alreadyTerminal"};
+
+    tx.update(sessionRef, {
+      status: "expired",
+      endedAt: admin.firestore.FieldValue.serverTimestamp(),
+      endReason: "watchdog_pending_timeout",
+    });
+
+    return {kind: "won", session};
+  });
+
+  if (outcome.kind === "alreadyTerminal") {
+    console.log(
+      `[Watchdog] Session ${sessionId} no longer pending — skipping.`
+    );
+    return;
+  }
+
+  await notifyPriestMissedRequest({
+    // Prefer the freshly-loaded data from the transaction so any
+    // late denormalized field updates are reflected in the
+    // notification body. fallbackSession (from the original query)
+    // is only used if the transaction read somehow returned empty.
+    session: outcome.session ?? fallbackSession,
+    sessionId: sessionId,
+  });
+
+  console.log(
+    `[Watchdog] Stuck pending ${sessionId} expired and priest notified.`
+  );
+}
 
 // Settles one abandoned session. Authoritative billing values come
 // from the session doc itself (durationMinutes / totalCharged /
@@ -179,9 +291,14 @@ async function processStaleSession(
 
   // STEP 4 — Bump priest's lifetime session count. Mirrors what
   // endSession does so abandoned sessions still count toward the
-  // priest's stats.
+  // priest's stats. Also clear isBusy — the session ended (even
+  // if abandoned), so the user feed shouldn't keep showing this
+  // priest as Busy. The priest-stale-heartbeat sweep above might
+  // already have flipped isBusy in parallel for the same priest;
+  // both writes converge to false, so the order doesn't matter.
   await db.doc(`priests/${session.priestId}`).update({
     totalSessions: admin.firestore.FieldValue.increment(1),
+    isBusy: false,
   });
 
   // STEP 5 — Notify both sides so they understand WHY the session

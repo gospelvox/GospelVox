@@ -5,13 +5,15 @@
 // available yet, which reads as a broken app. A dedicated waiting room
 // sets expectations and gives admin moderation time without anxiety.
 
-import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 
 class PendingApprovalPage extends StatelessWidget {
   const PendingApprovalPage({super.key});
@@ -117,10 +119,14 @@ class PendingApprovalPage extends StatelessWidget {
               GestureDetector(
                 behavior: HitTestBehavior.opaque,
                 onTap: () async {
-                  await FirebaseAuth.instance.signOut();
-                  // Wipe the cached role so the router doesn't try to
-                  // bounce the next sign-in straight back to /priest.
+                  HapticFeedback.lightImpact();
+                  // Full repo sign-out: removes the FCM token from
+                  // priests/{uid} AND clears the Google session, so the
+                  // next sign-in shows the account picker. The cached
+                  // role is cleared first so the router doesn't bounce
+                  // the next sign-in straight back to /priest.
                   clearCachedRole();
+                  await sl<AuthRepository>().signOut();
                   if (!context.mounted) return;
                   context.go('/select-role');
                 },

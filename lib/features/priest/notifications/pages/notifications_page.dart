@@ -92,16 +92,22 @@ class _NotificationsPageState extends State<NotificationsPage> {
     // list (the read state itself is the user-visible feedback).
     switch (notif.type) {
       case 'session_request':
-        // We don't have the SessionModel here — pushing /priest/incoming
-        // directly would land on the missing-session placeholder. Tell
-        // the priest to head back to the dashboard, which has the live
-        // listener that will surface the request.
-        if (mounted) {
-          AppSnackBar.info(
-            context,
-            'Open the dashboard to accept this request.',
-          );
-        }
+        // The dashboard owns the live pending-request listener, so the
+        // correct landing for this notification is the dashboard
+        // itself — its stream will surface the request and route to
+        // /priest/incoming with the full SessionModel.
+        if (mounted) context.go('/priest');
+        return;
+      case 'missed_request':
+        // The user tried to reach this priest but the request
+        // expired before they accepted. Land on the dedicated
+        // missed-requests page where the priest can quick-reply
+        // or dismiss without leaving the surface. Marking THIS
+        // notification doc as read happens above (via _patchLocalRead
+        // + the unawaited Firestore write); the dedicated page
+        // re-runs its own stream so a doc that was already flipped
+        // by this tap simply doesn't render there.
+        if (mounted) context.push('/priest/missed-requests');
         return;
       case 'withdrawal_processed':
       case 'withdrawal_sent':
