@@ -244,6 +244,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       final reason = session.endReason.isNotEmpty
           ? session.endReason
           : (session.status == 'completed' ? 'completed' : 'external');
+      // Surface the ending state to the UI immediately so the
+      // input bar / end button visibly disable while
+      // _fetchSummaryAndEnd races the endSession CF. Without
+      // this, the priest sees a frozen chat with no feedback
+      // that the session is wrapping up.
+      final current = state;
+      if (current is ChatSessionActive) {
+        emit(current.copyWith(isEnding: true));
+      }
       _fetchSummaryAndEnd(session, reason);
       return;
     }
@@ -306,7 +315,8 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       messages: _buildMergedTimeline(session.id),
       elapsedSeconds: 0,
       remainingBalance: session.userBalance,
-      isLowBalance: _isUserSide && session.userBalance <= 50,
+      isLowBalance: _isUserSide &&
+          _isLowBalanceAt(session.userBalance, session.ratePerMinute),
       pastMeta: _pastMeta,
     ));
   }
@@ -376,8 +386,54 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _lastKnownBalance = newBalance;
     emit(current.copyWith(
       remainingBalance: newBalance,
-      isLowBalance: newBalance <= 50,
+      isLowBalance:
+          _isLowBalanceAt(newBalance, current.session.ratePerMinute),
     ));
+    _maybePromptLowBalance();
+  }
+
+  // Latch + thresholds for the low-balance UX. Two levels:
+  //   • 5 minutes left → strip card shows (gentle reminder)
+  //   • 2 minutes left → urgent recharge sheet pops (one-shot)
+  // Same edge-detection semantics as the voice-call cubit: pops
+  // once per low-balance phase, re-arms when balance climbs above
+  // the urgent threshold.
+  bool _lowBalancePromptShown = false;
+  static const int _kLowBalanceWarningMinutes = 5;
+  static const int _kMinutesLeftThreshold = 2;
+
+  // Returns true when balance buys ≤5 minutes at the locked chat
+  // rate. Defensive: a zero/negative rate returns false so the
+  // strip never pops on a misconfigured app_config.
+  bool _isLowBalanceAt(int balance, int rate) {
+    if (rate <= 0) return false;
+    return (balance ~/ rate) <= _kLowBalanceWarningMinutes;
+  }
+
+  void _maybePromptLowBalance() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive) return;
+    final rate = current.session.ratePerMinute;
+    if (rate <= 0) return;
+    final minutesLeft = current.remainingBalance ~/ rate;
+
+    if (minutesLeft <= _kMinutesLeftThreshold) {
+      if (!_lowBalancePromptShown && !current.showLowBalancePrompt) {
+        _lowBalancePromptShown = true;
+        emit(current.copyWith(showLowBalancePrompt: true));
+      }
+    } else {
+      _lowBalancePromptShown = false;
+    }
+  }
+
+  void acknowledgeLowBalancePrompt() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive) return;
+    if (!current.showLowBalancePrompt) return;
+    emit(current.copyWith(showLowBalancePrompt: false));
   }
 
   void _startTimers(String sessionId) {
@@ -455,8 +511,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       _lastKnownBalance = result.remainingBalance;
       emit(current.copyWith(
         remainingBalance: result.remainingBalance,
-        isLowBalance: result.remainingBalance <= 50,
+        isLowBalance: _isLowBalanceAt(
+          result.remainingBalance,
+          current.session.ratePerMinute,
+        ),
       ));
+      _maybePromptLowBalance();
 
       if (result.shouldEnd && !_endingDispatched) {
         await endSession(reason: 'balance_zero');
@@ -502,6 +562,33 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     );
   }
 
+  // ─── Reply target ────────────────────────────────────────
+
+  // Stash a bubble as the active reply target — driven by the swipe
+  // gesture in the chat view. We refuse pending/past/free-message
+  // bubbles here as defence in depth, even though the view layer
+  // already gates the swipe to current-session bubbles only.
+  void setReplyTarget(ChatMessage message) {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive) return;
+    if (message.isPending) return;
+    if (message.isPriestMessage) return;
+    if (message.sessionId.isNotEmpty &&
+        message.sessionId != _sessionId) {
+      return;
+    }
+    emit(current.copyWith(replyTarget: message));
+  }
+
+  void clearReplyTarget() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive) return;
+    if (current.replyTarget == null) return;
+    emit(current.copyWith(clearReplyTarget: true));
+  }
+
   // ─── Send message (with optimistic bubble) ───────────────
 
   Future<void> sendMessage({
@@ -519,6 +606,25 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     // committing, so "still typing" would be misleading.
     _stopTyping();
 
+    // Snapshot the active reply target (if any) and freeze a
+    // ReplyTarget payload for both the optimistic bubble and the
+    // server write. Snippet capped at 140 chars so a 1000-char
+    // long reply doesn't bloat the doc — the preview only ever
+    // shows ~2 lines anyway.
+    final replyMsg = current.replyTarget;
+    ReplyTarget? replyPayload;
+    if (replyMsg != null) {
+      final snippet = replyMsg.text.length > 140
+          ? '${replyMsg.text.substring(0, 140)}…'
+          : replyMsg.text;
+      replyPayload = ReplyTarget(
+        messageId: replyMsg.id,
+        text: snippet,
+        senderName: replyMsg.senderName,
+        senderId: replyMsg.senderId,
+      );
+    }
+
     // Build an optimistic bubble. Tagged with isPending=true so
     // the UI renders the small ⏱ status icon. tempId uses a
     // microsecond timestamp — colliding with a real Firestore
@@ -533,13 +639,18 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       senderName: senderName,
       text: trimmed,
       sessionId: _sessionId,
+      replyTo: replyPayload,
     );
     _pendingOutbound.add(optimistic);
 
     if (!isClosed) {
+      // Clear the reply target the moment we queue the send so the
+      // compose chip disappears immediately and the user can start
+      // typing the next message without an extra tap.
       emit(current.copyWith(
         messages: _buildMergedTimeline(current.session.id),
         isSendingMessage: true,
+        clearReplyTarget: true,
       ));
     }
 
@@ -549,6 +660,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         senderId: senderId,
         senderName: senderName,
         text: trimmed,
+        replyTo: replyPayload,
       );
       // Settled — but we keep `optimistic` in _pendingOutbound
       // until the messages stream actually returns the canonical

@@ -4,25 +4,28 @@
 // rate, just an inline ask-for-rating sheet that lets them either
 // submit or dismiss.
 //
-// Forced-but-not-trapped UX:
-//   • No X / close icon. No backdrop dismiss. No hardware-back
-//     dismiss (PopScope.canPop=false).
-//   • Submit is the primary CTA — saves the rating + free-text
-//     feedback to sessions/{id}.userRating + userFeedback (same
-//     shape PostSessionPage used to write, so the priest's rating
-//     aggregator keeps working without a schema change). Submit
-//     ALWAYS closes the dialog, even when no rating was picked,
-//     so the user is never blocked.
-//   • A small, muted "Maybe later" link below Submit is the
-//     visible-but-de-emphasised opt-out. It's there for honesty
-//     (the user can always escape) but its visual weight is low
-//     enough that most users will rate before tapping it.
+// Always-enabled-submit UX:
+//   • No backdrop dismiss. No hardware-back dismiss
+//     (PopScope.canPop=false).
+//   • Submit is ALWAYS visible and tappable. A small hint line
+//     above the button reads "Tap a star or share a note" — it
+//     fades out the moment the user interacts (taps a star OR
+//     types a character). So the surface is honest: the button
+//     is always there, the nudge appears only when the user
+//     hasn't engaged yet, and disappears once they have.
+//   • The dismiss affordance is a deliberately-subtle close icon
+//     pinned to the top-right corner: low-opacity muted glyph,
+//     small hit-area-but-visible-enough-to-find.
+//   • If Submit is tapped with nothing filled, it closes silently
+//     — equivalent to dismissing. If anything (star OR text) is
+//     filled, _submit writes whatever's there. No data is lost,
+//     no validation blocks the user.
 //
 // The session is already settled on the server by the time this
 // dialog opens — endSession returned a SessionSummary up-stack and
 // the cubit emitted VoiceCallEnded / ChatSessionEnded. So nothing
 // in the app is blocked on this modal; whether the user taps
-// Submit or Maybe later, they go home.
+// Submit or the close icon, they go home.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
@@ -56,34 +59,72 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
   final TextEditingController _feedbackController = TextEditingController();
   int _rating = 0;
   bool _saving = false;
+  // Flips to true the FIRST time the user taps Submit with no
+  // rating and no text. Drives the "Share your valuable feedback"
+  // nudge that appears below the button — only after an empty
+  // submit attempt, not on first open. Resets implicitly: once
+  // _hasAnyInput goes true, the nudge fades out regardless of
+  // this flag.
+  bool _emptySubmitAttempted = false;
+
+  // True the moment the user has interacted — star tapped OR
+  // non-blank text typed. Drives the nudge fade-out and gates
+  // whether Submit writes data or shows the prompt.
+  bool get _hasAnyInput =>
+      _rating > 0 || _feedbackController.text.trim().isNotEmpty;
+
+  @override
+  void initState() {
+    super.initState();
+    // Rebuild on every keystroke so the nudge fade-out + Submit
+    // behaviour react to the very first character.
+    _feedbackController.addListener(_onInputChanged);
+  }
+
+  void _onInputChanged() {
+    if (!mounted) return;
+    setState(() {});
+  }
 
   @override
   void dispose() {
+    _feedbackController.removeListener(_onInputChanged);
     _feedbackController.dispose();
     super.dispose();
   }
 
   Future<void> _submit() async {
     if (_saving) return;
+    final feedback = _feedbackController.text.trim();
+
+    // Empty submit: don't close. Light haptic + flip the nudge
+    // flag so "Share your valuable feedback" appears below the
+    // button. User can still bail via the X corner — they're
+    // never trapped, just nudged.
+    if (feedback.isEmpty && _rating == 0) {
+      HapticFeedback.lightImpact();
+      if (!_emptySubmitAttempted) {
+        setState(() => _emptySubmitAttempted = true);
+      }
+      return;
+    }
+
     setState(() => _saving = true);
 
-    // Only write if the user actually picked a rating. Writing a
-    // blank rating would no-op for the aggregator and pollute the
-    // feedback log with empty strings.
-    if (_rating > 0) {
-      try {
-        await FirebaseFirestore.instance
-            .doc('sessions/${widget.session.id}')
-            .update({
-              'userRating': _rating,
-              'userFeedback': _feedbackController.text.trim(),
-            })
-            .timeout(const Duration(seconds: 6));
-      } catch (_) {
-        // Swallow — server-side aggregation tolerates a missed
-        // rating, and blocking the user on a metric-write failure
-        // would feel worse than silently losing one rating.
-      }
+    try {
+      // Write whichever fields the user filled in. Rating is
+      // optional — the aggregator no-ops on a missing userRating,
+      // and the priest's feedback log gets the text either way.
+      final update = <String, dynamic>{};
+      if (_rating > 0) update['userRating'] = _rating;
+      if (feedback.isNotEmpty) update['userFeedback'] = feedback;
+      await FirebaseFirestore.instance
+          .doc('sessions/${widget.session.id}')
+          .update(update)
+          .timeout(const Duration(seconds: 6));
+    } catch (_) {
+      // Swallow — blocking the user on a metric-write failure
+      // would feel worse than silently losing one rating.
     }
 
     if (!mounted) return;
@@ -97,64 +138,78 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
 
   @override
   Widget build(BuildContext context) {
+    final priestName = widget.session.priestName.trim();
+    final headline = priestName.isNotEmpty
+        ? 'How was your session with $priestName?'
+        : 'How was your session?';
+    // Nudge appears only AFTER an empty submit attempt, never on
+    // first open. Fades back out the moment the user fills any
+    // input. Wrapped in AnimatedOpacity so the layout slot stays
+    // reserved and the button below never shifts position.
+    final showNudge = _emptySubmitAttempted && !_hasAnyInput;
+
     return PopScope(
       canPop: false,
       child: Dialog(
         backgroundColor: AppColors.surfaceWhite,
         shape: RoundedRectangleBorder(
-          borderRadius: BorderRadius.circular(20),
+          borderRadius: BorderRadius.circular(22),
         ),
-        insetPadding: const EdgeInsets.symmetric(horizontal: 24),
+        // Wider horizontal inset = visually smaller dialog. Premium
+        // minimal apps use generous outside breathing room rather
+        // than packing the dialog edge-to-edge.
+        insetPadding: const EdgeInsets.symmetric(horizontal: 36),
         child: Padding(
-          padding: const EdgeInsets.fromLTRB(24, 24, 24, 16),
+          padding: const EdgeInsets.fromLTRB(20, 8, 10, 14),
           child: SingleChildScrollView(
             child: Column(
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                Center(
-                  child: Container(
-                    width: 56,
-                    height: 56,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: AppColors.primaryBrown.withValues(alpha: 0.08),
+                // Subtle close icon — top-right. Low-opacity muted
+                // glyph; users who want out can find it without
+                // being shouted at.
+                Align(
+                  alignment: Alignment.centerRight,
+                  child: SizedBox(
+                    width: 32,
+                    height: 32,
+                    child: IconButton(
+                      onPressed: _saving ? null : _skip,
+                      padding: EdgeInsets.zero,
+                      iconSize: 16,
+                      icon: Icon(
+                        Icons.close_rounded,
+                        color: AppColors.muted.withValues(alpha: 0.35),
+                      ),
+                      splashRadius: 16,
+                      tooltip: 'Close',
                     ),
-                    child: Icon(
-                      Icons.check_rounded,
-                      size: 28,
-                      color: AppColors.primaryBrown,
+                  ),
+                ),
+                // Personal headline — names the priest so the
+                // question feels like it's about THAT conversation,
+                // not a generic rating prompt. Compact font size
+                // for the smaller dialog footprint.
+                Padding(
+                  padding: const EdgeInsets.fromLTRB(4, 0, 4, 0),
+                  child: Text(
+                    headline,
+                    textAlign: TextAlign.center,
+                    style: GoogleFonts.inter(
+                      fontSize: 16,
+                      fontWeight: FontWeight.w700,
+                      height: 1.3,
+                      color: AppColors.deepDarkBrown,
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                Text(
-                  'Rate your experience',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 18,
-                    fontWeight: FontWeight.w700,
-                    color: AppColors.deepDarkBrown,
-                  ),
-                ),
-                const SizedBox(height: 6),
-                Text(
-                  'Your feedback helps other believers find the '
-                  'right speaker.',
-                  textAlign: TextAlign.center,
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                    height: 1.4,
-                    color: AppColors.muted,
-                  ),
-                ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 14),
                 _StarRow(
                   rating: _rating,
                   onChanged: (value) => setState(() => _rating = value),
                 ),
-                const SizedBox(height: 18),
+                const SizedBox(height: 14),
                 Container(
                   decoration: BoxDecoration(
                     color: const Color(0xFFF7F5F2),
@@ -174,14 +229,14 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                       color: AppColors.deepDarkBrown,
                     ),
                     decoration: InputDecoration(
-                      hintText: 'Share your experience…',
+                      hintText: 'Share your thoughts…',
                       hintStyle: GoogleFonts.inter(
                         fontSize: 13,
                         fontWeight: FontWeight.w400,
                         color: AppColors.muted.withValues(alpha: 0.5),
                       ),
                       border: InputBorder.none,
-                      contentPadding: const EdgeInsets.all(14),
+                      contentPadding: const EdgeInsets.all(12),
                       counterStyle: GoogleFonts.inter(
                         fontSize: 10,
                         fontWeight: FontWeight.w400,
@@ -190,29 +245,35 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                     ),
                   ),
                 ),
-                const SizedBox(height: 16),
-                _SubmitButton(saving: _saving, onTap: _submit),
-                const SizedBox(height: 8),
-                Center(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: _saving ? null : _skip,
-                    child: Padding(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 16,
-                        vertical: 8,
-                      ),
-                      child: Text(
-                        'Maybe later',
-                        style: GoogleFonts.inter(
-                          fontSize: 12,
-                          fontWeight: FontWeight.w500,
-                          color: AppColors.muted.withValues(alpha: 0.55),
-                        ),
+                const SizedBox(height: 10),
+                // Friendly nudge — only after the user tapped
+                // Submit without filling anything. Opacity-only
+                // fade so the button below never shifts position.
+                AnimatedOpacity(
+                  duration: const Duration(milliseconds: 220),
+                  curve: Curves.easeOutCubic,
+                  opacity: showNudge ? 1.0 : 0.0,
+                  child: Center(
+                    child: Text(
+                      'Share your valuable feedback on $priestName',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      textAlign: TextAlign.center,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.amberGold,
                       ),
                     ),
                   ),
                 ),
+                const SizedBox(height: 6),
+                // Submit is always visible. If pressed empty, the
+                // handler triggers a haptic nudge + the message
+                // above; it does NOT close. If anything is filled,
+                // writes and closes. X corner is the unconditional
+                // escape.
+                _SubmitButton(saving: _saving, onTap: _submit),
               ],
             ),
           ),

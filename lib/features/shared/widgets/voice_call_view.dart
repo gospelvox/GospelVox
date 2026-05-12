@@ -79,8 +79,18 @@ class _VoiceCallViewState extends State<VoiceCallView>
 
   // Tracks the rising edge of low-balance for haptic feedback.
   bool _wasLowBalance = false;
+  // Separate latch for the "final minute" buzz — fires ONCE when
+  // the user crosses below 1 minute of talk time, re-arms only
+  // when balance climbs back above 1 minute (recharge). Distinct
+  // from the existing _wasLowBalance edge so the two haptics are
+  // independent moments: one at 5-min entry, one at 1-min entry.
+  bool _wasInFinalMinute = false;
   // Tracks the rising edge of "remote joined" for haptic feedback.
   bool _wasRemoteJoined = false;
+  // Defence-in-depth: ensures we never stack two recharge sheets
+  // even if the BlocListener somehow fires twice in a single
+  // frame. Cleared the moment the active sheet dismisses.
+  bool _lowBalanceSheetOpen = false;
 
   @override
   void initState() {
@@ -138,8 +148,20 @@ class _VoiceCallViewState extends State<VoiceCallView>
             ),
           ),
           child: BlocConsumer<VoiceCallCubit, VoiceCallState>(
-            listenWhen: (prev, next) =>
-                next is VoiceCallEnded || next is VoiceCallError,
+            listenWhen: (prev, next) {
+              // Terminal / error states navigate away — same as before.
+              if (next is VoiceCallEnded || next is VoiceCallError) {
+                return true;
+              }
+              // Edge-triggered low-balance prompt: only fire on the
+              // false → true transition so re-emits with the flag
+              // already true don't keep stacking sheets.
+              final prevPrompt =
+                  (prev is VoiceCallActive) && prev.showLowBalancePrompt;
+              final nextPrompt =
+                  (next is VoiceCallActive) && next.showLowBalancePrompt;
+              return !prevPrompt && nextPrompt;
+            },
             listener: (context, state) {
               if (state is VoiceCallEnded) {
                 widget.onEnded(context, state);
@@ -156,12 +178,20 @@ class _VoiceCallViewState extends State<VoiceCallView>
                 } else {
                   context.go(widget.isUserSide ? '/user' : '/priest');
                 }
+              } else if (state is VoiceCallActive &&
+                  state.showLowBalancePrompt &&
+                  widget.isUserSide) {
+                _showLowBalanceSheet(state);
               }
             },
             builder: (context, state) {
               if (state is VoiceCallActive) {
                 _maybeBuzzOnRemoteJoin(state.isRemoteUserJoined);
                 _maybeBuzzOnLowBalance(state.isLowBalance);
+                _maybeBuzzOnFinalMinute(
+                  state.remainingBalance,
+                  state.session.ratePerMinute,
+                );
                 _syncPulse(state.isRemoteUserJoined);
                 return SafeArea(child: _buildActive(state));
               }
@@ -200,44 +230,102 @@ class _VoiceCallViewState extends State<VoiceCallView>
     _wasLowBalance = isLow;
   }
 
-  // Mid-call recharge. The user's balance stream the cubit
+  // Single sharp haptic the moment the user enters the final
+  // minute of talk time. Gated to the user side (priest never sees
+  // the low-balance UI) and edge-detected via _wasInFinalMinute so
+  // it fires once per low-balance phase, not on every rebuild.
+  // Heavy impact distinguishes this from the medium 5-min entry.
+  void _maybeBuzzOnFinalMinute(int balance, int rate) {
+    if (!widget.isUserSide) return;
+    if (rate <= 0) return;
+    final inFinal = (balance ~/ rate) <= 1;
+    if (inFinal && !_wasInFinalMinute) {
+      HapticFeedback.heavyImpact();
+    }
+    _wasInFinalMinute = inFinal;
+  }
+
+  // Auto-popup recharge sheet, fired by the cubit's low-balance
+  // latch the moment the user crosses below 2 minutes of remaining
+  // talk time. Visually identical to the manual _openRecharge sheet
+  // — same RechargeSheet widget, same packs, same payment flow —
+  // but the headline is the urgent countdown copy. The cubit owns
+  // the "show once per phase" semantics; this method just renders
+  // the sheet and acknowledges the prompt after dismissal so the
+  // cubit's state transitions back to false.
+  Future<void> _showLowBalanceSheet(VoiceCallActive state) async {
+    if (_lowBalanceSheetOpen) return;
+    _lowBalanceSheetOpen = true;
+
+    final rate = state.session.ratePerMinute;
+    final balance = state.remainingBalance;
+
+    // Compute the countdown the same way billing does — flooring
+    // to whole seconds against the rate-per-minute. Locked at sheet
+    // open time; the user only sits with this for ~10-30 seconds
+    // so a static reading is acceptable for v1.
+    final secondsLeft =
+        rate > 0 ? ((balance * 60) ~/ rate).clamp(0, 60 * 60) : 0;
+    final mm = secondsLeft ~/ 60;
+    final ss = secondsLeft % 60;
+    final countdown = '$mm:${ss.toString().padLeft(2, '0')}';
+
+    HapticFeedback.mediumImpact();
+    try {
+      // Headline alone — no subtext. The sheet itself + the
+      // countdown carry the urgency; "Recharge to keep talking
+      // with X" was decorative repetition of what the sheet
+      // already implies.
+      await RechargeSheet.show(
+        context,
+        currentBalance: balance,
+        infoHeadline: 'Your call ends in $countdown',
+      );
+    } finally {
+      _lowBalanceSheetOpen = false;
+      if (mounted) {
+        // Reset the cubit-side flag so the next dip below the
+        // threshold (after a recharge → balance drop again) can
+        // re-fire the sheet. Idempotent: cubit checks isClosed +
+        // current flag value before emitting.
+        final cubit = context.read<VoiceCallCubit>();
+        if (!cubit.isClosed) cubit.acknowledgeLowBalancePrompt();
+      }
+    }
+  }
+
+  // Mid-call recharge — fired from the low-balance strip's
+  // "Add Coins" button. The user's balance stream the cubit
   // subscribes to picks up the new balance the moment Razorpay
   // credits the wallet — no extra plumbing needed here. Billing
   // continues running during the sheet (the cubit's timers don't
-  // pause), which is the correct behaviour: the audio is still
+  // pause), which is the correct behaviour: audio is still
   // flowing, the user is still being heard.
   //
-  // Contextual copy: we hand the sheet the priest's name + the
-  // 5-minute minimum + the deficit so the headline reads
-  // "Minimum balance: ₹X (for 5 minutes)" / "You need ₹X more to
-  // keep your call with $priestName going" instead of generic copy.
+  // Single-line headline: just the deficit math. We dropped the
+  // verbose "Minimum balance: ₹X (for 5 minutes)" line and the
+  // "with $priestName" subtext — both were over-text, since the
+  // user already knows who they're talking to and the sheet's
+  // pack grid carries the rest of the action.
   Future<void> _openRecharge() async {
     HapticFeedback.lightImpact();
     final cubitState = context.read<VoiceCallCubit>().state;
     int? balance;
     String? headline;
-    String? subtext;
     if (cubitState is VoiceCallActive) {
       balance = cubitState.remainingBalance;
       final ctx = recomputeRechargeContext(
         ratePerMinute: cubitState.session.ratePerMinute,
         currentBalance: cubitState.remainingBalance,
       );
-      headline =
-          'Minimum balance: ₹${ctx.requiredFor5Min} (for 5 minutes)';
-      final priestName = cubitState.session.priestName;
       if (ctx.deficit > 0) {
-        subtext = priestName.isNotEmpty
-            ? 'Add ₹${ctx.deficit} more to keep your call '
-                'with $priestName going'
-            : 'Add ₹${ctx.deficit} more to keep your call going';
+        headline = 'Add ₹${ctx.deficit} more to keep your call going';
       }
     }
     await RechargeSheet.show(
       context,
       currentBalance: balance,
       infoHeadline: headline,
-      infoSubtext: subtext,
     );
   }
 
@@ -286,6 +374,7 @@ class _VoiceCallViewState extends State<VoiceCallView>
         if (widget.isUserSide && state.isLowBalance)
           _LowBalanceStrip(
             remaining: state.remainingBalance,
+            ratePerMinute: state.session.ratePerMinute,
             onAddCoins: _openRecharge,
           ),
         // Flag #7: 45s into "Waiting…" without the remote joining,
@@ -329,15 +418,6 @@ class _VoiceCallViewState extends State<VoiceCallView>
                   fontSize: 14,
                   fontWeight: FontWeight.w400,
                   color: _kBeigeText.withValues(alpha: 0.5),
-                ),
-              ),
-              const SizedBox(height: 8),
-              Text(
-                '${session.ratePerMinute} coins/min',
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                  color: _kGold.withValues(alpha: 0.6),
                 ),
               ),
             ],
@@ -495,19 +575,23 @@ class _TopBar extends StatelessWidget {
                 _SignalPill(isBad: signalIsBad),
               ],
               const SizedBox(width: 8),
+              // Timer pill — intentionally muted so the user doesn't
+              // fixate on the running clock during a conversation.
+              // Still visible for honesty (they can glance to confirm
+              // duration), just no longer the eye's anchor.
               Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 14, vertical: 6),
+                    horizontal: 10, vertical: 4),
                 decoration: BoxDecoration(
-                  color: Colors.white.withValues(alpha: 0.08),
+                  color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(20),
                 ),
                 child: Text(
                   formattedTime,
                   style: GoogleFonts.inter(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: Colors.white,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: Colors.white.withValues(alpha: 0.55),
                   ),
                 ),
               ),
@@ -709,6 +793,12 @@ class _SilenceHintBanner extends StatelessWidget {
 
 class _LowBalanceStrip extends StatelessWidget {
   final int remaining;
+  // Locked per-minute rate from the session doc. Used to convert
+  // the raw coin balance into "minutes left" — a number the user
+  // can actually act on. Falling back to coin-display when rate is
+  // non-positive (defensive; shouldn't happen because the strip is
+  // gated on isLowBalance which already requires a real rate).
+  final int ratePerMinute;
   // Mid-call recharge entry point. The strip itself isn't tappable
   // — only the inline "Add Coins" button on the right is — so a
   // user reaching for the warning to dismiss it doesn't accidentally
@@ -717,8 +807,17 @@ class _LowBalanceStrip extends StatelessWidget {
 
   const _LowBalanceStrip({
     required this.remaining,
+    required this.ratePerMinute,
     required this.onAddCoins,
   });
+
+  String _labelText() {
+    if (ratePerMinute <= 0) return 'Low balance: $remaining coins';
+    final minutes = remaining ~/ ratePerMinute;
+    if (minutes <= 0) return 'Less than 1 minute left';
+    if (minutes == 1) return '1 minute of call left';
+    return '$minutes minutes of call left';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -739,7 +838,7 @@ class _LowBalanceStrip extends StatelessWidget {
           const SizedBox(width: 8),
           Expanded(
             child: Text(
-              'Low balance: $remaining coins',
+              _labelText(),
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: GoogleFonts.inter(

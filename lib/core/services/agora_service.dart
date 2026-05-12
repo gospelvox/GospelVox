@@ -53,7 +53,10 @@ class AgoraService {
 
   bool _isInitialized = false;
   bool _isMuted = false;
-  bool _isSpeakerOn = true;
+  // Earpiece is the default — matches the native phone-call mental
+  // model. Users who want speakerphone tap the toggle once during
+  // the call; both keep the boolean honest and the icon in sync.
+  bool _isSpeakerOn = false;
 
   // Silence tracking. We count consecutive 1-second windows where
   // every reported remote speaker has volume == 0. Threshold is the
@@ -274,15 +277,16 @@ class AgoraService {
       scenario: AudioScenarioType.audioScenarioChatroom,
     );
 
-    // Default route = speakerphone. The setDefaultAudioRouteToSpeakerphone
-    // API is the right one for the pre-join phase: it tells the SDK
-    // which output to use the moment the channel comes up. Calling
-    // setEnableSpeakerphone here (or even right after joinChannel
-    // returns) throws ERR_NOT_READY (-3) because joinChannel is
-    // fire-and-forget — the connection is still negotiating when the
-    // call returns. setEnableSpeakerphone is reserved for runtime
-    // toggling once we're already in the call (see toggleSpeaker).
-    await _engine!.setDefaultAudioRouteToSpeakerphone(true);
+    // Default route = earpiece (matches a normal phone call). The
+    // setDefaultAudioRouteToSpeakerphone API is the right one for
+    // the pre-join phase: it tells the SDK which output to use the
+    // moment the channel comes up. Calling setEnableSpeakerphone
+    // here (or even right after joinChannel returns) throws
+    // ERR_NOT_READY (-3) because joinChannel is fire-and-forget —
+    // the connection is still negotiating when the call returns.
+    // setEnableSpeakerphone is reserved for runtime toggling once
+    // we're already in the call (see toggleSpeaker).
+    await _engine!.setDefaultAudioRouteToSpeakerphone(false);
 
     // Enable Agora's AI noise suppression. The native extension is
     // already bundled (see iris loaded-extensions log) but the API

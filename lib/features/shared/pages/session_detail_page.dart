@@ -22,6 +22,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 
@@ -704,17 +705,4 @@ String _humanizeEndReason(String reason) {
   }
 }
 
-String _formatFullDate(DateTime? date) {
-  if (date == null) return '—';
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  final hour = date.hour > 12
-      ? date.hour - 12
-      : (date.hour == 0 ? 12 : date.hour);
-  final period = date.hour >= 12 ? 'PM' : 'AM';
-  final minute = date.minute.toString().padLeft(2, '0');
-  return '${months[date.month - 1]} ${date.day}, ${date.year} · '
-      '$hour:$minute $period';
-}
+String _formatFullDate(DateTime? date) => df.formatFullDateTime(date);

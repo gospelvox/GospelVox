@@ -34,10 +34,13 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
+    show CallEntryBubble;
 
 const Color _kOnlineGreen = Color(0xFF059669);
 const int _kFallbackChatRate = 10;
@@ -80,6 +83,17 @@ class _Bubble extends _Item {
   final ChatMessage message;
   final bool isMine;
   const _Bubble({required this.message, required this.isMine});
+}
+
+// Inline row for a past voice call between this user and the
+// priest. Synthesized server-side in getPastChatMessages from
+// completed voice sessions (no Firestore messages exist for them);
+// the row carries the same ChatMessage carrier as a text bubble so
+// the merge logic above doesn't need to learn a new shape.
+class _CallEntry extends _Item {
+  final ChatMessage message;
+  final bool isMine;
+  const _CallEntry({required this.message, required this.isMine});
 }
 
 class _ChatHistoryPageState extends State<ChatHistoryPage> {
@@ -276,9 +290,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
     final items = <_Item>[];
     String? prevSessionId;
     for (final m in timeline) {
-      // Past-session bubbles inject a session divider on every
-      // sessionId boundary. Free messages have no sessionId and
-      // never produce a divider — they flow inline at their
+      // Past-session chat bubbles inject a session divider on every
+      // sessionId boundary. Free messages and call-entry rows have
+      // no chat-session divider — they flow inline at their
       // timestamp position.
       if (m.kind == ChatMessageKind.session) {
         final sid = m.sessionId;
@@ -290,7 +304,13 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
           prevSessionId = sid;
         }
       }
-      items.add(_Bubble(message: m, isMine: m.senderId == uid));
+      // Call entries get their own row type so the builder can
+      // render them with the inline phone-card look + redial tap.
+      if (m.isCallEntry) {
+        items.add(_CallEntry(message: m, isMine: m.senderId == uid));
+      } else {
+        items.add(_Bubble(message: m, isMine: m.senderId == uid));
+      }
     }
 
     if (!mounted) return;
@@ -339,6 +359,27 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       'priestPhotoUrl': _displayPriestPhotoUrl,
       'priestDenomination': '',
       'type': 'chat',
+    });
+  }
+
+  // Tap-to-redial off a past voice-call entry in the timeline.
+  // Mirrors _startChatSession's preflight-then-waiting-page flow,
+  // just with type='voice'. The waiting page handles everything
+  // server-side (insufficient-balance, priest-offline, busy,
+  // accepted, expired) so this surface stays thin.
+  Future<void> _redialVoice() async {
+    final canStart = await SessionPreflight.check(
+      context,
+      type: 'voice',
+      priestName: _displayPriestName,
+    );
+    if (!canStart || !mounted) return;
+    context.push('/session/waiting', extra: <String, dynamic>{
+      'priestId': widget.priestId,
+      'priestName': _displayPriestName,
+      'priestPhotoUrl': _displayPriestPhotoUrl,
+      'priestDenomination': '',
+      'type': 'voice',
     });
   }
 
@@ -576,63 +617,23 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
           if (item is _Divider) {
             return _SessionDivider(date: item.sessionDate);
           }
+          if (item is _CallEntry) {
+            return CallEntryBubble(
+              message: item.message,
+              isMe: item.isMine,
+              onTap: () => _redialVoice(),
+            );
+          }
           if (item is _Bubble) {
             return _MessageBubble(
               message: item.message,
               isMine: item.isMine,
-              onReport: item.message.isPriestMessage
-                  ? () => _reportMessage(item.message)
-                  : null,
             );
           }
           return const SizedBox.shrink();
         },
       ),
     );
-  }
-
-  // Long-press on a priest free message → report. Files into the
-  // existing reports collection so the admin queue picks it up
-  // without any new admin-side wiring. Snack confirms the file.
-  Future<void> _reportMessage(ChatMessage message) async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    HapticFeedback.mediumImpact();
-
-    final confirm = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: AppColors.surfaceWhite,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetContext) => _ReportConfirmSheet(
-        priestName: _displayPriestName.isNotEmpty
-            ? _displayPriestName
-            : 'this speaker',
-        messageText: message.text,
-        onConfirm: () => Navigator.of(sheetContext).pop(true),
-        onCancel: () => Navigator.of(sheetContext).pop(false),
-      ),
-    );
-
-    if (confirm != true || !mounted) return;
-
-    try {
-      final user = FirebaseAuth.instance.currentUser;
-      await sl<SessionRepository>().reportPriestMessage(
-        reportedPriestId: widget.priestId,
-        reportedPriestName: _displayPriestName,
-        reporterUserId: uid,
-        reporterName: user?.displayName ?? '',
-        messageText: message.text,
-        messageId: message.id,
-      );
-      if (!mounted) return;
-      AppSnackBar.success(context, 'Report sent. Our team will review.');
-    } catch (_) {
-      if (!mounted) return;
-      AppSnackBar.error(context, 'Could not file report. Try again.');
-    }
   }
 
   Future<void> _toggleMute() async {
@@ -795,19 +796,7 @@ class _SessionDivider extends StatelessWidget {
     );
   }
 
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final that = DateTime(date.year, date.month, date.day);
-    final diff = today.difference(that).inDays;
-    if (diff == 0) return 'Today';
-    if (diff == 1) return 'Yesterday';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${months[date.month - 1]} ${date.day}';
-  }
+  String _formatDate(DateTime date) => df.formatDayCompact(date);
 }
 
 // ─── Message bubble ─────────────────────────────────────────
@@ -815,16 +804,10 @@ class _SessionDivider extends StatelessWidget {
 class _MessageBubble extends StatelessWidget {
   final ChatMessage message;
   final bool isMine;
-  // Non-null only for priest free messages — long-press fires it,
-  // session bubbles are inert here (the chat-history page is read-
-  // only). Driving the long-press from a callback instead of a
-  // hard-coded "if priestMessage" branch keeps the bubble dumb.
-  final VoidCallback? onReport;
 
   const _MessageBubble({
     required this.message,
     required this.isMine,
-    this.onReport,
   });
 
   @override
@@ -877,49 +860,45 @@ class _MessageBubble extends StatelessWidget {
             children: [
               ConstrainedBox(
                 constraints: BoxConstraints(maxWidth: maxBubbleWidth),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onLongPress: onReport,
-                  child: Container(
-                    padding: const EdgeInsets.symmetric(
-                      horizontal: 14,
-                      vertical: 10,
+                child: Container(
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 10,
+                  ),
+                  decoration: BoxDecoration(
+                    color: isMine
+                        ? AppColors.primaryBrown
+                        : AppColors.surfaceWhite,
+                    borderRadius: BorderRadius.only(
+                      topLeft: const Radius.circular(16),
+                      topRight: const Radius.circular(16),
+                      bottomLeft: Radius.circular(isMine ? 16 : 4),
+                      bottomRight: Radius.circular(isMine ? 4 : 16),
                     ),
-                    decoration: BoxDecoration(
-                      color: isMine
-                          ? AppColors.primaryBrown
-                          : AppColors.surfaceWhite,
-                      borderRadius: BorderRadius.only(
-                        topLeft: const Radius.circular(16),
-                        topRight: const Radius.circular(16),
-                        bottomLeft: Radius.circular(isMine ? 16 : 4),
-                        bottomRight: Radius.circular(isMine ? 4 : 16),
-                      ),
-                      border: isMine
-                          ? null
-                          : Border.all(
-                              color: AppColors.muted.withValues(alpha: 0.08),
+                    border: isMine
+                        ? null
+                        : Border.all(
+                            color: AppColors.muted.withValues(alpha: 0.08),
+                          ),
+                    boxShadow: isMine
+                        ? null
+                        : [
+                            BoxShadow(
+                              blurRadius: 3,
+                              offset: const Offset(0, 1),
+                              color: Colors.black.withValues(alpha: 0.02),
                             ),
-                      boxShadow: isMine
-                          ? null
-                          : [
-                              BoxShadow(
-                                blurRadius: 3,
-                                offset: const Offset(0, 1),
-                                color: Colors.black.withValues(alpha: 0.02),
-                              ),
-                            ],
-                    ),
-                    child: Text(
-                      message.text,
-                      style: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w400,
-                        height: 1.4,
-                        color: isMine
-                            ? Colors.white
-                            : AppColors.deepDarkBrown,
-                      ),
+                          ],
+                  ),
+                  child: Text(
+                    message.text,
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      height: 1.4,
+                      color: isMine
+                          ? Colors.white
+                          : AppColors.deepDarkBrown,
                     ),
                   ),
                 ),
@@ -927,160 +906,6 @@ class _MessageBubble extends StatelessWidget {
             ],
           ),
         ],
-      ),
-    );
-  }
-}
-
-// Bottom-sheet shown before filing a report. We deliberately make
-// the user confirm — accidental long-press → silent report is the
-// kind of UX papercut that floods the admin queue with noise.
-class _ReportConfirmSheet extends StatelessWidget {
-  final String priestName;
-  final String messageText;
-  final VoidCallback onConfirm;
-  final VoidCallback onCancel;
-
-  const _ReportConfirmSheet({
-    required this.priestName,
-    required this.messageText,
-    required this.onConfirm,
-    required this.onCancel,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Padding(
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 16),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            Center(
-              child: Container(
-                width: 40,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.muted.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Center(
-              child: Container(
-                width: 56,
-                height: 56,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.errorRed.withValues(alpha: 0.08),
-                ),
-                child: Icon(
-                  Icons.flag_outlined,
-                  size: 26,
-                  color: AppColors.errorRed,
-                ),
-              ),
-            ),
-            const SizedBox(height: 18),
-            Text(
-              'Report this message?',
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 18,
-                fontWeight: FontWeight.w700,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              'Our team will review the message from $priestName. '
-              "If it violates our guidelines we'll take action.",
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w400,
-                height: 1.5,
-                color: AppColors.muted,
-              ),
-            ),
-            const SizedBox(height: 14),
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppColors.background,
-                borderRadius: BorderRadius.circular(10),
-                border: Border.all(
-                  color: AppColors.muted.withValues(alpha: 0.1),
-                ),
-              ),
-              child: Text(
-                messageText,
-                maxLines: 4,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w400,
-                  height: 1.45,
-                  color: AppColors.deepDarkBrown,
-                ),
-              ),
-            ),
-            const SizedBox(height: 22),
-            Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: onCancel,
-                    child: Container(
-                      height: 48,
-                      decoration: BoxDecoration(
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: AppColors.muted.withValues(alpha: 0.25),
-                        ),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'Cancel',
-                        style: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.muted,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: onConfirm,
-                    child: Container(
-                      height: 48,
-                      decoration: BoxDecoration(
-                        color: AppColors.errorRed,
-                        borderRadius: BorderRadius.circular(12),
-                      ),
-                      alignment: Alignment.center,
-                      child: Text(
-                        'Report',
-                        style: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
       ),
     );
   }

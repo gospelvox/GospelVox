@@ -7,6 +7,8 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
+
 class SpeakerModel {
   final String uid;
   final String fullName;
@@ -119,14 +121,7 @@ class SpeakerModel {
     );
   }
 
-  String get timeAgo {
-    if (createdAt == null) return '';
-    final diff = DateTime.now().difference(createdAt!);
-    if (diff.inDays > 0) return '${diff.inDays}d ago';
-    if (diff.inHours > 0) return '${diff.inHours}h ago';
-    if (diff.inMinutes > 0) return '${diff.inMinutes}m ago';
-    return 'just now';
-  }
+  String get timeAgo => df.formatTimeAgo(createdAt);
 
   bool get hasPhoto => photoUrl.isNotEmpty;
   bool get hasIdProof => idProofUrl.isNotEmpty;

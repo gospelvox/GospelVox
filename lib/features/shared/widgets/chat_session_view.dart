@@ -36,6 +36,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/connectivity_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_state.dart';
@@ -85,6 +86,16 @@ class _ChatSessionViewState extends State<ChatSessionView> {
   // feedback only on the rising edge (false → true), not every
   // time the chat rebuilds.
   bool _wasLowBalance = false;
+  // Independent latch for the "final minute" haptic — fires once
+  // when remaining chat time crosses below 1 minute, re-arms only
+  // when balance climbs back above 1 minute (recharge). Heavier
+  // than the 5-min entry buzz to signal the final warning.
+  bool _wasInFinalMinute = false;
+
+  // Defence-in-depth: prevents two recharge sheets stacking even
+  // if the BlocListener somehow fires twice. Cleared the moment
+  // the sheet dismisses.
+  bool _lowBalanceSheetOpen = false;
 
   // Live connectivity state. Drives the offline pill in the top
   // bar so the user knows their messages aren't going through
@@ -223,19 +234,39 @@ class _ChatSessionViewState extends State<ChatSessionView> {
       child: Scaffold(
         backgroundColor: AppColors.background,
         body: BlocConsumer<ChatSessionCubit, ChatSessionState>(
-          listenWhen: (prev, next) =>
-              next is ChatSessionEnded || next is ChatSessionError,
+          listenWhen: (prev, next) {
+            // Terminal / error states navigate away — unchanged behaviour.
+            if (next is ChatSessionEnded || next is ChatSessionError) {
+              return true;
+            }
+            // Edge-triggered low-balance prompt: only fire on the
+            // false → true transition so re-emits with the flag
+            // already true don't stack sheets.
+            final prevPrompt =
+                (prev is ChatSessionActive) && prev.showLowBalancePrompt;
+            final nextPrompt =
+                (next is ChatSessionActive) && next.showLowBalancePrompt;
+            return !prevPrompt && nextPrompt;
+          },
           listener: (context, state) {
             if (state is ChatSessionEnded) {
               widget.onEnded(context, state);
             } else if (state is ChatSessionError) {
               AppSnackBar.error(context, state.message);
+            } else if (state is ChatSessionActive &&
+                state.showLowBalancePrompt &&
+                widget.isUserSide) {
+              _showLowBalanceSheet(state);
             }
           },
           builder: (context, state) {
             if (state is ChatSessionActive) {
               _maybeAutoScroll(state.messages);
               _maybeBuzzOnLowBalance(state.isLowBalance);
+              _maybeBuzzOnFinalMinute(
+                state.remainingBalance,
+                state.session.ratePerMinute,
+              );
               return _buildActive(state);
             }
             return const _CenteredLoader();
@@ -289,6 +320,7 @@ class _ChatSessionViewState extends State<ChatSessionView> {
                             widget.isUserSide && state.isLowBalance,
                         showIdleWarning: state.showIdleWarning,
                         remainingBalance: state.remainingBalance,
+                        ratePerMinute: state.session.ratePerMinute,
                         onAddCoins: _openRecharge,
                         onReact: (msgId, emoji) =>
                             context.read<ChatSessionCubit>().toggleReaction(
@@ -296,6 +328,16 @@ class _ChatSessionViewState extends State<ChatSessionView> {
                                   userId: widget.currentUid,
                                   emoji: emoji,
                                 ),
+                        // Swipe-to-reply: gated to current-session,
+                        // non-pending, session-type bubbles only.
+                        // The cubit re-asserts the same rules as
+                        // defence in depth.
+                        onSwipeReply: (message) {
+                          HapticFeedback.lightImpact();
+                          context
+                              .read<ChatSessionCubit>()
+                              .setReplyTarget(message);
+                        },
                       ),
                 // "↓ New message" pill — only meaningful while the
                 // user is scrolled up. IgnorePointer when hidden so
@@ -324,6 +366,23 @@ class _ChatSessionViewState extends State<ChatSessionView> {
             otherName: otherName,
             isTyping: otherTyping,
             typingSince: otherTypingSince,
+          ),
+          // Compose chip slides in via AnimatedSize when the user
+          // has an active reply target. Sits flush between the
+          // typing footer and the input bar so it reads as part of
+          // the input surface rather than the message list.
+          AnimatedSize(
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            child: state.replyTarget != null
+                ? _ReplyComposeChip(
+                    target: state.replyTarget!,
+                    currentUid: widget.currentUid,
+                    onDismiss: () => context
+                        .read<ChatSessionCubit>()
+                        .clearReplyTarget(),
+                  )
+                : const SizedBox(width: double.infinity, height: 0),
           ),
           _MessageInputBar(
             controller: _messageController,
@@ -396,37 +455,83 @@ class _ChatSessionViewState extends State<ChatSessionView> {
     _wasLowBalance = isLow;
   }
 
+  // Single sharp haptic the moment the user enters the final
+  // minute of chat time. Gated to the user side (priest doesn't
+  // see low-balance UI) and edge-detected via _wasInFinalMinute
+  // so it fires once per low-balance phase, not on every rebuild.
+  // Heavy impact distinguishes this from the medium 5-min entry.
+  void _maybeBuzzOnFinalMinute(int balance, int rate) {
+    if (!widget.isUserSide) return;
+    if (rate <= 0) return;
+    final inFinal = (balance ~/ rate) <= 1;
+    if (inFinal && !_wasInFinalMinute) {
+      HapticFeedback.heavyImpact();
+    }
+    _wasInFinalMinute = inFinal;
+  }
+
+  // Auto-popup recharge sheet, fired by the cubit's low-balance
+  // latch the moment the user crosses below 2 minutes of remaining
+  // chat time. Renders the same RechargeSheet the manual
+  // _openRecharge call uses, but with urgent countdown copy. The
+  // cubit owns the "show once per phase" semantics; this method
+  // just renders + acknowledges the prompt after dismissal.
+  Future<void> _showLowBalanceSheet(ChatSessionActive state) async {
+    if (_lowBalanceSheetOpen) return;
+    _lowBalanceSheetOpen = true;
+
+    final rate = state.session.ratePerMinute;
+    final balance = state.remainingBalance;
+
+    final secondsLeft =
+        rate > 0 ? ((balance * 60) ~/ rate).clamp(0, 60 * 60) : 0;
+    final mm = secondsLeft ~/ 60;
+    final ss = secondsLeft % 60;
+    final countdown = '$mm:${ss.toString().padLeft(2, '0')}';
+
+    HapticFeedback.mediumImpact();
+    try {
+      // Headline only — the sheet's pack grid + "Low wallet
+      // balance!" title already convey the action. The subtext
+      // ("Recharge to keep chatting with X") was decorative
+      // repetition and added cognitive load.
+      await RechargeSheet.show(
+        context,
+        currentBalance: balance,
+        infoHeadline: 'Your chat ends in $countdown',
+      );
+    } finally {
+      _lowBalanceSheetOpen = false;
+      if (mounted) {
+        final cubit = context.read<ChatSessionCubit>();
+        if (!cubit.isClosed) cubit.acknowledgeLowBalancePrompt();
+      }
+    }
+  }
+
   Future<void> _openRecharge() async {
     HapticFeedback.lightImpact();
-    // Hand contextual copy to the sheet so the headline matches
-    // what's actually happening — same pattern voice_call_view
-    // uses. Generic copy is the fallback when the cubit isn't
-    // in the active state for any reason.
+    // Single-line headline — the verbose "Minimum balance" line
+    // and the "with $priestName" subtext were over-text. The user
+    // already knows who they're chatting with; the sheet's pack
+    // grid + balance pill carry the rest.
     final cubitState = context.read<ChatSessionCubit>().state;
     int? balance;
     String? headline;
-    String? subtext;
     if (cubitState is ChatSessionActive) {
       balance = cubitState.remainingBalance;
       final ctx = recomputeRechargeContext(
         ratePerMinute: cubitState.session.ratePerMinute,
         currentBalance: cubitState.remainingBalance,
       );
-      headline =
-          'Minimum balance: ₹${ctx.requiredFor5Min} (for 5 minutes)';
-      final priestName = cubitState.session.priestName;
       if (ctx.deficit > 0) {
-        subtext = priestName.isNotEmpty
-            ? 'Add ₹${ctx.deficit} more to keep chatting '
-                'with $priestName'
-            : 'Add ₹${ctx.deficit} more to keep your chat going';
+        headline = 'Add ₹${ctx.deficit} more to keep your chat going';
       }
     }
     await RechargeSheet.show(
       context,
       currentBalance: balance,
       infoHeadline: headline,
-      infoSubtext: subtext,
     );
     // The cubit's user-balance stream handles the new balance —
     // we don't need to do anything else here.
@@ -773,8 +878,15 @@ class _MessageList extends StatelessWidget {
   final bool showLowBalanceCard;
   final bool showIdleWarning;
   final int remainingBalance;
+  // Locked rate from the session, threaded through so the low-
+  // balance card can render "X minutes left" instead of raw coins.
+  final int ratePerMinute;
   final VoidCallback onAddCoins;
   final void Function(String messageId, String emoji) onReact;
+  // Fired when a current-session, non-pending bubble has been
+  // swiped past the reply threshold. Builder gates the gesture so
+  // only eligible bubbles get the wrapper at all.
+  final void Function(ChatMessage message) onSwipeReply;
 
   const _MessageList({
     required this.controller,
@@ -786,8 +898,10 @@ class _MessageList extends StatelessWidget {
     required this.showLowBalanceCard,
     required this.showIdleWarning,
     required this.remainingBalance,
+    required this.ratePerMinute,
     required this.onAddCoins,
     required this.onReact,
+    required this.onSwipeReply,
   });
 
   @override
@@ -864,18 +978,44 @@ class _MessageList extends StatelessWidget {
         if (row is _LowBalanceRow) {
           return _LowBalanceMessage(
             balance: remainingBalance,
+            ratePerMinute: ratePerMinute,
             onAddCoins: onAddCoins,
           );
         }
         final bubble = row as _BubbleRow;
-        return _ChatBubble(
+        // Call-entry rows are inert in the live chat surface —
+        // tapping a past call here would mean starting a new call
+        // while we're mid-chat, which isn't a flow we support.
+        // The row still shows so the user gets full context.
+        if (bubble.message.isCallEntry) {
+          return CallEntryBubble(
+            key: ValueKey(bubble.message.id),
+            message: bubble.message,
+            isMe: bubble.isMe,
+            onTap: null,
+          );
+        }
+        final chatBubble = _ChatBubble(
           key: ValueKey(bubble.message.id),
           message: bubble.message,
           isMe: bubble.isMe,
           isPast: bubble.isPast,
           showTimestamp: bubble.showTimestamp,
           isBurstContinuation: bubble.isBurstContinuation,
+          currentUid: currentUid,
           onReact: onReact,
+        );
+        // Eligible for swipe-to-reply: current session, not a
+        // pending/optimistic bubble, not a free message, not past.
+        // Anything else renders without the wrapper so we don't pay
+        // gesture cost on read-only history.
+        final canReply = !bubble.isPast &&
+            !bubble.message.isPending &&
+            !bubble.message.isPriestMessage;
+        if (!canReply) return chatBubble;
+        return _SwipeToReply(
+          onTriggered: () => onSwipeReply(bubble.message),
+          child: chatBubble,
         );
       },
     );
@@ -991,20 +1131,10 @@ class _PastSessionDivider extends StatelessWidget {
   }
 }
 
-String _formatDividerDate(DateTime date) {
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
-  final that = DateTime(date.year, date.month, date.day);
-  final diff = today.difference(that).inDays;
-  if (diff == 0) return 'Today';
-  if (diff == 1) return 'Yesterday';
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  if (diff < 365) return '${months[date.month - 1]} ${date.day}';
-  return '${months[date.month - 1]} ${date.day}, ${date.year}';
-}
+// Past-session divider label. Delegates to the shared date util so
+// every chat surface formats dates the same way. See
+// lib/core/utils/date_format.dart for the rules.
+String _formatDividerDate(DateTime date) => df.formatDayCompact(date);
 
 // ─── Chat bubble ─────────────────────────────────────────
 
@@ -1019,6 +1149,9 @@ class _ChatBubble extends StatelessWidget {
   final bool isPast;
   final bool showTimestamp;
   final bool isBurstContinuation;
+  // Threaded through so the in-bubble reply preview can label the
+  // quoted sender as "You" vs their actual name.
+  final String currentUid;
   final void Function(String messageId, String emoji) onReact;
 
   const _ChatBubble({
@@ -1028,6 +1161,7 @@ class _ChatBubble extends StatelessWidget {
     required this.isPast,
     required this.showTimestamp,
     required this.isBurstContinuation,
+    required this.currentUid,
     required this.onReact,
   });
 
@@ -1055,6 +1189,7 @@ class _ChatBubble extends StatelessWidget {
         isPast: isPast,
         showTimestamp: showTimestamp,
         isBurstContinuation: isBurstContinuation,
+        currentUid: currentUid,
         onReact: onReact,
       ),
     );
@@ -1067,6 +1202,7 @@ class _BubbleBody extends StatelessWidget {
   final bool isPast;
   final bool showTimestamp;
   final bool isBurstContinuation;
+  final String currentUid;
   final void Function(String messageId, String emoji) onReact;
 
   const _BubbleBody({
@@ -1075,6 +1211,7 @@ class _BubbleBody extends StatelessWidget {
     required this.isPast,
     required this.showTimestamp,
     required this.isBurstContinuation,
+    required this.currentUid,
     required this.onReact,
   });
 
@@ -1172,14 +1309,27 @@ class _BubbleBody extends StatelessWidget {
                   ),
                 ],
               ),
-              child: Text(
-                message.text,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400,
-                  height: 1.45,
-                  color: isMe ? Colors.white : AppColors.deepDarkBrown,
-                ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  if (message.replyTo != null)
+                    _ReplyPreviewInBubble(
+                      reply: message.replyTo!,
+                      currentUid: currentUid,
+                      isMineBubble: isMe,
+                    ),
+                  Text(
+                    message.text,
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w400,
+                      height: 1.45,
+                      color:
+                          isMe ? Colors.white : AppColors.deepDarkBrown,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -1246,6 +1396,147 @@ class _BubbleFooter extends StatelessWidget {
           ),
         ],
       ],
+    );
+  }
+}
+
+// ─── Call-entry bubble (past voice session, inline) ─────
+
+// WhatsApp-style inline row for a past voice call between the user
+// and this priest. Shows direction-arrow + duration + time, and
+// (when onTap is non-null) a tap-to-redial phone icon on the
+// trailing edge. The host page decides whether redial is wired:
+//   • chat_history_page (user-side read-only)  → onTap = redial
+//   • chat_session_view (live paid chat)       → onTap = null
+//   • priest_chat_page  (priest-side history)  → onTap = null
+//
+// Sizing is intentionally smaller than a text bubble so a long
+// thread doesn't get drowned in past-call rows.
+class CallEntryBubble extends StatelessWidget {
+  final ChatMessage message;
+  final bool isMe;
+  // Null = inert row (live chat / priest side). Non-null = redial.
+  final VoidCallback? onTap;
+
+  const CallEntryBubble({
+    super.key,
+    required this.message,
+    required this.isMe,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final duration = message.callDurationMinutes ?? 0;
+    final durationLabel = duration <= 0
+        ? 'Voice call'
+        : duration == 1
+            ? 'Voice call · 1 min'
+            : 'Voice call · $duration min';
+    // Day-prefixed time so a call from last week doesn't read as
+    // "3:00 PM" with no date context. The shared util handles
+    // Today / Yesterday / Apr 5 / Apr 5, 2024 + the clock part.
+    final timeText = df.formatDayTime(message.createdAt);
+    final tappable = onTap != null;
+
+    return Padding(
+      padding: EdgeInsets.only(
+        top: 6,
+        bottom: 0,
+        left: isMe ? 48 : 0,
+        right: isMe ? 0 : 48,
+      ),
+      child: Align(
+        alignment: isMe ? Alignment.centerRight : Alignment.centerLeft,
+        child: GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: tappable
+              ? () {
+                  HapticFeedback.selectionClick();
+                  onTap!();
+                }
+              : null,
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceWhite,
+              borderRadius: BorderRadius.only(
+                topLeft: const Radius.circular(16),
+                topRight: const Radius.circular(16),
+                bottomLeft: Radius.circular(isMe ? 16 : 4),
+                bottomRight: Radius.circular(isMe ? 4 : 16),
+              ),
+              border: Border.all(
+                color: AppColors.primaryBrown.withValues(alpha: 0.12),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 5,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Row(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Container(
+                  width: 32,
+                  height: 32,
+                  decoration: BoxDecoration(
+                    shape: BoxShape.circle,
+                    color:
+                        AppColors.primaryBrown.withValues(alpha: 0.1),
+                  ),
+                  child: Icon(
+                    isMe
+                        ? Icons.call_made_rounded
+                        : Icons.call_received_rounded,
+                    size: 16,
+                    color: AppColors.primaryBrown,
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      durationLabel,
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.deepDarkBrown,
+                      ),
+                    ),
+                    if (timeText.isNotEmpty) ...[
+                      const SizedBox(height: 2),
+                      Text(
+                        timeText,
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w400,
+                          color:
+                              AppColors.muted.withValues(alpha: 0.7),
+                        ),
+                      ),
+                    ],
+                  ],
+                ),
+                if (tappable) ...[
+                  const SizedBox(width: 14),
+                  Icon(
+                    Icons.call_rounded,
+                    size: 20,
+                    color: AppColors.primaryBrown,
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ),
+      ),
     );
   }
 }
@@ -1448,12 +1739,26 @@ class _IdleWarningMessage extends StatelessWidget {
 
 class _LowBalanceMessage extends StatelessWidget {
   final int balance;
+  // Locked rate from the session doc. Lets the card show
+  // "X minutes left" — a concrete, actionable number — instead of
+  // the raw coin count the user has to mentally divide. Falls back
+  // to coin display when rate is non-positive (defensive only).
+  final int ratePerMinute;
   final VoidCallback onAddCoins;
 
   const _LowBalanceMessage({
     required this.balance,
+    required this.ratePerMinute,
     required this.onAddCoins,
   });
+
+  String _headlineText() {
+    if (ratePerMinute <= 0) return '$balance coins left';
+    final minutes = balance ~/ ratePerMinute;
+    if (minutes <= 0) return 'Less than 1 minute left';
+    if (minutes == 1) return '1 minute of chat left';
+    return '$minutes minutes of chat left';
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -1489,7 +1794,9 @@ class _LowBalanceMessage extends StatelessWidget {
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
                   Text(
-                    '$balance coins left',
+                    _headlineText(),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.inter(
                       fontSize: 13,
                       fontWeight: FontWeight.w700,
@@ -2199,30 +2506,330 @@ class _NewMessagePill extends StatelessWidget {
   }
 }
 
+// ─── Swipe-to-reply ──────────────────────────────────────
+
+// Wraps a single bubble in a horizontal-drag gesture that, when
+// pulled rightward past a threshold, fires onTriggered (the cubit
+// stashes the message as the active reply target). The bubble
+// rubber-bands during the drag and springs back to origin on
+// release — matches the gesture vocabulary users already know
+// from WhatsApp / Telegram.
+//
+// Design rules:
+//   • Only rightward drag (negative dx is clamped to 0). Universal
+//     direction across mine/theirs bubbles is simpler than two
+//     mental models and matches the existing apps.
+//   • 0.6× drag-to-translation ratio gives a small "I'm pulling
+//     against a spring" feel without the bubble lagging the
+//     finger so much it feels broken.
+//   • Reply icon fades in proportional to drag distance, fully
+//     opaque at the threshold.
+//   • Medium-impact haptic exactly once at the moment we cross
+//     the threshold — like Telegram's tactile "you've got it".
+//   • On release, an AnimationController spring-back; we never
+//     leave the bubble offset.
+class _SwipeToReply extends StatefulWidget {
+  final Widget child;
+  final VoidCallback onTriggered;
+
+  const _SwipeToReply({
+    required this.child,
+    required this.onTriggered,
+  });
+
+  @override
+  State<_SwipeToReply> createState() => _SwipeToReplyState();
+}
+
+class _SwipeToReplyState extends State<_SwipeToReply>
+    with SingleTickerProviderStateMixin {
+  static const double _threshold = 60.0;
+  static const double _maxDrag = 90.0;
+  static const double _dragRatio = 0.6;
+
+  late final AnimationController _reset;
+  double _dragDx = 0.0;
+  double _resetFrom = 0.0;
+  bool _triggered = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _reset = AnimationController(
+      duration: const Duration(milliseconds: 220),
+      vsync: this,
+    )..addListener(_onReset);
+  }
+
+  @override
+  void dispose() {
+    _reset.removeListener(_onReset);
+    _reset.dispose();
+    super.dispose();
+  }
+
+  void _onReset() {
+    if (!mounted) return;
+    final t = Curves.easeOutCubic.transform(_reset.value);
+    setState(() => _dragDx = _resetFrom * (1 - t));
+  }
+
+  void _onUpdate(DragUpdateDetails d) {
+    // Stop a pending spring-back if the finger comes back on the
+    // glass before the reset finishes.
+    if (_reset.isAnimating) _reset.stop();
+    setState(() {
+      _dragDx = (_dragDx + d.delta.dx * _dragRatio).clamp(0.0, _maxDrag);
+      if (!_triggered && _dragDx >= _threshold) {
+        _triggered = true;
+        HapticFeedback.mediumImpact();
+      }
+    });
+  }
+
+  void _onEnd(DragEndDetails _) {
+    final shouldFire = _triggered && _dragDx >= _threshold;
+    _triggered = false;
+    if (shouldFire) widget.onTriggered();
+    _resetFrom = _dragDx;
+    _reset.forward(from: 0);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final dragT = (_dragDx / _threshold).clamp(0.0, 1.0);
+    return GestureDetector(
+      behavior: HitTestBehavior.translucent,
+      onHorizontalDragUpdate: _onUpdate,
+      onHorizontalDragEnd: _onEnd,
+      child: Stack(
+        children: [
+          // Reply hint icon pinned to the left side, fades in
+          // proportional to the drag. Wrapped in IgnorePointer so
+          // it never eats gesture events meant for the bubble.
+          IgnorePointer(
+            child: Opacity(
+              opacity: dragT,
+              child: Padding(
+                padding: const EdgeInsets.symmetric(vertical: 12),
+                child: Align(
+                  alignment: Alignment.centerLeft,
+                  child: Container(
+                    width: 32,
+                    height: 32,
+                    margin: const EdgeInsets.only(left: 4),
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppColors.primaryBrown
+                          .withValues(alpha: 0.12),
+                    ),
+                    child: Icon(
+                      Icons.reply_rounded,
+                      size: 16,
+                      color: AppColors.primaryBrown
+                          .withValues(alpha: 0.85),
+                    ),
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Transform.translate(
+            offset: Offset(_dragDx, 0),
+            child: widget.child,
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Reply compose chip (above the input bar) ────────────
+
+// Sits between the typing footer and the input bar when the user
+// has an active reply target. Slim, dismissable, with a left
+// border accent matching the in-bubble quote line so the user
+// sees the relationship at a glance. AnimatedSize gives the chip
+// a smooth slide-in when it appears / out when dismissed; the
+// content is only built when the target is non-null.
+class _ReplyComposeChip extends StatelessWidget {
+  final ChatMessage target;
+  final String currentUid;
+  final VoidCallback onDismiss;
+
+  const _ReplyComposeChip({
+    required this.target,
+    required this.currentUid,
+    required this.onDismiss,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final isMine = target.senderId == currentUid;
+    final senderLabel =
+        isMine ? 'You' : (target.senderName.isNotEmpty ? target.senderName : '');
+
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(12, 8, 4, 8),
+      color: AppColors.surfaceWhite,
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Left accent — matches the in-bubble quote line so the
+          // user reads the chip as "this is the same quoted block
+          // you'll see attached to the message you're typing".
+          Container(
+            width: 3,
+            height: 36,
+            decoration: BoxDecoration(
+              color: AppColors.primaryBrown,
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Replying to $senderLabel',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.primaryBrown,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  target.text,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            onPressed: () {
+              HapticFeedback.selectionClick();
+              onDismiss();
+            },
+            icon: Icon(
+              Icons.close_rounded,
+              size: 18,
+              color: AppColors.muted.withValues(alpha: 0.7),
+            ),
+            padding: EdgeInsets.zero,
+            visualDensity: VisualDensity.compact,
+            constraints: const BoxConstraints(
+              minWidth: 40,
+              minHeight: 40,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Reply preview inside a bubble ───────────────────────
+
+// Rendered ABOVE the bubble's text when message.replyTo != null.
+// Indented left border + small sender label + 2-line text snippet.
+// Visual treatment matches the compose chip so the user sees one
+// continuous "this is a reply" vocabulary across input and history.
+//
+// Color shifts based on whether the bubble is mine (brown bg, light
+// quote) or theirs (white bg, brown quote) so contrast stays
+// readable in both branches.
+class _ReplyPreviewInBubble extends StatelessWidget {
+  final ReplyTarget reply;
+  final String currentUid;
+  final bool isMineBubble;
+
+  const _ReplyPreviewInBubble({
+    required this.reply,
+    required this.currentUid,
+    required this.isMineBubble,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final replyIsMine = reply.senderId == currentUid;
+    final label = replyIsMine
+        ? 'You'
+        : (reply.senderName.isNotEmpty ? reply.senderName : 'Reply');
+
+    // Minimal, low-visual-weight preview — WhatsApp style. On a
+    // brown (mine) bubble everything tints light; on a white
+    // (theirs) bubble we use a soft brown accent. Both keep the
+    // snippet quieter than the main bubble text so the reply
+    // header reads as supporting context, not as the message.
+    final accent = isMineBubble
+        ? Colors.white.withValues(alpha: 0.6)
+        : AppColors.primaryBrown.withValues(alpha: 0.55);
+    final labelColor = isMineBubble
+        ? Colors.white.withValues(alpha: 0.85)
+        : AppColors.primaryBrown;
+    final snippetColor = isMineBubble
+        ? Colors.white.withValues(alpha: 0.55)
+        : AppColors.muted.withValues(alpha: 0.75);
+
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 4),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Container(width: 2, color: accent),
+            const SizedBox(width: 6),
+            Flexible(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Text(
+                    label,
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w600,
+                      color: labelColor,
+                    ),
+                  ),
+                  Text(
+                    reply.text,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 11,
+                      fontWeight: FontWeight.w400,
+                      height: 1.3,
+                      color: snippetColor,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Helpers ─────────────────────────────────────────────
 
-String _formatTimestamp(DateTime? dt) {
-  if (dt == null) return '';
-  final now = DateTime.now();
-  final today = DateTime(now.year, now.month, now.day);
-  final sameDay = DateTime(dt.year, dt.month, dt.day) == today;
-  if (sameDay) return 'Today';
-  const weekdays = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  final wd = weekdays[dt.weekday - 1];
-  final mo = months[dt.month - 1];
-  return '$wd, $mo ${dt.day}';
-}
+// Day separator above a message cluster — used by the bubble's
+// `showTimestamp` branch. The shared util handles Today / Yesterday
+// / weekday / "Apr 5" / "Apr 5, 2024" with proper calendar math.
+String _formatTimestamp(DateTime? dt) => df.formatDayLabel(dt);
 
-String _formatTime(DateTime? dt) {
-  if (dt == null) return '';
-  final hour24 = dt.hour;
-  final isAm = hour24 < 12;
-  var hour = hour24 % 12;
-  if (hour == 0) hour = 12;
-  final minute = dt.minute.toString().padLeft(2, '0');
-  return '$hour:$minute ${isAm ? 'AM' : 'PM'}';
-}
+// Bubble footer time — always defers to the shared util so this
+// surface, history pages, transcripts and bible cards never drift.
+String _formatTime(DateTime? dt) => df.formatTime(dt);

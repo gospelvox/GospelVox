@@ -103,6 +103,71 @@ export const endSession = onCall(
       }
     }
 
+    // Round-up rule: any partial minute beyond the completed
+    // billingTick minutes gets charged as a full extra minute.
+    // Matches the telecom-style estimate the End Call sheet
+    // already shows the user (currentCost uses .ceil()) and is
+    // fair to priests who are otherwise unpaid for 0–59 seconds
+    // of work on every session. Gated on balance — if the user
+    // can't afford the rollup, they get the partial minute free
+    // rather than going negative.
+    const startedAtTs = session.startedAt as
+      admin.firestore.Timestamp | undefined;
+    if (session.status === "active" && startedAtTs) {
+      const elapsedSec = Math.max(
+        0,
+        Math.floor((Date.now() - startedAtTs.toMillis()) / 1000)
+      );
+      const totalMinutesUsed = Math.ceil(elapsedSec / 60);
+      const unbilledMinutes = totalMinutesUsed - finalDuration;
+
+      if (unbilledMinutes > 0) {
+        const userRef = db.doc(`users/${session.userId}`);
+        const userSnap = await userRef.get();
+        const currentBalance = Number(userSnap.data()?.coinBalance ?? 0);
+        const affordableMinutes = Math.min(
+          unbilledMinutes,
+          Math.floor(currentBalance / rate)
+        );
+
+        if (affordableMinutes > 0) {
+          const priestEarning = Math.floor(rate * (1 - commission / 100));
+          const totalCharge = affordableMinutes * rate;
+          const totalPriestEarning = affordableMinutes * priestEarning;
+          const priestRef = db.doc(`priests/${session.priestId}`);
+
+          const batch = db.batch();
+          batch.update(userRef, {
+            coinBalance:
+              admin.firestore.FieldValue.increment(-totalCharge),
+          });
+          batch.update(priestRef, {
+            walletBalance:
+              admin.firestore.FieldValue.increment(totalPriestEarning),
+            totalEarnings:
+              admin.firestore.FieldValue.increment(totalPriestEarning),
+          });
+
+          const txRef = db.collection("wallet_transactions").doc();
+          batch.set(txRef, {
+            userId: session.userId,
+            type: "session_charge",
+            sessionId: sessionId,
+            coins: -totalCharge,
+            description:
+              `${session.type} session — partial-minute rollup`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+
+          await batch.commit();
+
+          finalDuration += affordableMinutes;
+          finalTotalCharged += totalCharge;
+          finalPriestEarnings += totalPriestEarning;
+        }
+      }
+    }
+
     await sessionRef.update({
       status: "completed",
       endedAt: admin.firestore.FieldValue.serverTimestamp(),

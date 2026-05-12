@@ -226,6 +226,12 @@ class _RechargeSheetState extends State<RechargeSheet> {
   @override
   Widget build(BuildContext context) {
     return Container(
+      // Clip to the rounded shape so content can't visibly paint
+      // outside the sheet's corners during the slide-up / dismiss
+      // animation. The Most Popular hat sits comfortably inside
+      // the sheet bounds (well below the top edge), so clipping
+      // doesn't crop it.
+      clipBehavior: Clip.antiAlias,
       decoration: const BoxDecoration(
         color: AppColors.surfaceWhite,
         borderRadius: BorderRadius.vertical(
@@ -482,17 +488,19 @@ class _PacksGrid extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // 4-column grid. Tiles are deliberately taller than wide so the
-    // "Most Popular" hat doesn't have to overhang into a neighbour.
+    // 4-column grid with matched 10px gaps on both axes so the
+    // two rows read as a single cohesive block. The "Most Popular"
+    // hat overhangs row 1 only and has 16px of clearance above the
+    // grid, so the row gap doesn't crowd it.
     return GridView.builder(
       padding: EdgeInsets.zero,
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
         crossAxisCount: 4,
-        crossAxisSpacing: 8,
-        mainAxisSpacing: 14,
-        childAspectRatio: 0.85,
+        crossAxisSpacing: 12,
+        mainAxisSpacing: 12,
+        childAspectRatio: 0.82,
       ),
       itemCount: packs.length,
       itemBuilder: (_, i) {
@@ -537,13 +545,9 @@ class _PackCardState extends State<_PackCard> {
         ? AppColors.amberGold.withValues(alpha: 0.06)
         : AppColors.surfaceWhite;
 
-    // Pull the percentage label from the pack — discountPercent is
-    // the existing field we already render in the wallet page, so
-    // reuse it here as "X% Extra".
-    final extraPct = pack.discountPercent;
-
     return Stack(
       clipBehavior: Clip.none,
+      fit: StackFit.expand,
       children: [
         Listener(
           onPointerDown: (_) => setState(() => _scale = 0.96),
@@ -560,64 +564,77 @@ class _PackCardState extends State<_PackCard> {
                 duration: const Duration(milliseconds: 160),
                 curve: Curves.easeOutCubic,
                 padding: const EdgeInsets.symmetric(
-                  horizontal: 4,
-                  vertical: 10,
+                  horizontal: 8,
+                  vertical: 12,
                 ),
                 decoration: BoxDecoration(
                   color: bgColor,
-                  borderRadius: BorderRadius.circular(12),
+                  borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: borderColor,
-                    width: selected ? 1.6 : 1,
+                    width: 1.5,
                   ),
                 ),
                 child: Column(
-                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
+                    Column(
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        FittedBox(
+                          fit: BoxFit.scaleDown,
+                          child: Text(
+                            '${pack.coins}',
+                            textAlign: TextAlign.center,
+                            maxLines: 1,
+                            style: GoogleFonts.inter(
+                              fontSize: 18,
+                              fontWeight: FontWeight.w800,
+                              color: AppColors.deepDarkBrown,
+                              height: 1.0,
+                              letterSpacing: -0.2,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        Text(
+                          'coins',
+                          textAlign: TextAlign.center,
+                          maxLines: 1,
+                          style: GoogleFonts.inter(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w500,
+                            color: AppColors.muted,
+                            height: 1.0,
+                            letterSpacing: 0.2,
+                          ),
+                        ),
+                      ],
+                    ),
                     FittedBox(
                       fit: BoxFit.scaleDown,
                       child: Text(
-                        '₹ ${pack.price}',
+                        '₹${pack.price}',
+                        textAlign: TextAlign.center,
+                        maxLines: 1,
                         style: GoogleFonts.inter(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w700,
-                          color: AppColors.deepDarkBrown,
+                          fontSize: 13,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.muted,
+                          height: 1.0,
                         ),
                       ),
                     ),
-                    if (extraPct > 0) ...[
-                      const SizedBox(height: 6),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 6,
-                          vertical: 2,
-                        ),
-                        decoration: BoxDecoration(
-                          color: const Color(0xFF2E7D4F)
-                              .withValues(alpha: 0.12),
-                          borderRadius: BorderRadius.circular(6),
-                        ),
-                        child: Text(
-                          '$extraPct% Extra',
-                          maxLines: 1,
-                          overflow: TextOverflow.ellipsis,
-                          style: GoogleFonts.inter(
-                            fontSize: 9.5,
-                            fontWeight: FontWeight.w600,
-                            color: const Color(0xFF2E7D4F),
-                          ),
-                        ),
-                      ),
-                    ],
                   ],
                 ),
               ),
             ),
           ),
         ),
-        // "Most Popular" hat — only on the popular tile, sits above
-        // the card edge so it reads as a sticker rather than a
-        // crammed-in badge.
+        // "Most Popular" hat — original size + position. Sits
+        // above the card edge so it reads as a sticker rather
+        // than a crammed-in badge.
         if (pack.isPopular)
           Positioned(
             top: -8,

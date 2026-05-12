@@ -309,8 +309,14 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
 
   Widget _buildLoaded(BibleSessionModel session) {
     final warning = session.linkWarning;
+    // A session is completable manually once its scheduled time has
+    // passed AND it isn't already in a terminal status. The previous
+    // condition `isUpcoming && isInPast` was an impossible boolean —
+    // a session's status flips off 'upcoming' the moment it goes
+    // live or completes, so the AND could never be true and the
+    // button never rendered.
     final canComplete =
-        session.isUpcoming && session.isInPast;
+        session.isInPast && !session.isCompleted && !session.isCancelled;
 
     return SingleChildScrollView(
       physics: const AlwaysScrollableScrollPhysics(

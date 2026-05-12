@@ -78,6 +78,39 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   bool _isUserSide = true;
   bool _timersStarted = false;
   bool _endingDispatched = false;
+  // Sticky "remote has joined at some point" flag. Set the moment
+  // Agora's onUserJoined fires, even if the state machine is still
+  // VoiceCallConnecting at that instant (race when the remote was
+  // already in the channel before our local join completed). Used
+  // to seed isRemoteUserJoined on the first VoiceCallActive emit
+  // and to gate _remoteJoinFailTimer so it never auto-ends a call
+  // whose remote actually did join.
+  bool _remoteEverJoined = false;
+
+  // Latch for the urgent recharge sheet. True after the sheet has
+  // been shown for the current low-balance phase; resets back to
+  // false when the user's balance climbs above the 2-minute
+  // threshold (i.e. they recharged). This means the sheet pops
+  // exactly once per "you crossed below 2 minutes" event — no
+  // re-popping while the user is still mid-low and hasn't paid.
+  bool _lowBalancePromptShown = false;
+  // Two-level threshold:
+  //   • 5 minutes → strip shows (gentle reminder, isLowBalance=true)
+  //   • 2 minutes → urgent sheet pops (one-shot)
+  // Expressing the strip threshold in minutes (not coins) keeps the
+  // warning consistent across chat (10/min) and voice (15/min) —
+  // the user always gets ~5 minutes of warning to recharge before
+  // the urgent moment hits.
+  static const int _kLowBalanceWarningMinutes = 5;
+  static const int _kMinutesLeftThreshold = 2;
+
+  // Returns true when balance buys ≤5 minutes at the locked rate.
+  // Defensive: a zero or negative rate (misconfigured app_config)
+  // returns false so the strip doesn't pop unexpectedly.
+  bool _isLowBalanceAt(int balance, int rate) {
+    if (rate <= 0) return false;
+    return (balance ~/ rate) <= _kLowBalanceWarningMinutes;
+  }
 
   VoiceCallCubit(this._repository, this._agoraService)
       : super(const VoiceCallInitial());
@@ -199,6 +232,15 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       final reason = session.endReason.isNotEmpty
           ? session.endReason
           : (session.status == 'completed' ? 'completed' : 'external');
+      // Surface the "wrapping up" spinner immediately so this side
+      // doesn't render a frozen call screen while _fetchSummaryAndEnd
+      // races the endSession CF. Without this emit, the priest sees
+      // the timer freeze at the last second with no UI feedback that
+      // the session is ending.
+      final current = state;
+      if (current is VoiceCallActive) {
+        emit(current.copyWith(isEnding: true));
+      }
       _fetchSummaryAndEnd(session, reason);
       return;
     }
@@ -233,7 +275,13 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       remainingBalance: session.userBalance,
       isMuted: _agoraService.isMuted,
       isSpeakerOn: _agoraService.isSpeakerOn,
-      isLowBalance: _isUserSide && session.userBalance <= 50,
+      isLowBalance: _isUserSide &&
+          _isLowBalanceAt(session.userBalance, session.ratePerMinute),
+      // Seed from the sticky flag so a remote that joined during
+      // VoiceCallConnecting is correctly reflected here. Without
+      // this, _remoteJoinFailTimer fires at T=60s on a working
+      // call and auto-ends it as "connection_failed".
+      isRemoteUserJoined: _remoteEverJoined,
     ));
   }
 
@@ -244,8 +292,49 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     _lastKnownBalance = newBalance;
     emit(current.copyWith(
       remainingBalance: newBalance,
-      isLowBalance: newBalance <= 50,
+      isLowBalance:
+          _isLowBalanceAt(newBalance, current.session.ratePerMinute),
     ));
+    _maybePromptLowBalance();
+  }
+
+  // Edge-triggered "you have ≤2 minutes left" detector. Called from
+  // any path that updates the user's balance (wallet stream emit or
+  // billingTick response). The latch guarantees the sheet pops
+  // exactly once per low-balance phase: once shown, it won't re-pop
+  // until the balance climbs back above the threshold (the user
+  // recharged), at which point the latch resets and the next dip
+  // re-arms it.
+  void _maybePromptLowBalance() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! VoiceCallActive) return;
+    final rate = current.session.ratePerMinute;
+    if (rate <= 0) return;
+    final minutesLeft = current.remainingBalance ~/ rate;
+
+    if (minutesLeft <= _kMinutesLeftThreshold) {
+      if (!_lowBalancePromptShown && !current.showLowBalancePrompt) {
+        _lowBalancePromptShown = true;
+        emit(current.copyWith(showLowBalancePrompt: true));
+      }
+    } else {
+      // Re-arm — user is no longer in the danger zone, so the next
+      // time they cross back below the threshold (e.g. balance was
+      // recharged then drained again) we want a fresh prompt.
+      _lowBalancePromptShown = false;
+    }
+  }
+
+  // View calls this after it has shown (and the user has dismissed)
+  // the urgent recharge sheet. Idempotent — safe to call when the
+  // flag is already false or the cubit is closed.
+  void acknowledgeLowBalancePrompt() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! VoiceCallActive) return;
+    if (!current.showLowBalancePrompt) return;
+    emit(current.copyWith(showLowBalancePrompt: false));
   }
 
   void _wireAgoraCallbacks() {
@@ -254,6 +343,15 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     // booting Agora on the other end.
     _agoraService.onUserJoined = (connection, remoteUid, elapsed) {
       if (isClosed) return;
+      // Latch the sticky "remote joined" flag BEFORE the state
+      // check. Agora can fire this while we're still in
+      // VoiceCallConnecting (remote was already in the channel
+      // when our local join landed); the Active-state emit below
+      // would skip in that case and isRemoteUserJoined would
+      // stay false in the eventually-emitted Active state. The
+      // flag survives the state transition and is read on the
+      // first VoiceCallActive emit in _onSessionSnapshot.
+      _remoteEverJoined = true;
       // Flag #7: they made it within the window — kill the
       // remote-join supervisor and dismiss any "trouble connecting"
       // banner we may have already surfaced.
@@ -387,6 +485,11 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     _remoteJoinFailTimer ??= Timer(const Duration(seconds: 60), () {
       _remoteJoinFailTimer = null;
       if (isClosed) return;
+      // Belt-and-braces: if Agora's onUserJoined ever fired during
+      // this call lifetime, never auto-end as connection_failed —
+      // the remote demonstrably did join, regardless of whether
+      // the state emit raced with VoiceCallConnecting.
+      if (_remoteEverJoined) return;
       final current = state;
       if (current is VoiceCallActive && !current.isRemoteUserJoined) {
         endCall(reason: 'connection_failed');
@@ -461,8 +564,12 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       _lastKnownBalance = result.remainingBalance;
       emit(current.copyWith(
         remainingBalance: result.remainingBalance,
-        isLowBalance: result.remainingBalance <= 50,
+        isLowBalance: _isLowBalanceAt(
+          result.remainingBalance,
+          current.session.ratePerMinute,
+        ),
       ));
+      _maybePromptLowBalance();
 
       if (result.shouldEnd && !_endingDispatched) {
         await endCall(reason: 'balance_zero');
@@ -507,10 +614,22 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     if (isClosed) return;
     emit(current.copyWith(isEnding: true));
     _stopAllTimers();
-    await _agoraService.dispose();
+    // Hard 3s caps on both teardown awaits. Agora's engine.release()
+    // is known to occasionally hang on certain Android builds; without
+    // a timeout, the await below never returns and the cubit never
+    // emits VoiceCallEnded — leaving the user stuck on the spinner
+    // forever. The cubit moves on with stale native resources; the
+    // next call's init() recreates the engine from scratch.
+    await _agoraService.dispose().timeout(
+      const Duration(seconds: 3),
+      onTimeout: () {},
+    );
     // Drop the foreground notification — call is genuinely over,
     // we don't need the OS to keep us alive any longer.
-    await CallKeepAliveService.stop();
+    await CallKeepAliveService.stop().timeout(
+      const Duration(seconds: 3),
+      onTimeout: () {},
+    );
 
     try {
       final summary = await _repository.endSession(_sessionId);
@@ -544,8 +663,12 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   ) async {
     // Drop the foreground service before we navigate — staying
     // promoted past the end of the call would leave the
-    // notification stuck.
-    await CallKeepAliveService.stop();
+    // notification stuck. 3s cap so a hung MethodChannel can't
+    // wedge the post-session navigation.
+    await CallKeepAliveService.stop().timeout(
+      const Duration(seconds: 3),
+      onTimeout: () {},
+    );
     try {
       final summary = await _repository.endSession(_sessionId);
       if (isClosed) return;

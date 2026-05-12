@@ -53,6 +53,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
@@ -294,12 +295,21 @@ class _HomeViewState extends State<_HomeView>
   }
 
   // Mirror of priest_profile_page._requestSession. The card already
-  // hides this CTA when !priest.isAvailable, so we don't gate again
-  // here — the CF (createSessionRequest) handles balance, busy, and
-  // last-second offline checks server-side and the waiting page
-  // surfaces those errors.
-  void _startSession(SpeakerModel priest, String type) {
-    context.push('/session/waiting', extra: {
+  // hides this CTA when !priest.isAvailable. Beyond that we run the
+  // same SessionPreflight the profile + chat-history surfaces use —
+  // when balance is short of the 5-minute floor, the preflight
+  // opens the RechargeSheet bottom sheet with contextual copy
+  // ("Add ₹X more to start your chat with Fr. Y") instead of
+  // letting the user reach the waiting page only to bounce off a
+  // generic "insufficient-balance" snackbar from the CF.
+  Future<void> _startSession(SpeakerModel priest, String type) async {
+    final canStart = await SessionPreflight.check(
+      context,
+      type: type,
+      priestName: priest.fullName,
+    );
+    if (!canStart || !mounted) return;
+    context.push('/session/waiting', extra: <String, dynamic>{
       'priestId': priest.uid,
       'priestName': priest.fullName,
       'priestPhotoUrl': priest.photoUrl,

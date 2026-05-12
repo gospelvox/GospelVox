@@ -51,12 +51,24 @@ class VoiceCallActive extends VoiceCallState {
   // 45→60 second warning window.
   final bool showConnectionTrouble;
 
+  // One-shot signal: cubit flips this to true the first time the
+  // user's remaining balance crosses below 2 minutes of talk time
+  // at the locked rate. The view's BlocListener fires the urgent
+  // recharge sheet on this transition (once per low-balance
+  // phase), then calls acknowledgeLowBalancePrompt to reset it.
+  // Default false so every existing copyWith call is unaffected.
+  final bool showLowBalancePrompt;
+
   const VoiceCallActive({
     required this.session,
     required this.elapsedSeconds,
     required this.remainingBalance,
     this.isMuted = false,
-    this.isSpeakerOn = true,
+    // Earpiece is the default for a normal phone-call feel; the
+    // cubit seeds this from AgoraService.isSpeakerOn on first
+    // active emit, but the default here keeps the state honest
+    // if a copyWith is ever called before that seeding.
+    this.isSpeakerOn = false,
     this.isRemoteUserJoined = false,
     this.isLowBalance = false,
     this.isEnding = false,
@@ -68,6 +80,7 @@ class VoiceCallActive extends VoiceCallState {
     // semantically.
     this.networkQuality = 1,
     this.showConnectionTrouble = false,
+    this.showLowBalancePrompt = false,
   });
 
   // MM:SS used by the top timer pill. Padded so the pill width
@@ -101,6 +114,7 @@ class VoiceCallActive extends VoiceCallState {
     bool? showSilenceWarning,
     int? networkQuality,
     bool? showConnectionTrouble,
+    bool? showLowBalancePrompt,
   }) {
     return VoiceCallActive(
       session: session ?? this.session,
@@ -116,6 +130,8 @@ class VoiceCallActive extends VoiceCallState {
       networkQuality: networkQuality ?? this.networkQuality,
       showConnectionTrouble:
           showConnectionTrouble ?? this.showConnectionTrouble,
+      showLowBalancePrompt:
+          showLowBalancePrompt ?? this.showLowBalancePrompt,
     );
   }
 }

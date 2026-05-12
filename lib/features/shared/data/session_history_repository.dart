@@ -12,6 +12,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 
 class SessionHistoryRepository {
@@ -452,21 +453,7 @@ class UserSessionGroup {
     this.missedRequests = 0,
   });
 
-  String get lastSessionText {
-    final at = lastSessionAt;
-    if (at == null) return '';
-    final diff = DateTime.now().difference(at);
-    if (diff.isNegative) return 'Just now';
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inDays == 0) return 'Today';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7) return '${diff.inDays} days ago';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${months[at.month - 1]} ${at.day}';
-  }
+  String get lastSessionText => df.formatTimeAgo(lastSessionAt);
 }
 
 // Local grouping shape for the Sessions tab. Not a Firestore model —
@@ -506,21 +493,7 @@ class PriestSessionGroup {
   // green dot on the avatar AND the row's sort priority.
   bool get isAvailable => isOnline && !isBusy;
 
-  String get lastSessionText {
-    final at = lastSessionAt;
-    if (at == null) return '';
-    final diff = DateTime.now().difference(at);
-    if (diff.isNegative) return 'Just now';
-    if (diff.inMinutes < 1) return 'Just now';
-    if (diff.inDays == 0) return 'Today';
-    if (diff.inDays == 1) return 'Yesterday';
-    if (diff.inDays < 7) return '${diff.inDays} days ago';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    return '${months[at.month - 1]} ${at.day}';
-  }
+  String get lastSessionText => df.formatTimeAgo(lastSessionAt);
 }
 
 // Internal helper for getUserPriestThreads — captures just enough

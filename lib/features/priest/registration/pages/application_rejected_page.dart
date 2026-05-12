@@ -165,6 +165,17 @@ class _RejectionReasonCard extends StatelessWidget {
                 if (snap.connectionState != ConnectionState.done) {
                   return _reasonText(context, 'Loading...');
                 }
+                // Surface timeouts / permission errors explicitly.
+                // Without this branch the .timeout(10s) failure would
+                // fall through to the data-null path below and render
+                // "No specific reason provided." — falsely implying
+                // the admin left the reason blank.
+                if (snap.hasError) {
+                  return _reasonText(
+                    context,
+                    'Could not load details. Pull to refresh.',
+                  );
+                }
                 final reason = snap.data?.data()?['rejectionReason']
                     as String?;
                 final shown = (reason == null || reason.trim().isEmpty)

@@ -16,6 +16,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_state.dart';
@@ -869,11 +870,4 @@ class _HistoryShimmer extends StatelessWidget {
 
 // ─── Date formatter ────────────────────────────────────────
 
-String _formatShortDate(DateTime? date) {
-  if (date == null) return '—';
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  return '${months[date.month - 1]} ${date.day}, ${date.year}';
-}
+String _formatShortDate(DateTime? date) => df.formatFullDate(date);

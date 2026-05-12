@@ -17,6 +17,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 
@@ -371,32 +372,6 @@ class _TranscriptBubble extends StatelessWidget {
 
 // ─── Date formatters ───────────────────────────────────────
 
-String _formatTime(DateTime? time) {
-  if (time == null) return '';
-  final hour =
-      time.hour > 12 ? time.hour - 12 : (time.hour == 0 ? 12 : time.hour);
-  final period = time.hour >= 12 ? 'PM' : 'AM';
-  final minute = time.minute.toString().padLeft(2, '0');
-  return '$hour:$minute $period';
-}
+String _formatTime(DateTime? time) => df.formatTime(time);
 
-String _formatMessageDate(DateTime? date) {
-  if (date == null) return '';
-  final now = DateTime.now();
-  if (date.day == now.day &&
-      date.month == now.month &&
-      date.year == now.year) {
-    return 'Today';
-  }
-  final yesterday = now.subtract(const Duration(days: 1));
-  if (date.day == yesterday.day &&
-      date.month == yesterday.month &&
-      date.year == yesterday.year) {
-    return 'Yesterday';
-  }
-  const months = [
-    'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-  ];
-  return '${months[date.month - 1]} ${date.day}, ${date.year}';
-}
+String _formatMessageDate(DateTime? date) => df.formatDayCompact(date);

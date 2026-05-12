@@ -92,17 +92,15 @@ class SessionPreflight {
     final deficit = required - balance;
     if (!context.mounted) return false;
 
-    // Show the same RechargeSheet the in-chat low-balance card uses,
-    // pre-filled with deficit copy. The sheet handles its own
-    // top-up flow; once dismissed we re-read the user balance to
-    // see if they cleared the gate.
+    // Show the same RechargeSheet the in-chat low-balance card
+    // uses, with just the single deficit line as headline. Dropped
+    // the verbose "Minimum balance: ₹X (for N minutes)" + the
+    // "with $priestName" subtext — both were over-text since the
+    // sheet's pack grid + balance pill already imply the action.
     await RechargeSheet.show(
       context,
       currentBalance: balance,
-      infoHeadline: 'Minimum balance: ₹$required (for $minMinutes minutes)',
-      infoSubtext: priestName.isNotEmpty
-          ? 'Add ₹$deficit more to start your session with $priestName'
-          : 'Add ₹$deficit more to start your session',
+      infoHeadline: 'Add ₹$deficit more to start your session',
     );
 
     if (!context.mounted) return false;

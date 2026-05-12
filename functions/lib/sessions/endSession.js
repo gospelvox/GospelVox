@@ -17,7 +17,7 @@ const db = admin.firestore();
 // minute), we still bill one full minute. This matches the product
 // contract stated on the priest profile page.
 exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -86,6 +86,53 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
             finalPriestEarnings += priestEarning;
         }
     }
+    // Round-up rule: any partial minute beyond the completed
+    // billingTick minutes gets charged as a full extra minute.
+    // Matches the telecom-style estimate the End Call sheet
+    // already shows the user (currentCost uses .ceil()) and is
+    // fair to priests who are otherwise unpaid for 0–59 seconds
+    // of work on every session. Gated on balance — if the user
+    // can't afford the rollup, they get the partial minute free
+    // rather than going negative.
+    const startedAtTs = session.startedAt;
+    if (session.status === "active" && startedAtTs) {
+        const elapsedSec = Math.max(0, Math.floor((Date.now() - startedAtTs.toMillis()) / 1000));
+        const totalMinutesUsed = Math.ceil(elapsedSec / 60);
+        const unbilledMinutes = totalMinutesUsed - finalDuration;
+        if (unbilledMinutes > 0) {
+            const userRef = db.doc(`users/${session.userId}`);
+            const userSnap = await userRef.get();
+            const currentBalance = Number((_r = (_q = userSnap.data()) === null || _q === void 0 ? void 0 : _q.coinBalance) !== null && _r !== void 0 ? _r : 0);
+            const affordableMinutes = Math.min(unbilledMinutes, Math.floor(currentBalance / rate));
+            if (affordableMinutes > 0) {
+                const priestEarning = Math.floor(rate * (1 - commission / 100));
+                const totalCharge = affordableMinutes * rate;
+                const totalPriestEarning = affordableMinutes * priestEarning;
+                const priestRef = db.doc(`priests/${session.priestId}`);
+                const batch = db.batch();
+                batch.update(userRef, {
+                    coinBalance: admin.firestore.FieldValue.increment(-totalCharge),
+                });
+                batch.update(priestRef, {
+                    walletBalance: admin.firestore.FieldValue.increment(totalPriestEarning),
+                    totalEarnings: admin.firestore.FieldValue.increment(totalPriestEarning),
+                });
+                const txRef = db.collection("wallet_transactions").doc();
+                batch.set(txRef, {
+                    userId: session.userId,
+                    type: "session_charge",
+                    sessionId: sessionId,
+                    coins: -totalCharge,
+                    description: `${session.type} session — partial-minute rollup`,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                await batch.commit();
+                finalDuration += affordableMinutes;
+                finalTotalCharged += totalCharge;
+                finalPriestEarnings += totalPriestEarning;
+            }
+        }
+    }
     await sessionRef.update({
         status: "completed",
         endedAt: admin.firestore.FieldValue.serverTimestamp(),
@@ -106,7 +153,7 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
         isBusy: false,
     });
     const finalUserSnap = await db.doc(`users/${session.userId}`).get();
-    const finalUserBalance = Number((_r = (_q = finalUserSnap.data()) === null || _q === void 0 ? void 0 : _q.coinBalance) !== null && _r !== void 0 ? _r : 0);
+    const finalUserBalance = Number((_t = (_s = finalUserSnap.data()) === null || _s === void 0 ? void 0 : _s.coinBalance) !== null && _t !== void 0 ? _t : 0);
     // Drop in-app inbox entries for both sides BEFORE pushing. The
     // notification doc is the source of truth — push is best-effort
     // delivery, but the inbox needs the record either way so users

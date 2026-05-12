@@ -160,6 +160,10 @@ class SessionRepository {
     required String senderId,
     required String senderName,
     required String text,
+    // Optional quoted-message snapshot when the user swiped a prior
+    // bubble to reply. Written as a nested map so a single read on
+    // the message doc gives the renderer everything it needs.
+    ReplyTarget? replyTo,
   }) async {
     await _db
         .collection('sessions/$sessionId/messages')
@@ -169,6 +173,7 @@ class SessionRepository {
           'senderName': senderName,
           'text': text,
           'createdAt': FieldValue.serverTimestamp(),
+          if (replyTo != null) 'replyTo': replyTo.toMap(),
         })
         .timeout(const Duration(seconds: 10));
   }
@@ -224,14 +229,17 @@ class SessionRepository {
         .get()
         .timeout(const Duration(seconds: 10));
 
-    // Eligible = completed chats only, ordered oldest → newest so
-    // older context reads top-down once we slice for the cap.
+    // Eligible = completed chat OR voice sessions, ordered oldest →
+    // newest so older context reads top-down once we slice for the
+    // cap. Voice sessions are synthesized as a single inline
+    // call-entry row (WhatsApp-style) rather than expanded into
+    // their (non-existent) messages subcollection.
     final eligible = snap.docs
         .map((d) => SessionModel.fromFirestore(d.id, d.data()))
         .where((s) {
           if (s.id == excludeSessionId) return false;
           if (s.status != 'completed') return false;
-          if (s.type != 'chat') return false;
+          if (s.type != 'chat' && s.type != 'voice') return false;
           final ended = s.endedAt ?? s.createdAt;
           return ended != null;
         })
@@ -252,7 +260,25 @@ class SessionRepository {
     // Fan out subcollection reads in parallel — for a typical
     // user-priest pair (1–10 sessions) this lands in 200–400ms
     // regardless of count, way better than serial round-trips.
+    // Voice sessions short-circuit to a single synthetic call row
+    // and skip the Firestore round-trip entirely.
     final perSessionMessages = await Future.wait(eligible.map((s) async {
+      if (s.type == 'voice') {
+        return <ChatMessage>[
+          ChatMessage.callEntry(
+            sessionId: s.id,
+            callerId: s.userId,
+            callerName:
+                s.userName.isNotEmpty ? s.userName : 'User',
+            durationMinutes: s.durationMinutes,
+            // Anchor at startedAt when present so the entry lands
+            // chronologically next to the chat bubbles that came
+            // before/after; fall back to endedAt / createdAt the
+            // same way the sort key does.
+            at: s.startedAt ?? s.endedAt ?? s.createdAt,
+          ),
+        ];
+      }
       try {
         final msgSnap = await _db
             .collection('sessions/${s.id}/messages')
@@ -284,14 +310,18 @@ class SessionRepository {
     // bubbles when the user has a very long history.
     final capped = all.length > cap ? all.sublist(all.length - cap) : all;
 
-    // Build meta only for sessions whose messages survived the cap —
-    // a divider for a session whose bubbles all got truncated would
-    // dangle in the UI.
+    // Build meta only for chat sessions whose messages survived
+    // the cap — a divider for a session whose bubbles all got
+    // truncated would dangle in the UI. Voice sessions are
+    // excluded: the synthesized call-entry row already shows date
+    // and duration, so a divider above it would just repeat the
+    // same info.
     final survivingSessionIds = <String>{
       for (final m in capped) m.sessionId,
     };
     final meta = <String, PastSessionMeta>{};
     for (final s in eligible) {
+      if (s.type != 'chat') continue;
       if (!survivingSessionIds.contains(s.id)) continue;
       final ts = s.endedAt ?? s.createdAt;
       if (ts == null) continue;

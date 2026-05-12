@@ -189,10 +189,50 @@ enum ChatMessageKind {
   // bubble the chat surface has rendered prior to free messaging.
   session,
   // Priest-initiated free message written by sendPriestMessage CF
-  // to the notifications collection. Read-only in the chat thread —
-  // user can long-press to Report or tap the sticky CTA to Reply
-  // (which opens a paid session). Reactions are blocked.
+  // to the notifications collection. Read-only in the chat thread.
   priestMessage,
+  // Synthesized inline entry for a past voice (or future video)
+  // session between the same user-priest pair. Renders as a
+  // WhatsApp-style "Voice call · 5 min" row with a phone icon;
+  // tap behavior is decided by the host page (user-side surfaces
+  // redial via the existing waiting-page flow, priest-side and
+  // live-chat surfaces leave it inert).
+  callEntry,
+}
+
+// Denormalized "quoted message" snapshot stamped onto an outbound
+// message when the sender tapped Reply on an earlier bubble. We
+// store senderName + snippet + senderId inline (instead of joining
+// against the original message at render time) so the reply
+// preview renders without an extra Firestore read, and survives
+// even if the original message is somehow deleted later. The
+// snippet is server-truncated by the client to keep the doc small.
+class ReplyTarget {
+  final String messageId;
+  final String text;
+  final String senderName;
+  final String senderId;
+
+  const ReplyTarget({
+    required this.messageId,
+    required this.text,
+    required this.senderName,
+    required this.senderId,
+  });
+
+  factory ReplyTarget.fromMap(Map<String, dynamic> data) => ReplyTarget(
+        messageId: data['messageId'] as String? ?? '',
+        text: data['text'] as String? ?? '',
+        senderName: data['senderName'] as String? ?? '',
+        senderId: data['senderId'] as String? ?? '',
+      );
+
+  Map<String, dynamic> toMap() => {
+        'messageId': messageId,
+        'text': text,
+        'senderName': senderName,
+        'senderId': senderId,
+      };
 }
 
 class ChatMessage {
@@ -211,6 +251,16 @@ class ChatMessage {
   // confirmed by the Firestore stream yet. Drives the small ⏱
   // status icon under outbound bubbles.
   final bool isPending;
+
+  // Quoted message this bubble is replying to. Null for plain
+  // messages. Stamped at send time so the preview renders without
+  // any extra reads — see ReplyTarget for the layout reasoning.
+  final ReplyTarget? replyTo;
+
+  // Only meaningful for `kind == callEntry`. The duration the past
+  // call lasted, in minutes — drives the "5 min" text in the call
+  // row. Null on every other kind.
+  final int? callDurationMinutes;
 
   // The sessions/{id} doc this message lives under. Stamped by the
   // chat cubit (never read from Firestore — the path implies it),
@@ -245,7 +295,35 @@ class ChatMessage {
     this.sessionId = '',
     this.kind = ChatMessageKind.session,
     this.delivered = true,
+    this.replyTo,
+    this.callDurationMinutes,
   });
+
+  // Synthesizes an inline call-entry row from a past voice session.
+  // No Firestore message doc backs this — the entry exists purely
+  // in client memory, built once at prefetch time. The session doc
+  // is the source of truth for caller (userId is always the
+  // initiator in the current product) + duration + start time.
+  factory ChatMessage.callEntry({
+    required String sessionId,
+    required String callerId,
+    required String callerName,
+    required int durationMinutes,
+    DateTime? at,
+  }) {
+    return ChatMessage(
+      // Prefix the id so the view layer can't accidentally collide
+      // with a real message doc id when keying widgets.
+      id: '__call_$sessionId',
+      senderId: callerId,
+      senderName: callerName,
+      text: '',
+      createdAt: at,
+      sessionId: sessionId,
+      kind: ChatMessageKind.callEntry,
+      callDurationMinutes: durationMinutes,
+    );
+  }
 
   factory ChatMessage.fromFirestore(
     String docId,
@@ -259,6 +337,11 @@ class ChatMessage {
           )
         : const <String, String>{};
 
+    final rawReply = data['replyTo'];
+    final replyTo = rawReply is Map
+        ? ReplyTarget.fromMap(Map<String, dynamic>.from(rawReply))
+        : null;
+
     return ChatMessage(
       id: docId,
       senderId: data['senderId'] as String? ?? '',
@@ -271,6 +354,7 @@ class ChatMessage {
           : null,
       reactions: reactions,
       sessionId: sessionId,
+      replyTo: replyTo,
     );
   }
 
@@ -302,13 +386,17 @@ class ChatMessage {
   }
 
   // Optimistic bubble used by the cubit between "tap Send" and
-  // the moment Firestore returns the canonical message.
+  // the moment Firestore returns the canonical message. Carries
+  // the same replyTo snapshot the server write will get, so the
+  // optimistic bubble renders the quoted preview before the
+  // Firestore round-trip completes.
   factory ChatMessage.pending({
     required String tempId,
     required String senderId,
     required String senderName,
     required String text,
     required String sessionId,
+    ReplyTarget? replyTo,
   }) {
     return ChatMessage(
       id: tempId,
@@ -318,6 +406,7 @@ class ChatMessage {
       createdAt: DateTime.now(),
       isPending: true,
       sessionId: sessionId,
+      replyTo: replyTo,
     );
   }
 
@@ -358,10 +447,13 @@ class ChatMessage {
       sessionId: sessionId,
       kind: kind,
       delivered: delivered,
+      replyTo: replyTo,
+      callDurationMinutes: callDurationMinutes,
     );
   }
 
   bool get isPriestMessage => kind == ChatMessageKind.priestMessage;
+  bool get isCallEntry => kind == ChatMessageKind.callEntry;
 }
 
 // Per-session metadata for past-session dividers in the live chat.

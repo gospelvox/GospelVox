@@ -56,6 +56,7 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/notifications/data/notification_model.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
@@ -96,18 +97,7 @@ class _MissedGroup {
     required this.notificationIds,
   });
 
-  String get timeAgo {
-    final ts = latestAt;
-    if (ts == null) return '';
-    final diff = DateTime.now().difference(ts);
-    if (diff.inSeconds < 60) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    final d = ts.day.toString().padLeft(2, '0');
-    final m = ts.month.toString().padLeft(2, '0');
-    return '$d/$m/${ts.year}';
-  }
+  String get timeAgo => df.formatTimeAgo(latestAt);
 
   String get firstName {
     final raw = requesterName.trim();

@@ -46,6 +46,20 @@ class ChatSessionActive extends ChatSessionState {
   // gain new messages, so there's nothing to update.
   final Map<String, PastSessionMeta> pastMeta;
 
+  // The message the user is currently composing a reply to. Set
+  // by setReplyTarget when a bubble is swiped, cleared on send or
+  // when the user dismisses the compose chip. Null when the user
+  // is composing a plain message.
+  final ChatMessage? replyTarget;
+
+  // One-shot signal: cubit flips this to true the first time the
+  // user's remaining balance crosses below 2 minutes of chat time
+  // at the locked rate. The view's BlocListener fires the urgent
+  // recharge sheet on this transition (once per low-balance
+  // phase), then calls acknowledgeLowBalancePrompt to reset it.
+  // Default false so every existing copyWith call is unaffected.
+  final bool showLowBalancePrompt;
+
   const ChatSessionActive({
     required this.session,
     required this.messages,
@@ -56,6 +70,8 @@ class ChatSessionActive extends ChatSessionState {
     this.isEnding = false,
     this.showIdleWarning = false,
     this.pastMeta = const {},
+    this.replyTarget,
+    this.showLowBalancePrompt = false,
   });
 
   // MM:SS used by the top-bar timer pill. We pad both halves so the
@@ -88,6 +104,12 @@ class ChatSessionActive extends ChatSessionState {
     bool? isEnding,
     bool? showIdleWarning,
     Map<String, PastSessionMeta>? pastMeta,
+    ChatMessage? replyTarget,
+    // The `??` pattern can't express "set this field to null".
+    // Pass clearReplyTarget: true to drop the current reply target
+    // (used when the user sends or dismisses the chip).
+    bool clearReplyTarget = false,
+    bool? showLowBalancePrompt,
   }) {
     return ChatSessionActive(
       session: session ?? this.session,
@@ -99,6 +121,10 @@ class ChatSessionActive extends ChatSessionState {
       isEnding: isEnding ?? this.isEnding,
       showIdleWarning: showIdleWarning ?? this.showIdleWarning,
       pastMeta: pastMeta ?? this.pastMeta,
+      replyTarget:
+          clearReplyTarget ? null : (replyTarget ?? this.replyTarget),
+      showLowBalancePrompt:
+          showLowBalancePrompt ?? this.showLowBalancePrompt,
     );
   }
 }

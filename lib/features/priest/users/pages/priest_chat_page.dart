@@ -32,9 +32,12 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
+    show CallEntryBubble;
 
 const int _kMessageLengthLimit = 280;
 const int _kPerUserDailyLimit = 3;
@@ -72,6 +75,16 @@ class _BubbleRow extends _Row {
   final ChatMessage message;
   final bool isMine;
   const _BubbleRow({required this.message, required this.isMine});
+}
+
+// Inline row for a past voice call between this user and priest.
+// Synthesized in getPastChatMessages from completed voice sessions
+// — no Firestore message backs the row. Priest-side renders it
+// inert (priests don't initiate calls).
+class _CallEntryRow extends _Row {
+  final ChatMessage message;
+  final bool isMine;
+  const _CallEntryRow({required this.message, required this.isMine});
 }
 
 class _PriestChatPageState extends State<PriestChatPage> {
@@ -266,14 +279,16 @@ class _PriestChatPageState extends State<PriestChatPage> {
           prevSessionId = sid;
         }
       }
-      rows.add(_BubbleRow(
-        message: m,
-        // Priest's own bubble = senderId == this priest's uid.
-        // Session bubbles where senderId is the priest's uid show
-        // on the right (their side). Free messages are always
-        // theirs — sender is always the priest.
-        isMine: m.senderId == priestUid,
-      ));
+      // Priest's own bubble = senderId == this priest's uid. For a
+      // call entry the senderId is the caller (always the user in
+      // the current product), so the call row reads as "incoming"
+      // from the priest's perspective.
+      final isMine = m.senderId == priestUid;
+      if (m.isCallEntry) {
+        rows.add(_CallEntryRow(message: m, isMine: isMine));
+      } else {
+        rows.add(_BubbleRow(message: m, isMine: isMine));
+      }
     }
     return rows;
   }
@@ -453,6 +468,16 @@ class _PriestChatPageState extends State<PriestChatPage> {
           return _SessionDivider(
             date: row.sessionDate,
             durationMinutes: row.durationMinutes,
+          );
+        }
+        if (row is _CallEntryRow) {
+          // Inert on priest side — priests don't initiate calls in
+          // the current product. The row stays informational so the
+          // priest sees full conversation context.
+          return CallEntryBubble(
+            message: row.message,
+            isMe: row.isMine,
+            onTap: null,
           );
         }
         final bubble = row as _BubbleRow;
@@ -650,20 +675,7 @@ class _SessionDivider extends StatelessWidget {
     );
   }
 
-  String _formatDate(DateTime date) {
-    final now = DateTime.now();
-    final today = DateTime(now.year, now.month, now.day);
-    final that = DateTime(date.year, date.month, date.day);
-    final diff = today.difference(that).inDays;
-    if (diff == 0) return 'Today';
-    if (diff == 1) return 'Yesterday';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    if (diff < 365) return '${months[date.month - 1]} ${date.day}';
-    return '${months[date.month - 1]} ${date.day}, ${date.year}';
-  }
+  String _formatDate(DateTime date) => df.formatDayCompact(date);
 }
 
 // ─── Bubble ──────────────────────────────────────────────────

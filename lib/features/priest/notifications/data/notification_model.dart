@@ -9,6 +9,8 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
+
 class NotificationModel {
   final String id;
   final String type;
@@ -180,16 +182,5 @@ class NotificationModel {
     }
   }
 
-  String get timeAgo {
-    final ts = createdAt;
-    if (ts == null) return '';
-    final diff = DateTime.now().difference(ts);
-    if (diff.inSeconds < 60) return 'Just now';
-    if (diff.inMinutes < 60) return '${diff.inMinutes}m ago';
-    if (diff.inHours < 24) return '${diff.inHours}h ago';
-    if (diff.inDays < 7) return '${diff.inDays}d ago';
-    final d = ts.day.toString().padLeft(2, '0');
-    final m = ts.month.toString().padLeft(2, '0');
-    return '$d/$m/${ts.year}';
-  }
+  String get timeAgo => df.formatTimeAgo(createdAt);
 }

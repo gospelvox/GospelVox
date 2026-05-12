@@ -8,6 +8,8 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 
+import 'package:gospel_vox/core/utils/date_format.dart' as df;
+
 class BibleSessionModel {
   final String id;
   final String priestId;
@@ -81,29 +83,48 @@ class BibleSessionModel {
   bool get isFull =>
       maxParticipants > 0 && registrationCount >= maxParticipants;
 
+  // scheduledAt is stored in Firestore as a UTC Timestamp. Every
+  // time-arithmetic getter below normalises BOTH sides to local time
+  // (`scheduledAt!.toLocal()` vs `DateTime.now()`) so the comparison
+  // is an explicit local-vs-local subtraction. Dart's `.isBefore` /
+  // `.difference` operate on absolute microsecondsSinceEpoch and
+  // produce the right answer regardless of either side's `isUtc`
+  // flag, but making the call explicit kills an entire class of
+  // future "is this comparing UTC against local?" doubts in code
+  // review.
   bool get isInPast =>
-      scheduledAt != null && scheduledAt!.isBefore(DateTime.now());
+      scheduledAt != null &&
+      scheduledAt!.toLocal().isBefore(DateTime.now());
 
   int get daysUntil {
     if (scheduledAt == null) return 0;
-    return scheduledAt!.difference(DateTime.now()).inDays;
+    // Calendar-day math (strip time-of-day first). `Duration.inDays`
+    // truncates by 24-hour windows, so a session at 9am tomorrow
+    // viewed at 6pm today is 15 hours = 0 days. Comparing dates
+    // gives the human-meaningful "1 day".
+    final at = scheduledAt!.toLocal();
+    final now = DateTime.now();
+    final today = DateTime(now.year, now.month, now.day);
+    final that = DateTime(at.year, at.month, at.day);
+    return that.difference(today).inDays;
   }
 
   int get hoursUntil {
     if (scheduledAt == null) return 0;
-    return scheduledAt!.difference(DateTime.now()).inHours;
+    return scheduledAt!.toLocal().difference(DateTime.now()).inHours;
   }
 
   int get minutesUntil {
     if (scheduledAt == null) return 0;
-    return scheduledAt!.difference(DateTime.now()).inMinutes;
+    return scheduledAt!.toLocal().difference(DateTime.now()).inMinutes;
   }
 
   // True from 15 min before start through the end of the scheduled
   // duration. Drives when the user-side "Join & Pay" button appears.
   bool get isJoinWindowOpen {
     if (scheduledAt == null) return false;
-    final diff = scheduledAt!.difference(DateTime.now()).inMinutes;
+    final diff =
+        scheduledAt!.toLocal().difference(DateTime.now()).inMinutes;
     return diff <= 15 && diff >= -durationMinutes;
   }
 
@@ -123,28 +144,13 @@ class BibleSessionModel {
     return null;
   }
 
-  String get formattedDate {
-    if (scheduledAt == null) return '';
-    const months = [
-      'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
-      'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
-    ];
-    final m = scheduledAt!.month;
-    return '${months[m - 1]} ${scheduledAt!.day}, ${scheduledAt!.year}';
-  }
+  String get formattedDate => df.formatFullDate(scheduledAt);
 
-  String get formattedTime {
-    if (scheduledAt == null) return '';
-    final h = scheduledAt!.hour;
-    final hour = h > 12 ? h - 12 : (h == 0 ? 12 : h);
-    final period = h >= 12 ? 'PM' : 'AM';
-    final mm = scheduledAt!.minute.toString().padLeft(2, '0');
-    return '$hour:$mm $period';
-  }
+  String get formattedTime => df.formatTime(scheduledAt);
 
   String get startsInText {
     if (scheduledAt == null) return '';
-    final diff = scheduledAt!.difference(DateTime.now());
+    final diff = scheduledAt!.toLocal().difference(DateTime.now());
     if (diff.isNegative) return 'Started';
     if (diff.inDays > 0) return 'Starts in ${diff.inDays} days';
     if (diff.inHours > 0) return 'Starts in ${diff.inHours} hours';
