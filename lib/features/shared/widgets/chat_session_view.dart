@@ -2602,6 +2602,17 @@ class _SwipeToReplyState extends State<_SwipeToReply>
       behavior: HitTestBehavior.translucent,
       onHorizontalDragUpdate: _onUpdate,
       onHorizontalDragEnd: _onEnd,
+      // CRITICAL: the bubble child must fill the row's full width so
+      // its internal Padding + Column(crossAxisAlignment: end) can
+      // right-align the sender bubble. Without `SizedBox(width: ∞)`
+      // the bubble inside `Transform` shrinks to its intrinsic width
+      // and the Stack positions that small chunk at top-start (LEFT)
+      // — every wrapped current-session message would end up squashed
+      // against the left edge regardless of isMe, even though the
+      // bubble's colour (brown) and checkmark (sender) stay correct.
+      // Past + pending + free-message bubbles bypass this wrapper, so
+      // they were unaffected — that's why only live messages appeared
+      // misaligned.
       child: Stack(
         children: [
           // Reply hint icon pinned to the left side, fades in
@@ -2636,7 +2647,10 @@ class _SwipeToReplyState extends State<_SwipeToReply>
           ),
           Transform.translate(
             offset: Offset(_dragDx, 0),
-            child: widget.child,
+            child: SizedBox(
+              width: double.infinity,
+              child: widget.child,
+            ),
           ),
         ],
       ),

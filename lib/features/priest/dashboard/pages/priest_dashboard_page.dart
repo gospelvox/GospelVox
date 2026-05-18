@@ -39,6 +39,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:intl/intl.dart';
 
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
@@ -178,21 +179,28 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         _loading = false;
       });
 
-      // Auto-online runs ONLY:
-      //   • on the first activated snapshot of this dashboard mount
-      //     (the "open the app → become available" intent), OR
-      //   • when activation transitions false→true (priest just
-      //     finished the activation flow).
-      // Crucially, this does NOT re-fire whenever a later snapshot
-      // shows isOnline=false. Without that guard, the priest's
-      // manual Go-Offline toggle would be overwritten within ~1s
-      // because writing isOnline=false produces a snapshot that
-      // satisfies the old condition and re-onlines them.
+      // Auto-online is now opt-in. We respect whatever the priest's
+      // last toggle said:
+      //   • Activation flips false → true: eager-online them once,
+      //     because finishing the activation flow IS the explicit
+      //     "start accepting" action.
+      //   • First mount snapshot: do NOT write isOnline. If the
+      //     priest was already online, the heartbeat-restart logic
+      //     below picks up the existing state. If they were offline
+      //     (manual Go-Offline, watchdog flip, fresh sign-in) they
+      //     stay offline — surfacing in availability settings is the
+      //     explicit way back online.
+      // Without this guard, opening the app to check earnings would
+      // silently flip a previously-offline priest back to available.
       final activationJustEnabled = !wasActivated && _isActivated;
-      if (_isActivated &&
-          (!_didInitialAutoOnline || activationJustEnabled)) {
+      if (_isActivated && activationJustEnabled) {
         _didInitialAutoOnline = true;
         _goOnlineIfEligible();
+      } else if (!_didInitialAutoOnline) {
+        // Mark so the next snapshot doesn't re-trigger anything.
+        // No write — the heartbeat block below either starts the
+        // 30s timer (if already online) or leaves us offline.
+        _didInitialAutoOnline = true;
       }
 
       // Keep heartbeat running ONLY while our local view says
@@ -337,6 +345,12 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     return 'Good evening';
   }
 
+  String _getGreetingEmoji() {
+    final hour = DateTime.now().hour;
+    if (hour < 17) return '☀️';
+    return '🌙';
+  }
+
   String _getDisplayName() {
     final trimmed = _fullName.trim();
     if (trimmed.isNotEmpty) return trimmed;
@@ -356,6 +370,11 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     return _StatusVariant.online;
   }
 
+  // Indian-style grouping: 1192 → 1,192, 100000 → 1,00,000.
+  // Used for the Earned stat. NumberFormat is allocated lazily once.
+  static final NumberFormat _inrFormatter =
+      NumberFormat.decimalPattern('en_IN');
+
   // ─── Build ─────────────────────────────────────────────────
 
   @override
@@ -372,39 +391,58 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
               )
             : SingleChildScrollView(
                 physics: const BouncingScrollPhysics(),
-                padding: const EdgeInsets.fromLTRB(20, 0, 20, 0),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.stretch,
-                  children: [
-                    const SizedBox(height: 16),
-                    _buildHeader(),
-                    const SizedBox(height: 24),
-                    if (!_isActivated) ...[
-                      _buildActivationCta(),
-                      const SizedBox(height: 20),
-                    ],
-                    _MissedRequestBanner(
-                      count: _missedRequestCount,
-                      requesterName: _missedRequesterName,
-                      onTap: () => context.push('/priest/missed-requests'),
-                    ),
-                    _StatusCard(variant: _statusVariant),
-                    const SizedBox(height: 20),
-                    _buildStatsRow(),
-                    const SizedBox(height: 24),
-                    Text(
-                      'QUICK ACTIONS',
-                      style: GoogleFonts.inter(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w600,
-                        letterSpacing: 0.8,
-                        color: AppColors.muted,
+                padding: const EdgeInsets.only(top: 12, bottom: 32),
+                child: Center(
+                  // ConstrainedBox caps content width at 600px so the
+                  // dashboard reads as a designed surface on tablets
+                  // (centered with margins) instead of stretching to
+                  // full iPad width. Phones < 600px are unaffected —
+                  // ConstrainedBox.maxWidth only kicks in once the
+                  // parent is wider than that.
+                  child: ConstrainedBox(
+                    constraints: const BoxConstraints(maxWidth: 600),
+                    child: Padding(
+                      padding:
+                          const EdgeInsets.symmetric(horizontal: 20),
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.stretch,
+                        children: [
+                          _buildHeader(),
+                          if (!_isActivated) ...[
+                            const SizedBox(height: 24),
+                            _buildActivationCta(),
+                          ],
+                          const SizedBox(height: 24),
+                          _StatusCard(variant: _statusVariant),
+                          if (_missedRequestCount > 0) ...[
+                            const SizedBox(height: 12),
+                            _MissedRequestBanner(
+                              count: _missedRequestCount,
+                              requesterName: _missedRequesterName,
+                              onTap: () => context
+                                  .push('/priest/missed-requests'),
+                            ),
+                          ],
+                          const SizedBox(height: 24),
+                          _SectionLabel(text: 'YOUR STATS'),
+                          const SizedBox(height: 12),
+                          _buildStatsRow(),
+                          const SizedBox(height: 24),
+                          _SectionLabel(text: 'QUICK ACTIONS'),
+                          const SizedBox(height: 12),
+                          _buildQuickActionsRow(),
+                          if (_statusVariant ==
+                              _StatusVariant.online) ...[
+                            const SizedBox(height: 24),
+                            _ManageAvailabilityCard(
+                              onTap: () =>
+                                  context.push('/priest/settings'),
+                            ),
+                          ],
+                        ],
                       ),
                     ),
-                    const SizedBox(height: 12),
-                    _buildQuickActionsGrid(),
-                    const SizedBox(height: 40),
-                  ],
+                  ),
                 ),
               ),
       ),
@@ -413,81 +451,63 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
 
   Widget _buildHeader() {
     final uid = FirebaseAuth.instance.currentUser?.uid;
+    final name = _getDisplayName();
+    final fallback = name.isNotEmpty ? name[0].toUpperCase() : '?';
 
     return Row(
-      mainAxisAlignment: MainAxisAlignment.spaceBetween,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                _getGreeting(),
-                style: GoogleFonts.inter(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted,
-                ),
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      _getGreeting(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _getGreetingEmoji(),
+                    style: const TextStyle(fontSize: 14),
+                  ),
+                ],
               ),
-              const SizedBox(height: 4),
+              const SizedBox(height: 2),
               Text(
-                _getDisplayName(),
+                name,
                 maxLines: 1,
                 overflow: TextOverflow.ellipsis,
                 style: GoogleFonts.inter(
-                  fontSize: 22,
-                  fontWeight: FontWeight.w700,
+                  fontSize: 26,
+                  fontWeight: FontWeight.w800,
                   color: AppColors.deepDarkBrown,
+                  height: 1.15,
                 ),
               ),
             ],
           ),
         ),
+        const SizedBox(width: 12),
         if (uid != null) ...[
           _NotificationBell(uid: uid),
-          const SizedBox(width: 12),
+          const SizedBox(width: 10),
         ],
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
+        _ProfileAvatar(
+          photoUrl: _photoUrl,
+          fallbackLetter: fallback,
           onTap: () => context.push('/priest/profile'),
-          child: Container(
-            width: 44,
-            height: 44,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
-              border: Border.all(
-                color: AppColors.amberGold.withValues(alpha: 0.3),
-                width: 2,
-              ),
-            ),
-            clipBehavior: Clip.antiAlias,
-            child: _photoUrl.isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: _photoUrl,
-                    fit: BoxFit.cover,
-                    errorWidget: (_, _, _) => _headerInitial(),
-                    placeholder: (_, _) => const SizedBox.shrink(),
-                  )
-                : _headerInitial(),
-          ),
         ),
       ],
-    );
-  }
-
-  Widget _headerInitial() {
-    final source = _getDisplayName();
-    final letter = source.isNotEmpty ? source[0].toUpperCase() : '?';
-    return Center(
-      child: Text(
-        letter,
-        style: GoogleFonts.inter(
-          fontSize: 18,
-          fontWeight: FontWeight.w700,
-          color: AppColors.muted,
-        ),
-      ),
     );
   }
 
@@ -524,7 +544,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
                   shape: BoxShape.circle,
                   color: AppColors.amberGold.withValues(alpha: 0.2),
                 ),
-                child: Icon(
+                child: const Icon(
                   Icons.lock_open_rounded,
                   size: 18,
                   color: AppColors.amberGold,
@@ -565,83 +585,153 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   }
 
   Widget _buildStatsRow() {
-    return Row(
-      children: [
-        Expanded(
-          child: _DashStatCard(
-            label: 'Sessions',
-            value: _totalSessions.toString(),
-            icon: Icons.chat_bubble_outline_rounded,
+    final hasRating = _rating > 0;
+    final earnedFormatted =
+        '₹${_inrFormatter.format(_totalEarnings.round())}';
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          Expanded(
+            child: _DashStatCard(
+              icon: Icons.chat_bubble_rounded,
+              iconColor: AppColors.primaryBrown,
+              value: _totalSessions.toString(),
+              label: 'Sessions',
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _DashStatCard(
-            label: 'Earned',
-            value: '₹${_totalEarnings.toStringAsFixed(0)}',
-            icon: Icons.account_balance_wallet_outlined,
+          const SizedBox(width: 10),
+          Expanded(
+            child: _DashStatCard(
+              icon: Icons.account_balance_wallet_rounded,
+              iconColor: AppColors.amberGold,
+              value: earnedFormatted,
+              label: 'Earned',
+            ),
           ),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: _DashStatCard(
-            label: 'Rating',
-            value: _rating > 0 ? _rating.toStringAsFixed(1) : '—',
-            icon: Icons.star_outline_rounded,
+          const SizedBox(width: 10),
+          Expanded(
+            // The rating stat doubles as the entry point to the
+            // priest's reviews page. We tap-wrap unconditionally so
+            // even the "No ratings yet" empty state opens the page —
+            // a priest who hasn't been rated yet gets to see the
+            // empty-state copy and understand what will appear here
+            // once the first rating lands.
+            child: _DashStatCard(
+              icon: Icons.star_rounded,
+              iconColor: AppColors.amberGold,
+              value: hasRating ? _rating.toStringAsFixed(1) : '',
+              label: hasRating ? 'Rating' : '',
+              isEmpty: !hasRating,
+              emptyHint: 'No ratings yet',
+              extra: hasRating ? _RatingStars(rating: _rating) : null,
+              onTap: () => context.push('/priest/reviews'),
+            ),
           ),
-        ),
-      ],
+        ],
+      ),
     );
   }
 
-  Widget _buildQuickActionsGrid() {
-    return GridView.count(
-      crossAxisCount: 2,
-      crossAxisSpacing: 12,
-      mainAxisSpacing: 12,
-      childAspectRatio: 1.6,
-      shrinkWrap: true,
-      physics: const NeverScrollableScrollPhysics(),
-      children: [
-        _QuickAction(
-          icon: Icons.account_balance_wallet_outlined,
-          title: 'My Wallet',
-          onTap: () => context.push('/priest/wallet'),
-        ),
-        _QuickAction(
-          icon: Icons.person_outline,
-          title: 'My Profile',
-          onTap: () => context.push('/priest/profile'),
-        ),
-        // My Users is the priest's primary relationship surface —
-        // grouped by counterparty rather than by individual session
-        // so they think in PEOPLE, not transactions. Old session-
-        // history route remains reachable via deep link / settings.
-        //
-        // No badge here: the dedicated _MissedRequestBanner above
-        // the status card surfaces the unread missed-request count.
-        // Showing the same number twice on one screen was confusing.
-        _QuickAction(
-          icon: Icons.forum_outlined,
-          title: 'My Users',
-          onTap: () => context.push('/priest/my-users'),
-        ),
-        _QuickAction(
-          icon: Icons.menu_book_outlined,
-          title: 'Bible Sessions',
-          onTap: () => context.push('/priest/bible-sessions'),
-        ),
-        _QuickAction(
-          icon: Icons.settings_outlined,
-          title: 'Settings',
-          onTap: () => context.push('/priest/settings'),
-        ),
-      ],
+  Widget _buildQuickActionsRow() {
+    // Icon foreground alternates between primaryBrown and amberGold
+    // so the four tiles have visual rhythm rather than reading as a
+    // single monochrome strip.
+    final actions = <_QuickActionData>[
+      _QuickActionData(
+        icon: Icons.account_balance_wallet_outlined,
+        label: 'My Wallet',
+        iconColor: AppColors.amberGold,
+        onTap: () => context.push('/priest/wallet'),
+      ),
+      // My Users is the priest's primary relationship surface —
+      // grouped by counterparty rather than by individual session.
+      // No badge here: the dedicated _MissedRequestBanner above
+      // surfaces the unread missed-request count.
+      _QuickActionData(
+        icon: Icons.people_outline_rounded,
+        label: 'My Users',
+        iconColor: AppColors.primaryBrown,
+        onTap: () => context.push('/priest/my-users'),
+      ),
+      _QuickActionData(
+        icon: Icons.menu_book_outlined,
+        label: 'Bible Sessions',
+        iconColor: AppColors.amberGold,
+        onTap: () => context.push('/priest/bible-sessions'),
+      ),
+      _QuickActionData(
+        icon: Icons.settings_outlined,
+        label: 'Settings',
+        iconColor: AppColors.primaryBrown,
+        onTap: () => context.push('/priest/settings'),
+      ),
+    ];
+
+    return IntrinsicHeight(
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          for (var i = 0; i < actions.length; i++) ...[
+            Expanded(
+              child: _QuickAction(
+                icon: actions[i].icon,
+                label: actions[i].label,
+                iconColor: actions[i].iconColor,
+                onTap: actions[i].onTap,
+              ),
+            ),
+            if (i < actions.length - 1) const SizedBox(width: 10),
+          ],
+        ],
+      ),
     );
   }
 }
 
-// ─── Read-only status card ─────────────────────────────────
+class _QuickActionData {
+  final IconData icon;
+  final String label;
+  final Color iconColor;
+  final VoidCallback onTap;
+  const _QuickActionData({
+    required this.icon,
+    required this.label,
+    required this.iconColor,
+    required this.onTap,
+  });
+}
+
+// Quiet uppercase section label — sits above stats / quick actions.
+// Tracked-out and muted so it reads as a divider, not a heading that
+// competes with content titles below it.
+class _SectionLabel extends StatelessWidget {
+  final String text;
+  const _SectionLabel({required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Align(
+      alignment: Alignment.centerLeft,
+      child: Text(
+        text,
+        style: GoogleFonts.inter(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          letterSpacing: 1.2,
+          color: AppColors.muted,
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Status card ───────────────────────────────────────────
+
+// Sage green — used ONLY as a state signal on the online status card.
+// Earthy, desaturated; sits next to the warm browns without clashing.
+const Color _kSageGreen = Color(0xFF5A7A4F);
 
 enum _StatusVariant { online, busy, offline, notActivated }
 
@@ -652,8 +742,10 @@ class _StatusCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
+    if (variant == _StatusVariant.notActivated) {
+      return const _NotActivatedStatusCard();
+    }
     final spec = _specFor(variant);
-
     return Container(
       width: double.infinity,
       padding: const EdgeInsets.all(18),
@@ -661,57 +753,74 @@ class _StatusCard extends StatelessWidget {
         color: spec.background,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(color: spec.border),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x08000000),
+            blurRadius: 12,
+            offset: Offset(0, 3),
+          ),
+        ],
       ),
       child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
+        crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Container(
-            width: 10,
-            height: 10,
-            margin: const EdgeInsets.only(top: 6),
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: spec.dot,
-            ),
-          ),
-          const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  spec.title,
-                  style: GoogleFonts.inter(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: spec.titleColor,
-                  ),
+                Row(
+                  children: [
+                    Container(
+                      width: 8,
+                      height: 8,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: spec.dot,
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    Flexible(
+                      child: Text(
+                        spec.title,
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          fontSize: 16,
+                          fontWeight: FontWeight.w700,
+                          color: spec.titleColor,
+                        ),
+                      ),
+                    ),
+                  ],
                 ),
-                const SizedBox(height: 4),
+                const SizedBox(height: 6),
                 Text(
                   spec.subtitle,
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
                   style: GoogleFonts.inter(
                     fontSize: 12,
                     fontWeight: FontWeight.w400,
-                    height: 1.5,
+                    height: 1.4,
                     color: AppColors.muted,
                   ),
                 ),
-                if (variant == _StatusVariant.online ||
-                    variant == _StatusVariant.busy) ...[
-                  const SizedBox(height: 10),
-                  Text(
-                    variant == _StatusVariant.busy
-                        ? 'Manage in Settings → Pause / Stop Accepting.'
-                        : 'Manage availability in Settings.',
-                    style: GoogleFonts.inter(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.muted.withValues(alpha: 0.8),
-                    ),
-                  ),
-                ],
               ],
+            ),
+          ),
+          const SizedBox(width: 12),
+          Container(
+            width: 52,
+            height: 52,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: spec.glyphTint,
+            ),
+            child: Icon(
+              spec.glyph,
+              size: 26,
+              color: spec.glyphColor,
             ),
           ),
         ],
@@ -722,117 +831,130 @@ class _StatusCard extends StatelessWidget {
   _StatusSpec _specFor(_StatusVariant v) {
     switch (v) {
       case _StatusVariant.online:
+        // Sage green carries the "active" signal — dot, title text, and
+        // broadcast icon all share it. Card bg gets a whisper of green
+        // tint so the whole surface feels alive without shouting.
         return _StatusSpec(
+          background: _kSageGreen.withValues(alpha: 0.05),
+          border: _kSageGreen.withValues(alpha: 0.2),
+          dot: _kSageGreen,
+          titleColor: _kSageGreen,
           title: 'Online · Accepting requests',
-          subtitle: 'Users can start chat or voice sessions with you '
-              'right now.',
-          dot: const Color(0xFF2E7D4F),
-          titleColor: const Color(0xFF2E7D4F),
-          background: const Color(0xFF2E7D4F).withValues(alpha: 0.06),
-          border: const Color(0xFF2E7D4F).withValues(alpha: 0.18),
+          subtitle: 'Users can start chat or voice sessions',
+          glyph: Icons.cell_tower_rounded,
+          glyphTint: _kSageGreen.withValues(alpha: 0.12),
+          glyphColor: _kSageGreen,
         );
       case _StatusVariant.busy:
         return _StatusSpec(
-          title: 'Busy · Requests paused',
-          subtitle: "You're still on the platform — users see you as "
-              'Busy. Active sessions continue normally.',
+          background: AppColors.surfaceWhite,
+          border: AppColors.muted.withValues(alpha: 0.1),
           dot: AppColors.amberGold,
-          titleColor: AppColors.amberGold,
-          background: AppColors.amberGold.withValues(alpha: 0.1),
-          border: AppColors.amberGold.withValues(alpha: 0.3),
+          titleColor: AppColors.primaryBrown,
+          title: 'Busy · In a session',
+          subtitle:
+              'Active session in progress. New requests are paused.',
+          glyph: Icons.hourglass_top_rounded,
+          glyphTint: AppColors.amberGold.withValues(alpha: 0.15),
+          glyphColor: AppColors.primaryBrown,
         );
       case _StatusVariant.offline:
         return _StatusSpec(
-          title: 'Offline · Not accepting requests',
-          subtitle: "You're hidden from the user feed. Tap Resume "
-              'Accepting in Settings to come back online.',
-          dot: AppColors.muted.withValues(alpha: 0.5),
-          titleColor: AppColors.deepDarkBrown,
-          background: AppColors.surfaceWhite,
-          border: AppColors.muted.withValues(alpha: 0.15),
-        );
-      case _StatusVariant.notActivated:
-        return _StatusSpec(
-          title: 'Not Activated',
-          subtitle: 'Your account is approved but not yet activated. '
-              'Activate above to appear in the feed.',
-          dot: AppColors.muted.withValues(alpha: 0.4),
-          titleColor: AppColors.deepDarkBrown,
           background: AppColors.surfaceWhite,
           border: AppColors.muted.withValues(alpha: 0.1),
+          dot: AppColors.muted.withValues(alpha: 0.5),
+          titleColor: AppColors.primaryBrown,
+          title: 'Offline · Not accepting requests',
+          subtitle:
+              "You're hidden from the user feed. Resume in Settings.",
+          glyph: Icons.do_not_disturb_on_outlined,
+          glyphTint: AppColors.muted.withValues(alpha: 0.12),
+          glyphColor: AppColors.muted,
         );
+      case _StatusVariant.notActivated:
+        throw StateError('notActivated handled by dedicated widget');
     }
   }
 }
 
 class _StatusSpec {
-  final String title;
-  final String subtitle;
-  final Color dot;
-  final Color titleColor;
   final Color background;
   final Color border;
-
-  _StatusSpec({
-    required this.title,
-    required this.subtitle,
-    required this.dot,
-    required this.titleColor,
+  final Color dot;
+  final Color titleColor;
+  final String title;
+  final String subtitle;
+  final IconData glyph;
+  final Color glyphTint;
+  final Color glyphColor;
+  const _StatusSpec({
     required this.background,
     required this.border,
+    required this.dot,
+    required this.titleColor,
+    required this.title,
+    required this.subtitle,
+    required this.glyph,
+    required this.glyphTint,
+    required this.glyphColor,
   });
 }
 
-// ─── Stat + action card widgets ────────────────────────────
-
-class _DashStatCard extends StatelessWidget {
-  final String label;
-  final String value;
-  final IconData icon;
-
-  const _DashStatCard({
-    required this.label,
-    required this.value,
-    required this.icon,
-  });
+// Dedicated card for the not-activated state — keeps a soft surface
+// look so it pairs cleanly with the activation CTA above. The dark
+// status card variants don't fit a "not yet onboarded" state.
+class _NotActivatedStatusCard extends StatelessWidget {
+  const _NotActivatedStatusCard();
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.all(16),
+      width: double.infinity,
+      padding: const EdgeInsets.all(18),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.08),
+          color: AppColors.muted.withValues(alpha: 0.1),
         ),
       ),
-      child: Column(
+      child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            icon,
-            size: 20,
-            color: AppColors.primaryBrown.withValues(alpha: 0.5),
-          ),
-          const SizedBox(height: 10),
-          Text(
-            value,
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: GoogleFonts.inter(
-              fontSize: 18,
-              fontWeight: FontWeight.w700,
-              color: AppColors.deepDarkBrown,
+          Container(
+            width: 10,
+            height: 10,
+            margin: const EdgeInsets.only(top: 6),
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.muted.withValues(alpha: 0.4),
             ),
           ),
-          const SizedBox(height: 2),
-          Text(
-            label,
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w400,
-              color: AppColors.muted,
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Not Activated',
+                  style: GoogleFonts.inter(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Your account is approved but not yet activated. '
+                  'Activate above to appear in the feed.',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    height: 1.5,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -841,14 +963,175 @@ class _DashStatCard extends StatelessWidget {
   }
 }
 
+// ─── Stat card ─────────────────────────────────────────────
+
+class _DashStatCard extends StatelessWidget {
+  final IconData icon;
+  final Color iconColor;
+  final String value;
+  final String label;
+  final Widget? extra;
+  final bool isEmpty;
+  final String? emptyHint;
+  // Optional — when set, the card becomes tappable with the standard
+  // press scale + haptic. Sessions and Earned tiles leave this null
+  // (no destination yet); Rating uses it to open /priest/reviews.
+  final VoidCallback? onTap;
+
+  const _DashStatCard({
+    required this.icon,
+    required this.iconColor,
+    required this.value,
+    required this.label,
+    this.extra,
+    this.isEmpty = false,
+    this.emptyHint,
+    this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final card = _buildCard();
+    if (onTap == null) return card;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap!();
+      },
+      child: card,
+    );
+  }
+
+  Widget _buildCard() {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(16, 18, 16, 18),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.muted.withValues(alpha: 0.08),
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x08000000),
+            blurRadius: 12,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 36,
+            height: 36,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: iconColor.withValues(alpha: 0.14),
+            ),
+            child: Icon(icon, size: 18, color: iconColor),
+          ),
+          const SizedBox(height: 14),
+          if (isEmpty)
+            Expanded(
+              child: Align(
+                alignment: Alignment.centerLeft,
+                child: Text(
+                  emptyHint ?? '',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    height: 1.35,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ),
+            )
+          else ...[
+            // FittedBox so "₹1,00,000"-class values don't ellipsis on
+            // a 320px viewport where the per-card content area shrinks.
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.centerLeft,
+              child: Text(
+                value,
+                maxLines: 1,
+                style: GoogleFonts.inter(
+                  fontSize: 24,
+                  fontWeight: FontWeight.w800,
+                  color: AppColors.deepDarkBrown,
+                  height: 1.1,
+                  letterSpacing: -0.3,
+                ),
+              ),
+            ),
+            const SizedBox(height: 4),
+            Text(
+              label,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                letterSpacing: 0.1,
+                color: AppColors.muted,
+              ),
+            ),
+            if (extra != null) ...[
+              const SizedBox(height: 8),
+              extra!,
+            ],
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+class _RatingStars extends StatelessWidget {
+  final double rating;
+  const _RatingStars({required this.rating});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: List.generate(5, (i) {
+        final position = i + 1;
+        final IconData icon;
+        if (rating >= position) {
+          icon = Icons.star_rounded;
+        } else if (rating >= position - 0.5) {
+          icon = Icons.star_half_rounded;
+        } else {
+          icon = Icons.star_outline_rounded;
+        }
+        return Icon(
+          icon,
+          size: 11,
+          color: AppColors.amberGold,
+        );
+      }),
+    );
+  }
+}
+
+// ─── Quick action ──────────────────────────────────────────
+
 class _QuickAction extends StatefulWidget {
   final IconData icon;
-  final String title;
+  final String label;
+  final Color iconColor;
   final VoidCallback onTap;
 
   const _QuickAction({
     required this.icon,
-    required this.title,
+    required this.label,
+    required this.iconColor,
     required this.onTap,
   });
 
@@ -862,7 +1145,7 @@ class _QuickActionState extends State<_QuickAction> {
   @override
   Widget build(BuildContext context) {
     return Listener(
-      onPointerDown: (_) => setState(() => _scale = 0.97),
+      onPointerDown: (_) => setState(() => _scale = 0.95),
       onPointerUp: (_) => setState(() => _scale = 1.0),
       onPointerCancel: (_) => setState(() => _scale = 1.0),
       child: GestureDetector(
@@ -876,40 +1159,59 @@ class _QuickActionState extends State<_QuickAction> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            padding: const EdgeInsets.all(16),
+            padding:
+                const EdgeInsets.symmetric(vertical: 18, horizontal: 6),
             decoration: BoxDecoration(
               color: AppColors.surfaceWhite,
-              borderRadius: BorderRadius.circular(14),
+              borderRadius: BorderRadius.circular(16),
               border: Border.all(
                 color: AppColors.muted.withValues(alpha: 0.08),
               ),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x08000000),
+                  blurRadius: 12,
+                  offset: Offset(0, 3),
+                ),
+              ],
             ),
             child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
               children: [
                 Container(
-                  width: 36,
-                  height: 36,
+                  width: 44,
+                  height: 44,
                   decoration: BoxDecoration(
+                    shape: BoxShape.circle,
                     color:
-                        AppColors.primaryBrown.withValues(alpha: 0.06),
-                    borderRadius: BorderRadius.circular(10),
+                        widget.iconColor.withValues(alpha: 0.14),
                   ),
                   child: Icon(
                     widget.icon,
-                    size: 18,
-                    color:
-                        AppColors.primaryBrown.withValues(alpha: 0.6),
+                    size: 22,
+                    color: widget.iconColor,
                   ),
                 ),
-                const SizedBox(height: 10),
-                Text(
-                  widget.title,
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.deepDarkBrown,
+                const SizedBox(height: 12),
+                // Fixed-height label area keeps all four tiles
+                // perfectly symmetric whether the label is one line
+                // ("Settings") or wraps to two ("Bible Sessions").
+                SizedBox(
+                  height: 30,
+                  child: Center(
+                    child: Text(
+                      widget.label,
+                      textAlign: TextAlign.center,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.deepDarkBrown,
+                        height: 1.25,
+                        letterSpacing: 0.1,
+                      ),
+                    ),
                   ),
                 ),
               ],
@@ -921,8 +1223,8 @@ class _QuickActionState extends State<_QuickAction> {
   }
 }
 
-// Compact missed-request banner that sits between the greeting
-// and the status card. Three states:
+// Compact missed-request banner that sits between the status card
+// and the stats row. Three states:
 //   • count == 0 → SizedBox.shrink (banner gone)
 //   • count == 1 → "Asha tried to reach you" (single name)
 //   • count >= 2 → "You missed N requests" (with count chip on icon)
@@ -969,25 +1271,22 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
       },
       child: count <= 0
           ? const SizedBox.shrink(key: ValueKey('missed-empty'))
-          : Padding(
+          : Listener(
               key: ValueKey('missed-$count-${widget.requesterName}'),
-              padding: const EdgeInsets.only(bottom: 12),
-              child: Listener(
-                onPointerDown: (_) => setState(() => _scale = 0.98),
-                onPointerUp: (_) => setState(() => _scale = 1.0),
-                onPointerCancel: (_) => setState(() => _scale = 1.0),
-                child: GestureDetector(
-                  behavior: HitTestBehavior.opaque,
-                  onTap: () {
-                    HapticFeedback.lightImpact();
-                    widget.onTap();
-                  },
-                  child: AnimatedScale(
-                    scale: _scale,
-                    duration: const Duration(milliseconds: 120),
-                    curve: Curves.easeOut,
-                    child: _buildBanner(count),
-                  ),
+              onPointerDown: (_) => setState(() => _scale = 0.98),
+              onPointerUp: (_) => setState(() => _scale = 1.0),
+              onPointerCancel: (_) => setState(() => _scale = 1.0),
+              child: GestureDetector(
+                behavior: HitTestBehavior.opaque,
+                onTap: () {
+                  HapticFeedback.lightImpact();
+                  widget.onTap();
+                },
+                child: AnimatedScale(
+                  scale: _scale,
+                  duration: const Duration(milliseconds: 120),
+                  curve: Curves.easeOut,
+                  child: _buildBanner(count),
                 ),
               ),
             ),
@@ -1002,44 +1301,47 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
     final subtitle =
         isMulti ? 'Tap to view & respond' : 'Tap to respond';
 
+    // Terra-cotta — semantic urgency color, in the same warm-red
+    // family as the bell badge so the priest's "you missed something"
+    // signal reads as one consistent system.
+    const terraCotta = Color(0xFFB5523A);
+
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      padding:
+          const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       decoration: BoxDecoration(
-        gradient: LinearGradient(
-          colors: [
-            AppColors.amberGold.withValues(alpha: 0.12),
-            AppColors.amberGold.withValues(alpha: 0.06),
-          ],
-          begin: Alignment.centerLeft,
-          end: Alignment.centerRight,
-        ),
-        borderRadius: BorderRadius.circular(14),
+        color: AppColors.amberGold.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: AppColors.amberGold.withValues(alpha: 0.2),
+          color: AppColors.amberGold.withValues(alpha: 0.3),
         ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x08000000),
+            blurRadius: 12,
+            offset: Offset(0, 3),
+          ),
+        ],
       ),
       child: Row(
         children: [
-          // Phone-missed circle — with a count chip when there are
-          // multiple. Stack overhang is small (only 2px) so the
-          // banner's vertical bounds aren't blown out.
           SizedBox(
-            width: 36,
-            height: 36,
+            width: 40,
+            height: 40,
             child: Stack(
               clipBehavior: Clip.none,
               children: [
                 Container(
-                  width: 36,
-                  height: 36,
+                  width: 40,
+                  height: 40,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color: AppColors.amberGold.withValues(alpha: 0.15),
+                    color: terraCotta.withValues(alpha: 0.12),
                   ),
-                  child: Icon(
+                  child: const Icon(
                     Icons.phone_missed_rounded,
-                    size: 18,
-                    color: AppColors.amberGold,
+                    size: 20,
+                    color: terraCotta,
                   ),
                 ),
                 if (isMulti)
@@ -1053,7 +1355,7 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
                         vertical: 1,
                       ),
                       decoration: BoxDecoration(
-                        color: AppColors.amberGold,
+                        color: terraCotta,
                         borderRadius: BorderRadius.circular(8),
                         border: Border.all(
                           color: AppColors.background,
@@ -1097,9 +1399,9 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
                   maxLines: 1,
                   overflow: TextOverflow.ellipsis,
                   style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.muted,
+                    fontSize: 12,
+                    fontWeight: FontWeight.w500,
+                    color: terraCotta,
                   ),
                 ),
               ],
@@ -1109,7 +1411,7 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
           Icon(
             Icons.chevron_right_rounded,
             size: 20,
-            color: AppColors.amberGold.withValues(alpha: 0.5),
+            color: terraCotta.withValues(alpha: 0.5),
           ),
         ],
       ),
@@ -1133,82 +1435,354 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
 // stream rather than `.count()`-aggregate because the inbox is small
 // (≤50 unread realistically) and a stream gives instant feedback when
 // a CF writes a new notification, without a manual refresh.
-class _NotificationBell extends StatelessWidget {
+class _NotificationBell extends StatefulWidget {
   final String uid;
   const _NotificationBell({required this.uid});
+
+  @override
+  State<_NotificationBell> createState() => _NotificationBellState();
+}
+
+class _NotificationBellState extends State<_NotificationBell> {
+  double _scale = 1.0;
 
   @override
   Widget build(BuildContext context) {
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
           .collection('notifications')
-          .where('userId', isEqualTo: uid)
+          .where('userId', isEqualTo: widget.uid)
           .where('isRead', isEqualTo: false)
           .snapshots(),
       builder: (context, snap) {
         final count = snap.data?.docs.length ?? 0;
-        return GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.push('/priest/notifications'),
-          child: SizedBox(
-            width: 44,
-            height: 44,
-            child: Stack(
-              clipBehavior: Clip.none,
-              alignment: Alignment.center,
-              children: [
-                Container(
-                  width: 40,
-                  height: 40,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: const Color(0xFFF7F5F2),
-                    border: Border.all(
-                      color: AppColors.muted.withValues(alpha: 0.15),
+        return Listener(
+          onPointerDown: (_) => setState(() => _scale = 0.95),
+          onPointerUp: (_) => setState(() => _scale = 1.0),
+          onPointerCancel: (_) => setState(() => _scale = 1.0),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              HapticFeedback.lightImpact();
+              context.push('/priest/notifications');
+            },
+            child: AnimatedScale(
+              scale: _scale,
+              duration: const Duration(milliseconds: 120),
+              curve: Curves.easeOut,
+              child: Container(
+                width: 44,
+                height: 44,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.surfaceWhite,
+                  border: Border.all(
+                    color: AppColors.muted.withValues(alpha: 0.12),
+                  ),
+                  boxShadow: const [
+                    BoxShadow(
+                      color: Color(0x0A000000),
+                      blurRadius: 10,
+                      offset: Offset(0, 2),
                     ),
-                  ),
-                  child: const Icon(
-                    Icons.notifications_none_rounded,
-                    size: 20,
-                    color: AppColors.deepDarkBrown,
-                  ),
+                  ],
                 ),
-                if (count > 0)
-                  Positioned(
-                    top: 2,
-                    right: 2,
-                    child: Container(
-                      constraints: const BoxConstraints(
-                        minWidth: 16,
-                        minHeight: 16,
-                      ),
-                      padding: const EdgeInsets.symmetric(horizontal: 4),
-                      decoration: BoxDecoration(
-                        color: AppColors.errorRed,
-                        borderRadius: BorderRadius.circular(8),
-                        border: Border.all(
-                          color: AppColors.background,
-                          width: 1.5,
-                        ),
-                      ),
-                      child: Center(
-                        child: Text(
-                          count > 9 ? '9+' : '$count',
-                          style: GoogleFonts.inter(
-                            fontSize: 9,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                            height: 1.0,
+                child: Stack(
+                  clipBehavior: Clip.none,
+                  alignment: Alignment.center,
+                  children: [
+                    const Icon(
+                      Icons.notifications_outlined,
+                      size: 22,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                    if (count > 0)
+                      Positioned(
+                        top: 6,
+                        right: 6,
+                        child: Container(
+                          constraints: const BoxConstraints(
+                            minWidth: 14,
+                            minHeight: 14,
+                          ),
+                          padding:
+                              const EdgeInsets.symmetric(horizontal: 3),
+                          decoration: BoxDecoration(
+                            // Warmer, desaturated brown-red — sits
+                            // inside the warm palette instead of
+                            // shouting at the user.
+                            color: const Color(0xFFA8392B),
+                            borderRadius: BorderRadius.circular(7),
+                            border: Border.all(
+                              color: AppColors.background,
+                              width: 1.5,
+                            ),
+                          ),
+                          child: Center(
+                            child: Text(
+                              count > 9 ? '9+' : '$count',
+                              style: GoogleFonts.inter(
+                                fontSize: 8,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                height: 1.0,
+                              ),
+                            ),
                           ),
                         ),
                       ),
-                    ),
-                  ),
-              ],
+                  ],
+                ),
+              ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+// ─── Profile avatar ────────────────────────────────────────
+
+class _ProfileAvatar extends StatefulWidget {
+  final String photoUrl;
+  final String fallbackLetter;
+  final VoidCallback onTap;
+  const _ProfileAvatar({
+    required this.photoUrl,
+    required this.fallbackLetter,
+    required this.onTap,
+  });
+
+  @override
+  State<_ProfileAvatar> createState() => _ProfileAvatarState();
+}
+
+class _ProfileAvatarState extends State<_ProfileAvatar> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (_) => setState(() => _scale = 0.95),
+      onPointerUp: (_) => setState(() => _scale = 1.0),
+      onPointerCancel: (_) => setState(() => _scale = 1.0),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          HapticFeedback.lightImpact();
+          widget.onTap();
+        },
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: const Color(0xFFF7F5F2),
+              border: Border.all(
+                color: AppColors.amberGold.withValues(alpha: 0.3),
+                width: 2,
+              ),
+              boxShadow: const [
+                BoxShadow(
+                  color: Color(0x0A000000),
+                  blurRadius: 10,
+                  offset: Offset(0, 2),
+                ),
+              ],
+            ),
+            clipBehavior: Clip.antiAlias,
+            child: widget.photoUrl.isNotEmpty
+                ? CachedNetworkImage(
+                    imageUrl: widget.photoUrl,
+                    fit: BoxFit.cover,
+                    errorWidget: (_, _, _) => _initial(),
+                    placeholder: (_, _) => const SizedBox.shrink(),
+                  )
+                : _initial(),
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _initial() {
+    return Center(
+      child: Text(
+        widget.fallbackLetter,
+        style: GoogleFonts.inter(
+          fontSize: 18,
+          fontWeight: FontWeight.w700,
+          color: AppColors.muted,
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Manage availability card ──────────────────────────────
+
+// Sits at the bottom of the dashboard when the priest is ONLINE.
+// Tap navigates to /priest/settings — that page owns the actual
+// isOnline=false write (and the resume-accepting flow). The
+// dashboard never writes the toggle directly.
+class _ManageAvailabilityCard extends StatefulWidget {
+  final VoidCallback onTap;
+  const _ManageAvailabilityCard({required this.onTap});
+
+  @override
+  State<_ManageAvailabilityCard> createState() =>
+      _ManageAvailabilityCardState();
+}
+
+class _ManageAvailabilityCardState extends State<_ManageAvailabilityCard> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.muted.withValues(alpha: 0.1),
+        ),
+        boxShadow: const [
+          BoxShadow(
+            color: Color(0x08000000),
+            blurRadius: 12,
+            offset: Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          // Decorative meditation glyph in a warm amber halo —
+          // mirrors the "cross-on-hill / restful" illustration from
+          // the reference design without needing a custom asset.
+          Container(
+            width: 64,
+            height: 64,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              gradient: RadialGradient(
+                colors: [
+                  AppColors.amberGold.withValues(alpha: 0.22),
+                  AppColors.amberGold.withValues(alpha: 0.08),
+                ],
+              ),
+            ),
+            child: const Icon(
+              Icons.self_improvement_rounded,
+              size: 34,
+              color: AppColors.primaryBrown,
+            ),
+          ),
+          const SizedBox(width: 16),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  'Want to take a break?',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 15,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  'Go offline and pause incoming requests.',
+                  maxLines: 2,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    height: 1.4,
+                    color: AppColors.muted,
+                  ),
+                ),
+                const SizedBox(height: 12),
+                Listener(
+                  onPointerDown: (_) => setState(() => _scale = 0.97),
+                  onPointerUp: (_) => setState(() => _scale = 1.0),
+                  onPointerCancel: (_) => setState(() => _scale = 1.0),
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () {
+                      HapticFeedback.lightImpact();
+                      widget.onTap();
+                    },
+                    child: AnimatedScale(
+                      scale: _scale,
+                      duration: const Duration(milliseconds: 120),
+                      curve: Curves.easeOut,
+                      child: Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 16,
+                          vertical: 11,
+                        ),
+                        decoration: BoxDecoration(
+                          color: AppColors.primaryBrown,
+                          borderRadius: BorderRadius.circular(12),
+                          boxShadow: [
+                            BoxShadow(
+                              color: AppColors.primaryBrown
+                                  .withValues(alpha: 0.22),
+                              blurRadius: 10,
+                              offset: const Offset(0, 3),
+                            ),
+                          ],
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.pause_rounded,
+                              size: 16,
+                              color: Colors.white,
+                            ),
+                            const SizedBox(width: 6),
+                            // Flexible + ellipsis so the button text
+                            // gracefully shrinks/clips on a 320px
+                            // phone with a large accessibility font
+                            // setting instead of overflowing.
+                            Flexible(
+                              child: Text(
+                                'Manage Availability',
+                                maxLines: 1,
+                                overflow: TextOverflow.ellipsis,
+                                softWrap: false,
+                                style: GoogleFonts.inter(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: Colors.white,
+                                  letterSpacing: 0.1,
+                                ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
     );
   }
 }

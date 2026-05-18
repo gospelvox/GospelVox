@@ -10,9 +10,10 @@ import 'package:flutter/material.dart';
 
 class WalletTransaction {
   final String id;
-  // "session_charge", "activation_fee", "withdrawal", "refund".
-  // Anything we don't recognise falls back to a generic receipt icon
-  // so future server-side types don't crash the list.
+  // "session_charge", "bible_session_earning", "activation_fee",
+  // "withdrawal", "refund". Anything we don't recognise falls back
+  // to a generic receipt icon so future server-side types don't
+  // crash the list.
   final String type;
   // Positive = priest earned, negative = priest paid out. The
   // transactions collection stores both shapes uniformly so we don't
@@ -54,6 +55,8 @@ class WalletTransaction {
     switch (type) {
       case 'session_charge':
         return Icons.chat_bubble_outline_rounded;
+      case 'bible_session_earning':
+        return Icons.menu_book_outlined;
       case 'activation_fee':
         return Icons.verified_outlined;
       case 'withdrawal':

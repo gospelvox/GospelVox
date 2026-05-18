@@ -70,6 +70,13 @@ class SessionModel {
   final double? userRating;
   final String? userFeedback;
 
+  // Priest's public reply to the user's review. Owned by the
+  // replyToReview CF — the client never writes here directly because
+  // the 300-char cap and 24h edit window have to be enforced server-
+  // side. createdAt stays stable across edits so the lock window
+  // measures from first publish; updatedAt advances on every edit.
+  final ReviewReply? priestReply;
+
   // Priest-initiated follow-up nudge state. Written exclusively by
   // the sendFollowUp CF — never by the client. `followUpSent` gates
   // the "Send Follow-up" button on the session detail page so each
@@ -106,6 +113,7 @@ class SessionModel {
     required this.priestDenomination,
     this.userRating,
     this.userFeedback,
+    this.priestReply,
     this.followUpSent = false,
     this.followUpTemplate,
     this.followUpSentAt,
@@ -150,6 +158,11 @@ class SessionModel {
       priestDenomination: data['priestDenomination'] as String? ?? '',
       userRating: (data['userRating'] as num?)?.toDouble(),
       userFeedback: data['userFeedback'] as String?,
+      priestReply: data['priestReply'] is Map
+          ? ReviewReply.fromMap(
+              Map<String, dynamic>.from(data['priestReply'] as Map),
+            )
+          : null,
       followUpSent: data['followUpSent'] as bool? ?? false,
       followUpTemplate: (data['followUpTemplate'] as num?)?.toInt(),
       followUpSentAt: ts(data['followUpSentAt']),
@@ -170,6 +183,50 @@ class SessionModel {
   // N minutes left" without having to re-derive the math each time.
   int get affordableMinutes =>
       ratePerMinute > 0 ? userBalance ~/ ratePerMinute : 0;
+}
+
+// Priest's reply to a single rated session. Server-owned: written
+// only by the replyToReview CF, which enforces the 300-character cap
+// and the 24-hour edit window. The client uses `isEditable` to gate
+// the Edit affordance — once the window closes, the UI hides the
+// edit button instead of letting the CF reject the call.
+class ReviewReply {
+  final String text;
+  final DateTime? createdAt;
+  final DateTime? updatedAt;
+
+  const ReviewReply({
+    required this.text,
+    this.createdAt,
+    this.updatedAt,
+  });
+
+  factory ReviewReply.fromMap(Map<String, dynamic> data) {
+    DateTime? ts(dynamic v) =>
+        v is Timestamp ? v.toDate() : null;
+    return ReviewReply(
+      text: data['text'] as String? ?? '',
+      createdAt: ts(data['createdAt']),
+      updatedAt: ts(data['updatedAt']),
+    );
+  }
+
+  // True for 24 hours after first publish. createdAt is null only
+  // during the brief write-then-read window where the server stamp
+  // hasn't been resolved yet — treat that as editable so the priest
+  // doesn't see the affordance disappear momentarily after sending.
+  bool get isEditable {
+    final created = createdAt;
+    if (created == null) return true;
+    return DateTime.now().difference(created).inHours < 24;
+  }
+
+  bool get wasEdited {
+    final c = createdAt;
+    final u = updatedAt;
+    if (c == null || u == null) return false;
+    return u.difference(c).inSeconds > 5;
+  }
 }
 
 // A single chat bubble. Lives under sessions/{id}/messages for

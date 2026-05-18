@@ -5,11 +5,25 @@
 //   • which name is shown on each card (priest name vs user name)
 //
 // Why one page instead of two: the layout, filter chips, summary card,
-// and card chrome are identical — duplicating the file would let the
-// two halves drift on padding, sort order, and rating display.
+// and card chrome are nearly identical — duplicating the file would
+// let the two halves drift on padding, sort order, and rating display.
+//
+// The list mixes two entry kinds:
+//   • RegularSessionEntry (chat / voice consultation)
+//   • BibleSessionEntry  (paid bible session attendance / hosting)
+// Each kind has its own card chrome (icon, badge colour, secondary
+// chips), but they share the same outer container, long-press-to-
+// dismiss gesture, and detail-tap handler.
+//
+// Clear All + long-press dismiss are SOFT hides: Firestore rules
+// deny `delete` on /sessions and /bible_sessions/.../registrations,
+// so the cubit appends the entry's composite key onto the caller's
+// own `hiddenSessionIds` array. The other party + admin still see
+// the underlying record.
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -20,10 +34,13 @@ import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_state.dart';
-import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 
 const Color _kCompletedGreen = Color(0xFF059669);
 const Color _kDeclinedRed = Color(0xFFDC2626);
+// Warm amber for the Bible badge — matches the Bible category accent
+// used on the user-side Bible tab + dashboard tile.
+const Color _kBibleAmber = Color(0xFFC8902A);
 
 class SessionHistoryPage extends StatelessWidget {
   final bool isUserSide;
@@ -34,7 +51,6 @@ class SessionHistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: _buildAppBar(context),
       body: BlocConsumer<SessionHistoryCubit, SessionHistoryState>(
         listener: (context, state) {
           if (state is SessionHistoryError) {
@@ -42,26 +58,39 @@ class SessionHistoryPage extends StatelessWidget {
           }
         },
         builder: (context, state) {
-          if (state is SessionHistoryLoading ||
-              state is SessionHistoryInitial) {
-            return const _HistoryShimmer();
-          }
-          if (state is SessionHistoryError) {
-            return _ErrorView(
-              message: state.message,
-              onRetry: () => _retry(context),
-            );
-          }
-          if (state is SessionHistoryLoaded) {
-            return _LoadedBody(state: state, isUserSide: isUserSide);
-          }
-          return const SizedBox.shrink();
+          return Scaffold(
+            backgroundColor: AppColors.background,
+            appBar: _buildAppBar(context, state),
+            body: _buildBody(context, state),
+          );
         },
       ),
     );
   }
 
-  PreferredSizeWidget _buildAppBar(BuildContext context) {
+  Widget _buildBody(BuildContext context, SessionHistoryState state) {
+    if (state is SessionHistoryLoading || state is SessionHistoryInitial) {
+      return const _HistoryShimmer();
+    }
+    if (state is SessionHistoryError) {
+      return _ErrorView(
+        message: state.message,
+        onRetry: () => _retry(context),
+      );
+    }
+    if (state is SessionHistoryLoaded) {
+      return _LoadedBody(state: state, isUserSide: isUserSide);
+    }
+    return const SizedBox.shrink();
+  }
+
+  PreferredSizeWidget _buildAppBar(
+    BuildContext context,
+    SessionHistoryState state,
+  ) {
+    final hasAny =
+        state is SessionHistoryLoaded && state.allEntries.isNotEmpty;
+
     return AppBar(
       backgroundColor: AppColors.background,
       elevation: 0,
@@ -104,6 +133,29 @@ class SessionHistoryPage extends StatelessWidget {
           color: AppColors.deepDarkBrown,
         ),
       ),
+      actions: [
+        if (hasAny)
+          Padding(
+            padding: const EdgeInsets.only(right: 16),
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () => _confirmClearAll(context),
+              child: Container(
+                alignment: Alignment.center,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Text(
+                  'Clear All',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.errorRed,
+                  ),
+                ),
+              ),
+            ),
+          ),
+      ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
         child: Container(
@@ -122,6 +174,33 @@ class SessionHistoryPage extends StatelessWidget {
       cubit.loadUserSessions(uid);
     } else {
       cubit.loadPriestSessions(uid);
+    }
+  }
+
+  Future<void> _confirmClearAll(BuildContext context) async {
+    final cubit = context.read<SessionHistoryCubit>();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _ConfirmActionSheet(
+        title: 'Clear all history?',
+        message:
+            'This hides every entry from your view. The session data '
+            "itself isn't deleted — the other party can still see it. "
+            "You won't be able to undo this from your side.",
+        confirmLabel: 'Clear All',
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final ok = await cubit.hideAll(uid: uid, isUserSide: isUserSide);
+    if (!context.mounted) return;
+    if (ok) {
+      AppSnackBar.success(context, 'History cleared.');
+    } else {
+      AppSnackBar.error(context, "Couldn't clear history. Try again.");
     }
   }
 }
@@ -155,26 +234,35 @@ class _LoadedBody extends StatelessWidget {
             const SizedBox(height: 20),
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 20),
-              child: Row(
-                children: [
-                  _FilterChip(
-                    label: 'All',
-                    isActive: state.activeFilter == 'all',
-                    onTap: () => cubit.filterByType('all'),
-                  ),
-                  const SizedBox(width: 8),
-                  _FilterChip(
-                    label: 'Chat',
-                    isActive: state.activeFilter == 'chat',
-                    onTap: () => cubit.filterByType('chat'),
-                  ),
-                  const SizedBox(width: 8),
-                  _FilterChip(
-                    label: 'Voice',
-                    isActive: state.activeFilter == 'voice',
-                    onTap: () => cubit.filterByType('voice'),
-                  ),
-                ],
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: Row(
+                  children: [
+                    _FilterChip(
+                      label: 'All',
+                      isActive: state.activeFilter == 'all',
+                      onTap: () => cubit.filterByType('all'),
+                    ),
+                    const SizedBox(width: 8),
+                    _FilterChip(
+                      label: 'Chat',
+                      isActive: state.activeFilter == 'chat',
+                      onTap: () => cubit.filterByType('chat'),
+                    ),
+                    const SizedBox(width: 8),
+                    _FilterChip(
+                      label: 'Voice',
+                      isActive: state.activeFilter == 'voice',
+                      onTap: () => cubit.filterByType('voice'),
+                    ),
+                    const SizedBox(width: 8),
+                    _FilterChip(
+                      label: 'Bible',
+                      isActive: state.activeFilter == 'bible',
+                      onTap: () => cubit.filterByType('bible'),
+                    ),
+                  ],
+                ),
               ),
             ),
             const SizedBox(height: 16),
@@ -186,10 +274,12 @@ class _LoadedBody extends StatelessWidget {
                 child: Column(
                   children: state.filtered
                       .map(
-                        (session) => _SessionHistoryCard(
-                          session: session,
+                        (entry) => _HistoryRow(
+                          entry: entry,
                           isUserSide: isUserSide,
-                          onTap: () => _openDetail(context, session),
+                          onTap: () => _openDetail(context, entry),
+                          onLongPress: () =>
+                              _confirmDismiss(context, entry),
                         ),
                       )
                       .toList(),
@@ -202,11 +292,52 @@ class _LoadedBody extends StatelessWidget {
     );
   }
 
-  void _openDetail(BuildContext context, SessionModel session) {
-    context.push('/session/detail', extra: {
-      'session': session,
-      'isUserSide': isUserSide,
-    });
+  void _openDetail(BuildContext context, HistoryEntry entry) {
+    switch (entry) {
+      case RegularSessionEntry(session: final s):
+        context.push('/session/detail', extra: {
+          'session': s,
+          'isUserSide': isUserSide,
+        });
+      case BibleSessionEntry(session: final s):
+        // User taps go to the public-facing detail page; priest taps
+        // route to their manage view. Same content, different actions.
+        context.push(
+          isUserSide ? '/bible/detail/${s.id}' : '/priest/bible/${s.id}',
+        );
+    }
+  }
+
+  Future<void> _confirmDismiss(
+    BuildContext context,
+    HistoryEntry entry,
+  ) async {
+    HapticFeedback.mediumImpact();
+    final cubit = context.read<SessionHistoryCubit>();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _ConfirmActionSheet(
+        title: 'Remove from history?',
+        message:
+            "It'll be hidden from your view. The session data itself "
+            "isn't deleted, and the other party can still see it.",
+        confirmLabel: 'Remove',
+      ),
+    );
+    if (confirmed != true || !context.mounted) return;
+    final ok = await cubit.hideOne(
+      uid: uid,
+      isUserSide: isUserSide,
+      entry: entry,
+    );
+    if (!context.mounted) return;
+    if (!ok) {
+      AppSnackBar.error(context, "Couldn't remove. Try again.");
+    }
   }
 }
 
@@ -220,9 +351,15 @@ class _SummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final secondaryValue = isUserSide
-        ? '₹${state.totalSpent}'
-        : '₹${state.totalEarned}';
+    // Show whichever unit is non-zero. For most users the regular-
+    // session coin counter dominates; bible-only users see the INR
+    // counter. When both are non-zero we show the dominant one and
+    // call out the other in the subtitle so the card never lies
+    // about totals.
+    final coinValue = isUserSide ? state.coinsSpent : state.coinsEarned;
+    final inrValue = isUserSide ? state.inrSpent : state.inrEarned;
+    final primaryLabel = isUserSide ? 'Spent' : 'Earned';
+    final primaryValue = _formatPrimaryValue(coinValue, inrValue);
 
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 0, 20, 0),
@@ -247,12 +384,12 @@ class _SummaryCard extends StatelessWidget {
           _SummaryStat(
             label: 'Total',
             value: '${state.totalSessions}',
-            icon: Icons.chat_bubble_outline_rounded,
+            icon: Icons.history_rounded,
           ),
           const _SummaryDivider(),
           _SummaryStat(
-            label: isUserSide ? 'Spent' : 'Earned',
-            value: secondaryValue,
+            label: primaryLabel,
+            value: primaryValue,
             icon: isUserSide
                 ? Icons.toll_rounded
                 : Icons.account_balance_wallet_outlined,
@@ -260,7 +397,7 @@ class _SummaryCard extends StatelessWidget {
           const _SummaryDivider(),
           _SummaryStat(
             label: 'Avg Rating',
-            value: _avgRating(state.allSessions),
+            value: _avgRating(state.allEntries),
             icon: Icons.star_outline_rounded,
           ),
         ],
@@ -268,14 +405,23 @@ class _SummaryCard extends StatelessWidget {
     );
   }
 
-  String _avgRating(List<SessionModel> sessions) {
-    final rated = sessions
-        .where((s) => s.userRating != null && s.userRating! > 0)
+  // Stacks coin + ₹ totals when both are present so the user sees
+  // both units; falls back to "—" when neither has been spent /
+  // earned (avoids a confusing "0" for a brand-new account).
+  String _formatPrimaryValue(int coinValue, int inrValue) {
+    if (coinValue == 0 && inrValue == 0) return '—';
+    if (inrValue == 0) return '$coinValue';
+    if (coinValue == 0) return '₹$inrValue';
+    return '$coinValue · ₹$inrValue';
+  }
+
+  String _avgRating(List<HistoryEntry> entries) {
+    final rated = entries
+        .where((e) => e.rating != null && e.rating! > 0)
         .toList();
     if (rated.isEmpty) return '—';
-    final avg =
-        rated.fold<double>(0.0, (sum, s) => sum + s.userRating!) /
-            rated.length;
+    final avg = rated.fold<double>(0.0, (sum, e) => sum + e.rating!) /
+        rated.length;
     return avg.toStringAsFixed(1);
   }
 }
@@ -384,34 +530,30 @@ class _FilterChip extends StatelessWidget {
   }
 }
 
-// ─── Session history card ──────────────────────────────────
+// ─── History row (branches on entry type) ──────────────────
 
-class _SessionHistoryCard extends StatefulWidget {
-  final SessionModel session;
+class _HistoryRow extends StatefulWidget {
+  final HistoryEntry entry;
   final bool isUserSide;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
-  const _SessionHistoryCard({
-    required this.session,
+  const _HistoryRow({
+    required this.entry,
     required this.isUserSide,
     required this.onTap,
+    required this.onLongPress,
   });
 
   @override
-  State<_SessionHistoryCard> createState() => _SessionHistoryCardState();
+  State<_HistoryRow> createState() => _HistoryRowState();
 }
 
-class _SessionHistoryCardState extends State<_SessionHistoryCard> {
+class _HistoryRowState extends State<_HistoryRow> {
   double _scale = 1.0;
 
   @override
   Widget build(BuildContext context) {
-    final session = widget.session;
-    final isUserSide = widget.isUserSide;
-    final otherName = isUserSide ? session.priestName : session.userName;
-    final hasRating =
-        session.userRating != null && session.userRating! > 0;
-
     return Listener(
       onPointerDown: (_) => setState(() => _scale = 0.98),
       onPointerUp: (_) => setState(() => _scale = 1.0),
@@ -419,6 +561,7 @@ class _SessionHistoryCardState extends State<_SessionHistoryCard> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
+        onLongPress: widget.onLongPress,
         child: AnimatedScale(
           scale: _scale,
           duration: const Duration(milliseconds: 120),
@@ -440,145 +583,328 @@ class _SessionHistoryCardState extends State<_SessionHistoryCard> {
                 ),
               ],
             ),
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                _buildTopRow(otherName: otherName, session: session),
-                const SizedBox(height: 12),
-                _buildBottomRow(
-                  session: session,
-                  isUserSide: isUserSide,
-                  hasRating: hasRating,
+            child: switch (widget.entry) {
+              RegularSessionEntry(session: final s) => _RegularCardContent(
+                  session: s,
+                  isUserSide: widget.isUserSide,
                 ),
-              ],
-            ),
+              BibleSessionEntry(session: final s, registration: final r) =>
+                _BibleCardContent(
+                  session: s,
+                  registration: r,
+                  isUserSide: widget.isUserSide,
+                  priestRevenueInr:
+                      (widget.entry as BibleSessionEntry).priestRevenueInr,
+                ),
+            },
           ),
         ),
       ),
     );
   }
+}
 
-  Widget _buildTopRow({
-    required String otherName,
-    required SessionModel session,
-  }) {
-    return Row(
+class _RegularCardContent extends StatelessWidget {
+  final dynamic session; // SessionModel — kept dynamic to avoid an
+                         // explicit import here; the only fields read
+                         // are documented inline.
+  final bool isUserSide;
+
+  const _RegularCardContent({
+    required this.session,
+    required this.isUserSide,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    final otherName = isUserSide ? s.priestName : s.userName;
+    final hasRating = s.userRating != null && s.userRating! > 0;
+    final isChat = s.isChat as bool;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Container(
-          width: 36,
-          height: 36,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            color: session.isChat
-                ? AppColors.primaryBrown.withValues(alpha: 0.06)
-                : AppColors.amberGold.withValues(alpha: 0.08),
-          ),
-          child: Icon(
-            session.isChat
-                ? Icons.chat_bubble_outline_rounded
-                : Icons.mic_none_rounded,
-            size: 16,
-            color: session.isChat
-                ? AppColors.primaryBrown
-                : AppColors.amberGold,
-          ),
+        Row(
+          children: [
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: isChat
+                    ? AppColors.primaryBrown.withValues(alpha: 0.06)
+                    : AppColors.amberGold.withValues(alpha: 0.08),
+              ),
+              child: Icon(
+                isChat
+                    ? Icons.chat_bubble_outline_rounded
+                    : Icons.mic_none_rounded,
+                size: 16,
+                color: isChat
+                    ? AppColors.primaryBrown
+                    : AppColors.amberGold,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    (otherName as String).isNotEmpty ? otherName : 'Unknown',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    '${isChat ? 'Chat' : 'Voice'} · '
+                    '${df.formatFullDate(s.createdAt as DateTime?)}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            _StatusBadge(status: s.status as String),
+          ],
         ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                otherName.isNotEmpty ? otherName : 'Unknown',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w600,
-                  color: AppColors.deepDarkBrown,
-                ),
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            if ((s.durationMinutes as int) > 0) ...[
+              _DetailChip(
+                icon: Icons.access_time_rounded,
+                text: '${s.durationMinutes} min',
               ),
-              const SizedBox(height: 2),
-              Text(
-                '${session.isChat ? 'Chat' : 'Voice'} · '
-                '${_formatShortDate(session.createdAt)}',
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted,
-                ),
-              ),
+              const SizedBox(width: 10),
             ],
-          ),
+            if (s.status == 'completed') ...[
+              _DetailChip(
+                icon: isUserSide
+                    ? Icons.toll_rounded
+                    : Icons.account_balance_wallet_outlined,
+                text: isUserSide
+                    ? '${s.totalCharged} coins'
+                    : '₹${s.priestEarnings}',
+                valueColor:
+                    isUserSide ? null : const Color(0xFF2E7D4F),
+              ),
+              const SizedBox(width: 10),
+            ],
+            const Spacer(),
+            if (hasRating)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.star_rounded,
+                    size: 14,
+                    color: AppColors.amberGold,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    (s.userRating as num).toDouble().toStringAsFixed(1),
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                ],
+              ),
+          ],
         ),
-        const SizedBox(width: 8),
-        _StatusBadge(status: session.status),
       ],
     );
   }
+}
 
-  Widget _buildBottomRow({
-    required SessionModel session,
-    required bool isUserSide,
-    required bool hasRating,
-  }) {
-    final children = <Widget>[];
+class _BibleCardContent extends StatelessWidget {
+  final dynamic session;       // BibleSessionModel
+  final dynamic registration;  // BibleRegistration?
+  final bool isUserSide;
+  final int priestRevenueInr;
 
-    if (session.durationMinutes > 0) {
-      children.add(
-        _DetailChip(
-          icon: Icons.access_time_rounded,
-          text: '${session.durationMinutes} min',
-        ),
-      );
-      children.add(const SizedBox(width: 10));
-    }
+  const _BibleCardContent({
+    required this.session,
+    required this.registration,
+    required this.isUserSide,
+    required this.priestRevenueInr,
+  });
 
-    if (session.status == 'completed') {
-      children.add(
-        _DetailChip(
-          icon: isUserSide
-              ? Icons.toll_rounded
-              : Icons.account_balance_wallet_outlined,
-          text: isUserSide
-              ? '${session.totalCharged} coins'
-              : '₹${session.priestEarnings}',
-          valueColor: isUserSide ? null : const Color(0xFF2E7D4F),
-        ),
-      );
-      children.add(const SizedBox(width: 10));
-    }
+  @override
+  Widget build(BuildContext context) {
+    final s = session;
+    final reg = registration;
+    final title = (s.title as String).isNotEmpty
+        ? s.title as String
+        : 'Bible Session';
+    final priestName = s.priestName as String;
+    final regStatus = reg?.status as String?;
+    final hasUserRating =
+        reg?.rating != null && (reg.rating as int) > 0;
 
-    children.add(const Spacer());
-
-    if (hasRating) {
-      children.add(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
         Row(
-          mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.star_rounded,
-              size: 14,
-              color: AppColors.amberGold,
-            ),
-            const SizedBox(width: 3),
-            Text(
-              session.userRating!.toStringAsFixed(1),
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w600,
-                color: AppColors.deepDarkBrown,
+            Container(
+              width: 36,
+              height: 36,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: _kBibleAmber.withValues(alpha: 0.1),
               ),
+              child: const Icon(
+                Icons.menu_book_rounded,
+                size: 16,
+                color: _kBibleAmber,
+              ),
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 6,
+                          vertical: 2,
+                        ),
+                        margin: const EdgeInsets.only(right: 6),
+                        decoration: BoxDecoration(
+                          color: _kBibleAmber.withValues(alpha: 0.12),
+                          borderRadius: BorderRadius.circular(4),
+                        ),
+                        child: Text(
+                          'BIBLE',
+                          style: GoogleFonts.inter(
+                            fontSize: 9,
+                            fontWeight: FontWeight.w700,
+                            letterSpacing: 0.5,
+                            color: _kBibleAmber,
+                          ),
+                        ),
+                      ),
+                      Expanded(
+                        child: Text(
+                          title,
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w600,
+                            color: AppColors.deepDarkBrown,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 2),
+                  Text(
+                    isUserSide
+                        ? '${priestName.isEmpty ? 'Speaker' : priestName} · '
+                            '${df.formatFullDate(s.scheduledAt as DateTime?)}'
+                        : df.formatFullDate(s.scheduledAt as DateTime?),
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const SizedBox(width: 8),
+            _StatusBadge(
+              status: _bibleDisplayStatus(s.status as String, regStatus),
             ),
           ],
         ),
-      );
-    }
-
-    return Row(children: children);
+        const SizedBox(height: 12),
+        Row(
+          children: [
+            if ((s.durationMinutes as int) > 0) ...[
+              _DetailChip(
+                icon: Icons.access_time_rounded,
+                text: s.formattedDuration as String,
+              ),
+              const SizedBox(width: 10),
+            ],
+            // User side: show their own paid amount when registration
+            // exists. Priest side: show the per-session revenue figure
+            // computed from paid registrations × price.
+            if (isUserSide && (reg?.isPaid == true)) ...[
+              _DetailChip(
+                icon: Icons.currency_rupee_rounded,
+                text: '₹${s.price}',
+              ),
+              const SizedBox(width: 10),
+            ] else if (!isUserSide && priestRevenueInr > 0) ...[
+              _DetailChip(
+                icon: Icons.account_balance_wallet_outlined,
+                text: '₹$priestRevenueInr',
+                valueColor: const Color(0xFF2E7D4F),
+              ),
+              const SizedBox(width: 10),
+            ],
+            const Spacer(),
+            if (hasUserRating)
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.star_rounded,
+                    size: 14,
+                    color: AppColors.amberGold,
+                  ),
+                  const SizedBox(width: 3),
+                  Text(
+                    (reg.rating as int).toDouble().toStringAsFixed(1),
+                    style: GoogleFonts.inter(
+                      fontSize: 12,
+                      fontWeight: FontWeight.w600,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                ],
+              ),
+          ],
+        ),
+      ],
+    );
   }
+}
+
+// Maps the session.status + (optional) user registration.status into
+// the single display token that drives the badge colour. Priority:
+// session-level cancellation > completion > registration cancellation
+// > registration paid/registered > session live/upcoming.
+String _bibleDisplayStatus(String sessionStatus, String? regStatus) {
+  if (sessionStatus == 'cancelled') return 'cancelled';
+  if (sessionStatus == 'completed') return 'completed';
+  if (regStatus == 'cancelled') return 'cancelled';
+  if (sessionStatus == 'live') return 'live';
+  if (regStatus == 'paid') return 'paid';
+  if (regStatus == 'registered') return 'registered';
+  return sessionStatus;
 }
 
 // ─── Status badge ──────────────────────────────────────────
@@ -622,6 +948,14 @@ String _statusLabel(String status) {
       return 'Active';
     case 'pending':
       return 'Pending';
+    case 'live':
+      return 'Live';
+    case 'paid':
+      return 'Paid';
+    case 'registered':
+      return 'Registered';
+    case 'upcoming':
+      return 'Upcoming';
     default:
       return status.isNotEmpty
           ? '${status[0].toUpperCase()}${status.substring(1)}'
@@ -633,12 +967,18 @@ Color _statusBgColor(String status) {
   switch (status) {
     case 'completed':
     case 'active':
+    case 'paid':
       return _kCompletedGreen.withValues(alpha: 0.08);
+    case 'live':
+      return _kDeclinedRed.withValues(alpha: 0.08);
     case 'declined':
       return _kDeclinedRed.withValues(alpha: 0.08);
     case 'expired':
     case 'cancelled':
       return AppColors.muted.withValues(alpha: 0.08);
+    case 'registered':
+    case 'upcoming':
+      return _kBibleAmber.withValues(alpha: 0.1);
     default:
       return AppColors.muted.withValues(alpha: 0.08);
   }
@@ -648,9 +988,14 @@ Color _statusTextColor(String status) {
   switch (status) {
     case 'completed':
     case 'active':
+    case 'paid':
       return _kCompletedGreen;
+    case 'live':
     case 'declined':
       return _kDeclinedRed;
+    case 'registered':
+    case 'upcoming':
+      return _kBibleAmber;
     default:
       return AppColors.muted;
   }
@@ -693,6 +1038,134 @@ class _DetailChip extends StatelessWidget {
   }
 }
 
+// ─── Confirm action sheet (Clear All + per-row dismiss) ────
+
+class _ConfirmActionSheet extends StatelessWidget {
+  final String title;
+  final String message;
+  final String confirmLabel;
+
+  const _ConfirmActionSheet({
+    required this.title,
+    required this.message,
+    required this.confirmLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.muted.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.errorRed.withValues(alpha: 0.08),
+              ),
+              child: const Icon(
+                Icons.delete_sweep_outlined,
+                size: 28,
+                color: AppColors.errorRed,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                height: 1.5,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).pop(false),
+                    child: Container(
+                      height: 48,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: AppColors.muted.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: Text(
+                        'Cancel',
+                        style: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.deepDarkBrown,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).pop(true),
+                    child: Container(
+                      height: 48,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: AppColors.errorRed,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Text(
+                        confirmLabel,
+                        style: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Empty / error / shimmer states ────────────────────────
 
 class _EmptyHistory extends StatelessWidget {
@@ -724,8 +1197,8 @@ class _EmptyHistory extends StatelessWidget {
           const SizedBox(height: 6),
           Text(
             isUserSide
-                ? 'Your consultation history will appear here'
-                : "Sessions you've conducted will appear here",
+                ? 'Your consultation and Bible session history will appear here'
+                : "Sessions and Bible sessions you've conducted will appear here",
             textAlign: TextAlign.center,
             style: GoogleFonts.inter(
               fontSize: 13,
@@ -867,7 +1340,3 @@ class _HistoryShimmer extends StatelessWidget {
     );
   }
 }
-
-// ─── Date formatter ────────────────────────────────────────
-
-String _formatShortDate(DateTime? date) => df.formatFullDate(date);

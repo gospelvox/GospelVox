@@ -665,6 +665,8 @@ class _TransactionCard extends StatelessWidget {
     switch (tx.type) {
       case 'session_charge':
         return 'Session earnings';
+      case 'bible_session_earning':
+        return 'Bible Session earning';
       case 'activation_fee':
         return 'Activation fee';
       case 'withdrawal':

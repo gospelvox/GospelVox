@@ -148,6 +148,50 @@ class NotificationModel {
         return Icons.message_outlined;
       case 'missed_request':
         return Icons.phone_missed_rounded;
+      case 'review_milestone':
+        return Icons.star_rounded;
+      case 'priest_reply':
+        return Icons.reply_rounded;
+      case 'report_resolved':
+        return Icons.shield_outlined;
+      // Bible session lifecycle. Each icon is paired with its
+      // life-cycle meaning rather than its audience — that way the
+      // inbox reads consistently whether a priest or user is
+      // viewing the same notification type.
+      case 'bible_session_registered':
+        return Icons.how_to_reg_rounded;
+      case 'bible_session_link_added':
+        return Icons.link_rounded;
+      case 'bible_session_paid':
+        return Icons.payments_rounded;
+      case 'bible_session_payment_received':
+        return Icons.payments_rounded;
+      case 'bible_session_completed':
+      case 'bible_session_auto_completed':
+        return Icons.check_circle_rounded;
+      case 'bible_session_live':
+        return Icons.play_circle_rounded;
+      case 'bible_session_cancelled':
+        return Icons.cancel_rounded;
+      case 'bible_session_reminder_24h':
+        return Icons.event_rounded;
+      case 'bible_session_reminder_1h':
+        return Icons.schedule_rounded;
+      case 'bible_session_pay_reminder':
+        return Icons.payment_rounded;
+      case 'bible_session_starting':
+      case 'bible_session_starting_priest':
+        return Icons.play_circle_rounded;
+      case 'bible_session_link_reminder':
+        return Icons.warning_amber_rounded;
+      case 'bible_session_link_urgent':
+        return Icons.error_outline_rounded;
+      case 'bible_session_golive':
+        return Icons.mic_rounded;
+      case 'bible_session_first_registration':
+        return Icons.celebration_rounded;
+      case 'bible_session_full':
+        return Icons.group_rounded;
       default:
         return Icons.notifications_none_rounded;
     }
@@ -176,6 +220,50 @@ class NotificationModel {
         // Same amber as the dashboard badge + My Users dot — the
         // "you missed something" colour the priest learns to scan
         // for across surfaces.
+        return const Color(0xFFC8902A);
+      case 'review_milestone':
+        // Amber gold — milestone celebrations share the warm-positive
+        // accent with bible-session highlights so the inbox reads
+        // them as the same "good news" tone.
+        return const Color(0xFFC8902A);
+      case 'priest_reply':
+        // Brown — same as session_request / priest_message; reads as
+        // "conversation/relationship" track of activity.
+        return const Color(0xFF6B3A2A);
+      case 'report_resolved':
+        // Muted slate so the inbox doesn't shout — this is an
+        // administrative outcome, not an alert or a celebration.
+        return const Color(0xFF6B7280);
+      // "Session is LIVE" stands out from the rest — same red as the
+      // live badge on the cards + overlay so the inbox entry matches
+      // what the user just saw on screen.
+      case 'bible_session_live':
+        return const Color(0xFFE53E3E);
+      // Failure-toned types (cancellation, urgent-link-missing) get
+      // errorRed so a quick scan of the inbox surfaces them as
+      // "something needs attention" rather than blending into the
+      // amber stream.
+      case 'bible_session_cancelled':
+      case 'bible_session_link_urgent':
+        return const Color(0xFFC03828);
+      // Bible session types all share the warm amber accent so the
+      // inbox visually groups them as a single track of activity —
+      // separate from session-request brown and approval-green.
+      case 'bible_session_registered':
+      case 'bible_session_link_added':
+      case 'bible_session_paid':
+      case 'bible_session_payment_received':
+      case 'bible_session_completed':
+      case 'bible_session_auto_completed':
+      case 'bible_session_reminder_24h':
+      case 'bible_session_reminder_1h':
+      case 'bible_session_pay_reminder':
+      case 'bible_session_starting':
+      case 'bible_session_starting_priest':
+      case 'bible_session_link_reminder':
+      case 'bible_session_golive':
+      case 'bible_session_first_registration':
+      case 'bible_session_full':
         return const Color(0xFFC8902A);
       default:
         return const Color(0xFF6B3A2A);

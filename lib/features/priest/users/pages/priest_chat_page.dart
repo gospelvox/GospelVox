@@ -3,7 +3,7 @@
 // to message a past user.
 //
 // Layout:
-//   [App bar — user name + photo, kebab for "View report history"]
+//   [App bar — user name + photo only, no overflow menu]
 //   [Scrollable chat thread:
 //     • All past session messages, oldest-first, with session
 //       dividers between groups
@@ -472,12 +472,15 @@ class _PriestChatPageState extends State<PriestChatPage> {
         }
         if (row is _CallEntryRow) {
           // Inert on priest side — priests don't initiate calls in
-          // the current product. The row stays informational so the
-          // priest sees full conversation context.
-          return CallEntryBubble(
-            message: row.message,
-            isMe: row.isMine,
-            onTap: null,
+          // the current product. IgnorePointer lets touches fall
+          // through to the parent ListView so a tap on the row
+          // doesn't swallow scroll attempts that started on it.
+          return IgnorePointer(
+            child: CallEntryBubble(
+              message: row.message,
+              isMe: row.isMine,
+              onTap: null,
+            ),
           );
         }
         final bubble = row as _BubbleRow;

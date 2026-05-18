@@ -97,6 +97,7 @@ flutter:
   assets:
     - assets/
     - assets/audio/
+    - assets/bible_banners/
 
 # Launcher icon config. Source is the 512x512 Play Store graphic —
 # flutter_launcher_icons rescales it for every Android mipmap

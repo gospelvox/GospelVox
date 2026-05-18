@@ -13,9 +13,326 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 
+// Composite key prefixes for the per-user `hiddenSessionIds` array.
+// Regular sessions and bible sessions live in different collections,
+// so a raw id could (in theory) collide; namespacing keeps the array
+// disambiguated. Both halves are written by this repository, so the
+// constants can stay private to the file.
+const String _kHiddenPrefixRegular = 's:';
+const String _kHiddenPrefixBible = 'b:';
+
+String _regularKey(String id) => '$_kHiddenPrefixRegular$id';
+String _bibleKey(String id) => '$_kHiddenPrefixBible$id';
+
+// Sealed history-entry type unifying regular sessions (chat / voice)
+// and bible sessions in one chronologically-sortable list. The page
+// branches on the variant when rendering to avoid shoehorning bible
+// fields onto SessionModel and vice-versa.
+sealed class HistoryEntry {
+  const HistoryEntry();
+
+  // Composite key matching the format used in `hiddenSessionIds`.
+  // Stable across loads so the cubit's hide-then-rebuild flow can
+  // identify the same entry on the next snapshot.
+  String get hiddenKey;
+
+  // Sort axis: when a bible session was attended (registration paidAt
+  // or scheduledAt) vs. when a regular session was created. Older
+  // entries sink to the bottom.
+  DateTime? get sortAt;
+
+  // Filter axis: 'chat' / 'voice' / 'bible'. Used by the chip-driven
+  // local filter in SessionHistoryLoaded.
+  String get kind;
+
+  // Row counters for the summary card. Coins for regular sessions,
+  // 0 for bible (whose payments are in INR — see priceInr below).
+  int get coinsSpent;
+  int get coinsEarned;
+
+  // Bible row INR — 0 for regular sessions. Surfaced separately on
+  // the summary card so coin amounts and rupee amounts never get
+  // averaged or summed across units.
+  int get inrSpent;
+  int get inrEarned;
+
+  // Rating (1-5) when the user has submitted one. Used by the avg-
+  // rating stat regardless of entry kind.
+  int? get rating;
+}
+
+class RegularSessionEntry extends HistoryEntry {
+  final SessionModel session;
+  const RegularSessionEntry(this.session);
+
+  @override
+  String get hiddenKey => _regularKey(session.id);
+
+  @override
+  DateTime? get sortAt => session.endedAt ?? session.createdAt;
+
+  @override
+  String get kind => session.type;
+
+  @override
+  int get coinsSpent =>
+      session.status == 'completed' ? session.totalCharged : 0;
+
+  @override
+  int get coinsEarned =>
+      session.status == 'completed' ? session.priestEarnings : 0;
+
+  @override
+  int get inrSpent => 0;
+
+  @override
+  int get inrEarned => 0;
+
+  @override
+  int? get rating => (session.userRating ?? 0) > 0
+      ? session.userRating!.toInt()
+      : null;
+}
+
+// `registration` is non-null on the user side (their own paid /
+// registered subdoc) and null on the priest side (the priest hosts,
+// they don't register). `priestRevenueInr` is non-zero only when
+// the caller is the priest viewing their own hosted session — it's
+// computed against the bible session's price + paid count at load
+// time and snapshotted onto this entry so the summary card never
+// has to re-query.
+class BibleSessionEntry extends HistoryEntry {
+  final BibleSessionModel session;
+  final BibleRegistration? registration;
+  final int priestRevenueInr;
+  const BibleSessionEntry({
+    required this.session,
+    this.registration,
+    this.priestRevenueInr = 0,
+  });
+
+  @override
+  String get hiddenKey => _bibleKey(session.id);
+
+  // Prefer the date the registration was paid (most relevant to the
+  // user's own history); fall back to the session's scheduled time
+  // (priest hosting view) and finally createdAt.
+  @override
+  DateTime? get sortAt {
+    final paid = registration?.registeredAt;
+    if (paid != null) return paid;
+    if (session.completedAt != null) return session.completedAt;
+    if (session.scheduledAt != null) return session.scheduledAt;
+    return session.createdAt;
+  }
+
+  @override
+  String get kind => 'bible';
+
+  @override
+  int get coinsSpent => 0;
+
+  @override
+  int get coinsEarned => 0;
+
+  @override
+  int get inrSpent =>
+      registration?.isPaid == true ? session.price : 0;
+
+  @override
+  int get inrEarned => priestRevenueInr;
+
+  @override
+  int? get rating => registration?.rating;
+}
+
 class SessionHistoryRepository {
+  // ── Hidden-id helpers ─────────────────────────────────────
+  //
+  // Firestore rules deny `delete` on /sessions and on the
+  // /bible_sessions/.../registrations subcollection, so "Clear All"
+  // and per-row dismiss are implemented as soft hides: the entry's
+  // composite key (s:{id} or b:{id}) is appended to the caller's
+  // own user/priest doc inside a `hiddenSessionIds: List<String>`
+  // field, and the load methods filter against that set. The
+  // counterparty + admin still see the underlying session.
+
+  Future<Set<String>> getHiddenIds({
+    required String uid,
+    required bool isUserSide,
+  }) async {
+    try {
+      final col = isUserSide ? 'users' : 'priests';
+      final snap = await FirebaseFirestore.instance
+          .doc('$col/$uid')
+          .get()
+          .timeout(const Duration(seconds: 8));
+      final raw = snap.data()?['hiddenSessionIds'];
+      if (raw is List) {
+        return raw.whereType<String>().toSet();
+      }
+      return const {};
+    } catch (_) {
+      // Hidden-list read failure shouldn't block the page — fall
+      // through to "nothing hidden" so the user still sees their
+      // history. The next successful refresh will re-apply the
+      // hide set.
+      return const {};
+    }
+  }
+
+  Future<void> hideEntries({
+    required String uid,
+    required bool isUserSide,
+    required List<String> hiddenKeys,
+  }) async {
+    if (hiddenKeys.isEmpty) return;
+    final col = isUserSide ? 'users' : 'priests';
+    await FirebaseFirestore.instance.doc('$col/$uid').update({
+      'hiddenSessionIds': FieldValue.arrayUnion(hiddenKeys),
+    }).timeout(const Duration(seconds: 10));
+  }
+
+  // ── Bible loaders ─────────────────────────────────────────
+  //
+  // User side: there's no single index of "bible sessions a user has
+  // attended" — registrations live in a subcollection and the rules
+  // don't permit a collection-group query for a user reading across
+  // all sessions. The wallet_transactions ledger, however, has a
+  // type='bible_session' row per successful payment with the
+  // sessionId, and the rules already allow a user to read their own
+  // wallet_transactions. We use that as the authoritative index of
+  // "bible sessions this user paid for" and hydrate each one in
+  // parallel.
+  Future<List<BibleSessionEntry>> getUserBibleSessions(
+    String userId,
+  ) async {
+    final db = FirebaseFirestore.instance;
+    final ledgerSnap = await db
+        .collection('wallet_transactions')
+        .where('userId', isEqualTo: userId)
+        .where('type', isEqualTo: 'bible_session')
+        .get()
+        .timeout(const Duration(seconds: 15));
+
+    if (ledgerSnap.docs.isEmpty) return const [];
+
+    // De-dupe — a retry against the same paymentId is server-side
+    // idempotent (verifyBibleSessionPayment short-circuits) but a
+    // pathological dataset with two ledger rows for one session
+    // would otherwise show the entry twice. LinkedHashSet preserves
+    // insertion order so the first-paid bible session stays first
+    // when sortAt timestamps tie.
+    final sessionIds = <String>{};
+    for (final doc in ledgerSnap.docs) {
+      final id = doc.data()['sessionId'] as String?;
+      if (id != null && id.isNotEmpty) sessionIds.add(id);
+    }
+    if (sessionIds.isEmpty) return const [];
+
+    // Fan-out: hydrate each bible session + the user's own
+    // registration subdoc in parallel. A failed read on either
+    // side becomes null and the entry is dropped — better than
+    // showing a half-loaded card.
+    final entries = await Future.wait(sessionIds.map((id) async {
+      try {
+        final results = await Future.wait([
+          db
+              .doc('bible_sessions/$id')
+              .get()
+              .timeout(const Duration(seconds: 8)),
+          db
+              .doc('bible_sessions/$id/registrations/$userId')
+              .get()
+              .timeout(const Duration(seconds: 8)),
+        ]);
+        final sessionDoc = results[0];
+        final regDoc = results[1];
+        if (!sessionDoc.exists) return null;
+        return BibleSessionEntry(
+          session: BibleSessionModel.fromFirestore(
+            sessionDoc.id,
+            sessionDoc.data() ?? const <String, dynamic>{},
+          ),
+          registration: regDoc.exists
+              ? BibleRegistration.fromFirestore(
+                  regDoc.id,
+                  regDoc.data() ?? const <String, dynamic>{},
+                )
+              : null,
+        );
+      } catch (_) {
+        return null;
+      }
+    }));
+
+    // Only completed sessions belong in history. A user that paid
+    // but the session is still upcoming / live / cancelled hasn't
+    // produced "history" yet — those surfaces live on the bible
+    // tab + detail page where the user can still take action.
+    // Completed = the session actually happened (priest tapped
+    // Mark Completed, OR the auto-complete cron flipped it after
+    // duration + 15 min). A bible_session.cancelled doc is a
+    // refund/cancellation event, not history.
+    return entries
+        .whereType<BibleSessionEntry>()
+        .where((e) =>
+            e.session.isCompleted && e.registration?.isPaid == true)
+        .toList();
+  }
+
+  // Priest side: a single equality query against bible_sessions
+  // returns every session this priest has ever hosted. We filter
+  // to status='completed' BEFORE the per-session paid-count read,
+  // so we don't waste round-trips on upcoming/live/cancelled
+  // sessions that never belong in history.
+  //
+  // Per-session paid count + revenue are computed inline so the
+  // summary card doesn't need a separate aggregation pass.
+  Future<List<BibleSessionEntry>> getPriestBibleSessions(
+    String priestId,
+  ) async {
+    final db = FirebaseFirestore.instance;
+    final snap = await db
+        .collection('bible_sessions')
+        .where('priestId', isEqualTo: priestId)
+        .where('status', isEqualTo: 'completed')
+        .get()
+        .timeout(const Duration(seconds: 15));
+
+    if (snap.docs.isEmpty) return const [];
+
+    final sessions = snap.docs
+        .map((d) => BibleSessionModel.fromFirestore(d.id, d.data()))
+        .toList();
+
+    // Parallel paid-count reads.
+    final paidCounts = await Future.wait(sessions.map((s) async {
+      try {
+        final regs = await db
+            .collection('bible_sessions/${s.id}/registrations')
+            .where('status', isEqualTo: 'paid')
+            .get()
+            .timeout(const Duration(seconds: 8));
+        return regs.size;
+      } catch (_) {
+        return 0;
+      }
+    }));
+
+    final entries = <BibleSessionEntry>[];
+    for (var i = 0; i < sessions.length; i++) {
+      entries.add(BibleSessionEntry(
+        session: sessions[i],
+        priestRevenueInr: paidCounts[i] * sessions[i].price,
+      ));
+    }
+    return entries;
+  }
+
   // All sessions where the signed-in user was the listener side.
   // Newest first.
   Future<List<SessionModel>> getUserSessions(String userId) async {

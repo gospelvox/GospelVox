@@ -5,30 +5,39 @@ import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
 
-// Server-side fanout for "the priest cancelled this Bible session"
-// pushes. The priest's client is responsible for two things during
-// a cancel:
-//   (a) flipping bible_sessions/{id}.status to "cancelled" and
-//   (b) writing the per-user notification docs to /notifications.
+// Server-side fanout for "the priest cancelled this Bible session".
+// The priest's client is responsible for ONE thing during a cancel —
+// flipping bible_sessions/{id}.status to "cancelled" — and then it
+// invokes this CF, which owns both fanout halves:
 //
-// Both are direct Firestore writes from the priest's client because
-// V1 trades server-side rigour for shipping speed (W6 will move the
-// whole flow into a single CF). The OS-level push fanout, however,
-// genuinely needs a CF: sendPushNotification reads users/{uid}.fcmTokens,
-// which clients can't fan-read across other users.
+//   1. In-app inbox: a /notifications doc per active registrant.
+//      Firestore rules deny client-side `notifications.create`
+//      (correctly — clients shouldn't be able to write notifications
+//      addressed to other users), so this MUST be done with the
+//      Admin SDK or the inbox stays empty. V1 was shipping with the
+//      inbox empty because the priest's client was attempting these
+//      writes and silently failing.
 //
-// Defences in this CF:
-//   1. Caller must be authenticated.
-//   2. Caller must be the priest who owns the session — a stranger
-//      cannot trigger pushes for someone else's session.
-//   3. Session must already be in the "cancelled" state. Without
-//      this gate, a priest could spam the cancel-pushes any time
-//      they want by repeatedly calling this CF.
+//   2. OS-level pushes: sendPushNotification reads users/{uid}.fcmTokens
+//      which clients can't fan-read across other users either.
 //
-// Notification doc writes are NOT done here (the client did them).
-// We only emit the OS pushes. Errors from individual sends are
-// swallowed inside sendPushNotification, so a single bad token
-// can't sink the whole fanout.
+// Defences:
+//   • Caller must be authenticated.
+//   • Caller must be the priest who owns the session.
+//   • Session must already be in "cancelled" state (so a malicious
+//     priest can't spam the fanout by hammering this endpoint).
+//
+// Fanout shape: chunked into FANOUT_CHUNK_SIZE-sized rounds. Each
+// round commits one Firestore batch (well under the 500-op limit)
+// and runs its pushes in parallel. Rounds are sequential so that a
+// 5,000-attendee session doesn't open 5,000 concurrent FCM sockets
+// or blow the function's memory budget.
+
+// 200 keeps batches well below the 500-op Firestore limit and caps
+// concurrent FCM calls to a level that works in the default 256MiB
+// memory tier without thrashing.
+const FANOUT_CHUNK_SIZE = 200;
+
 export const notifyBibleSessionCancellation = onCall(
   {region: REGION},
   async (request) => {
@@ -74,30 +83,64 @@ export const notifyBibleSessionCancellation = onCall(
     );
 
     const priestName = String(session.priestName ?? "The speaker");
-    const title = String(session.title ?? "Bible Session");
+    const sessionTitle = String(session.title ?? "Bible Session");
     const body =
-      `${priestName} has cancelled "${title}". ` +
+      `${priestName} has cancelled "${sessionTitle}". ` +
       "Check out other upcoming sessions!";
 
-    // Fan out in parallel — sendPushNotification is internally
-    // best-effort (logs and swallows errors per user), so a slow
-    // or stale token on one user doesn't block the rest.
     let attempted = 0;
-    await Promise.all(
-      activeRegs.map(async (doc) => {
-        attempted++;
-        await sendPushNotification({
-          userId: doc.id,
+
+    // Each round:
+    //   (a) commits one batch of /notifications docs (in-app inbox
+    //       — the source of truth; survives even if pushes fail)
+    //   (b) fans out OS-level pushes in parallel for the same chunk
+    // Rounds are awaited sequentially so concurrency is bounded by
+    // FANOUT_CHUNK_SIZE rather than total registrant count.
+    for (let i = 0; i < activeRegs.length; i += FANOUT_CHUNK_SIZE) {
+      const chunk = activeRegs.slice(i, i + FANOUT_CHUNK_SIZE);
+
+      const batch = db.batch();
+      for (const reg of chunk) {
+        const notifRef = db.collection("notifications").doc();
+        batch.set(notifRef, {
+          userId: reg.id,
+          type: "bible_session_cancelled",
           title: "Session cancelled",
           body,
-          data: {
-            type: "bible_session_cancelled",
-            sessionId,
-            route: `/bible/detail/${sessionId}`,
-          },
+          data: {sessionId},
+          isRead: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
         });
-      }),
-    );
+      }
+      try {
+        await batch.commit();
+      } catch (err) {
+        // Best-effort once we're mid-fanout: the priest's cancel
+        // call returns success either way, and the OS pushes below
+        // still fire so users at least see the cancellation banner.
+        console.error(
+          "[notifyBibleSessionCancellation] notif batch failed for " +
+            `${sessionId} (chunk start=${i}):`,
+          err,
+        );
+      }
+
+      await Promise.all(
+        chunk.map(async (doc) => {
+          attempted++;
+          await sendPushNotification({
+            userId: doc.id,
+            title: "Session cancelled",
+            body,
+            data: {
+              type: "bible_session_cancelled",
+              sessionId,
+              route: `/bible/detail/${sessionId}`,
+            },
+          });
+        }),
+      );
+    }
 
     return {attempted};
   },

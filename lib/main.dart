@@ -16,6 +16,7 @@ import 'package:gospel_vox/core/services/priest_incoming_request_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/theme/app_theme.dart';
 import 'package:gospel_vox/core/utils/bloc_observer.dart';
+import 'package:gospel_vox/core/widgets/bible_session_live_overlay.dart';
 import 'package:gospel_vox/core/widgets/missed_request_foreground_banner.dart';
 import 'package:gospel_vox/core/widgets/offline_banner.dart';
 import 'package:gospel_vox/firebase_options.dart';
@@ -122,18 +123,27 @@ class GospelVoxApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.lightTheme,
       routerConfig: appRouter,
-      // Wrap every screen with two persistent overlays — order
-      // matters for layering, both float above the active route
+      // Wrap every screen with three persistent overlays — order
+      // matters for layering, all float above the active route
       // without pushing it down:
       //   • OfflineBanner — informational pill when connectivity
-      //     drops. Inner so it sits closer to the page content.
+      //     drops. Innermost so it sits closest to the page content.
       //   • MissedRequestForegroundBanner — slide-down pill when an
       //     FCM missed_request lands while the app is foregrounded.
-      //     Outer so a missed-request banner always wins z-order
-      //     over the offline banner if both fire simultaneously.
+      //     Middle so it beats the offline banner but yields to a
+      //     bible-live overlay if both fire simultaneously.
+      //   • BibleSessionLiveOverlay — full-screen call-like UI when
+      //     an FCM bible_session_live lands while foregrounded.
+      //     Outermost because a session-starting-now moment is more
+      //     urgent than either of the other two and must own the
+      //     whole screen until the user joins or dismisses.
       builder: (context, child) {
-        return MissedRequestForegroundBanner(
-          child: OfflineBanner(child: child ?? const SizedBox.shrink()),
+        return BibleSessionLiveOverlay(
+          child: MissedRequestForegroundBanner(
+            child: OfflineBanner(
+              child: child ?? const SizedBox.shrink(),
+            ),
+          ),
         );
       },
     );

@@ -1,10 +1,13 @@
-// Priest-side list of their own Bible sessions with a "+" button to
-// create new ones. Owns its own load lifecycle (no cubit) — the data
-// shape is different from the user-side BibleSessionCubit (priest-
-// scoped query) and the cubit's tab machine isn't useful here, so
-// the duplication earns simpler code.
+// Priest-side list of their own Bible sessions, grouped into LIVE /
+// UPCOMING / PAST sections, plus the create-session flow that opens
+// a form sheet and then a review sheet before actually publishing.
+//
+// Owns its own load lifecycle (no cubit) — the data shape is priest-
+// scoped and different from the user-side BibleSessionCubit, so the
+// small duplication earns simpler code.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -14,9 +17,18 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+
+// Forest green for "completed" status pills — AppColors has no
+// proper "success-green" token, so we use the same value the rest
+// of the priest UI does (matches AppSnackBar's success colour).
+const Color _kCompletedGreen = Color(0xFF2E7D4F);
+// Live red — distinct from errorRed so a pulsing live badge reads as
+// urgency-of-attention rather than failure.
+const Color _kLiveRed = Color(0xFFE53E3E);
 
 class PriestBibleSessionsPage extends StatefulWidget {
   const PriestBibleSessionsPage({super.key});
@@ -28,12 +40,16 @@ class PriestBibleSessionsPage extends StatefulWidget {
 
 class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
   final BibleSessionRepository _repository = BibleSessionRepository();
-  List<BibleSessionModel> _sessions = [];
+
+  List<BibleSessionModel> _live = const [];
+  List<BibleSessionModel> _upcoming = const [];
+  List<BibleSessionModel> _past = const [];
+
   bool _isLoading = true;
-  // Read once on load so the "+" tap can gate before the priest
-  // fills out a long form. Stays as a bool (not a stream) because
-  // activation flips at most once during a session and a stale
-  // negative re-prompts harmlessly — the paywall is idempotent.
+  // Read once on load so the "+" tap can gate before the priest fills
+  // out a long form. Stays as a bool (not a stream) because activation
+  // flips at most once during a session and a stale negative re-prompts
+  // harmlessly — the paywall is idempotent.
   bool _isActivated = false;
   String? _error;
 
@@ -57,9 +73,9 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
     try {
       // Two parallel reads: the session list AND the priest's own
       // doc for the activation flag. We swallow priest-doc errors —
-      // if the read fails, default to !activated and let the
-      // paywall sheet surface the right message instead of letting
-      // the form open and fail at submit.
+      // if the read fails, default to !activated and let the paywall
+      // sheet surface the right message instead of letting the form
+      // open and fail at submit.
       final results = await Future.wait([
         _repository.getPriestSessions(uid),
         FirebaseFirestore.instance
@@ -71,8 +87,46 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
       final list = results[0] as List<BibleSessionModel>;
       final priestDoc =
           results[1] as DocumentSnapshot<Map<String, dynamic>>;
+
+      // Bucket the priest's sessions into three groups. Splitting in
+      // the load step keeps the build path cheap — no per-frame
+      // filtering or sorting.
+      final live = <BibleSessionModel>[];
+      final upcoming = <BibleSessionModel>[];
+      final past = <BibleSessionModel>[];
+      for (final s in list) {
+        if (s.isLive) {
+          live.add(s);
+        } else if (s.isUpcoming) {
+          upcoming.add(s);
+        } else {
+          past.add(s);
+        }
+      }
+      // Upcoming: soonest first (ascending scheduledAt) so the next
+      // event is at the top.
+      upcoming.sort((a, b) {
+        final aT = a.scheduledAt ?? DateTime(2099);
+        final bT = b.scheduledAt ?? DateTime(2099);
+        return aT.compareTo(bT);
+      });
+      // Past: most recent first.
+      past.sort((a, b) {
+        final aT = a.completedAt ??
+            a.cancelledAt ??
+            a.scheduledAt ??
+            DateTime(2000);
+        final bT = b.completedAt ??
+            b.cancelledAt ??
+            b.scheduledAt ??
+            DateTime(2000);
+        return bT.compareTo(aT);
+      });
+
       setState(() {
-        _sessions = list;
+        _live = live;
+        _upcoming = upcoming;
+        _past = past;
         _isActivated =
             (priestDoc.data()?['isActivated'] as bool?) ?? false;
         _isLoading = false;
@@ -107,6 +161,9 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
     if (created == true) await _load();
   }
 
+  bool get _hasAny =>
+      _live.isNotEmpty || _upcoming.isNotEmpty || _past.isNotEmpty;
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -120,7 +177,7 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
         title: Text(
           "Bible Sessions",
           style: GoogleFonts.inter(
-            fontSize: 16,
+            fontSize: 18,
             fontWeight: FontWeight.w700,
             color: AppColors.deepDarkBrown,
           ),
@@ -128,7 +185,7 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
         actions: [
           Padding(
             padding: const EdgeInsets.only(right: 16),
-            child: _AddButton(onTap: _showCreateSheet),
+            child: _CreatePillButton(onTap: _showCreateSheet),
           ),
         ],
       ),
@@ -144,7 +201,7 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
   Widget _buildBody() {
     if (_isLoading) return _buildLoading();
     if (_error != null) return _buildError(_error!);
-    if (_sessions.isEmpty) return _buildEmpty();
+    if (!_hasAny) return _buildEmpty();
     return _buildList();
   }
 
@@ -163,10 +220,10 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
           baseColor: base,
           highlightColor: highlight,
           child: Container(
-            height: 180,
+            height: 130,
             decoration: BoxDecoration(
               color: Colors.white,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(14),
             ),
           ),
         ),
@@ -229,7 +286,7 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
                 ),
                 const SizedBox(height: 6),
                 Text(
-                  "Tap + to schedule your first Bible session.\n"
+                  "Tap + Create to schedule your first Bible session.\n"
                   "Users will see it on their Bible tab.",
                   textAlign: TextAlign.center,
                   style: GoogleFonts.inter(
@@ -248,39 +305,85 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
   }
 
   Widget _buildList() {
-    return ListView.builder(
-      physics: const AlwaysScrollableScrollPhysics(
-        parent: BouncingScrollPhysics(),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 12, 20, 100),
-      itemCount: _sessions.length,
-      itemBuilder: (_, i) {
-        final session = _sessions[i];
-        return _PriestSessionCard(
-          session: session,
+    final children = <Widget>[];
+
+    void appendSection(String label, List<BibleSessionModel> items,
+        {bool live = false}) {
+      if (items.isEmpty) return;
+      children.add(_SectionHeader(label: label, live: live));
+      for (final s in items) {
+        children.add(_PriestSessionCard(
+          session: s,
           onTap: () async {
             final changed =
-                await context.push<bool>('/priest/bible/${session.id}');
+                await context.push<bool>('/priest/bible/${s.id}');
             if (!mounted) return;
             if (changed == true) await _load();
           },
-        );
-      },
+        ));
+      }
+      children.add(const SizedBox(height: 18));
+    }
+
+    appendSection("LIVE NOW", _live, live: true);
+    appendSection("UPCOMING", _upcoming);
+    appendSection("PAST", _past);
+
+    return ListView(
+      physics: const AlwaysScrollableScrollPhysics(
+        parent: BouncingScrollPhysics(),
+      ),
+      padding: const EdgeInsets.fromLTRB(20, 8, 20, 100),
+      children: children,
     );
   }
 }
 
-// ─── "+" button ─────────────────────────────────────────────────
+// ─── Section header ────────────────────────────────────────────
 
-class _AddButton extends StatefulWidget {
-  final VoidCallback onTap;
-  const _AddButton({required this.onTap});
+class _SectionHeader extends StatelessWidget {
+  final String label;
+  final bool live;
+  const _SectionHeader({required this.label, this.live = false});
 
   @override
-  State<_AddButton> createState() => _AddButtonState();
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(2, 8, 2, 10),
+      child: Row(
+        children: [
+          if (live) ...[
+            const PulsingDot(size: 8, color: _kLiveRed),
+            const SizedBox(width: 8),
+          ],
+          Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: live
+                  ? _kLiveRed
+                  : AppColors.muted.withValues(alpha: 0.9),
+              letterSpacing: 0.8,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _AddButtonState extends State<_AddButton> {
+// ─── "+ Create" pill button ────────────────────────────────────
+
+class _CreatePillButton extends StatefulWidget {
+  final VoidCallback onTap;
+  const _CreatePillButton({required this.onTap});
+
+  @override
+  State<_CreatePillButton> createState() => _CreatePillButtonState();
+}
+
+class _CreatePillButtonState extends State<_CreatePillButton> {
   double _scale = 1.0;
 
   @override
@@ -295,13 +398,34 @@ class _AddButtonState extends State<_AddButton> {
         scale: _scale,
         duration: const Duration(milliseconds: 100),
         child: Container(
-          width: 36,
-          height: 36,
-          decoration: const BoxDecoration(
-            shape: BoxShape.circle,
-            color: AppColors.primaryBrown,
+          padding:
+              const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+          decoration: BoxDecoration(
+            color: AppColors.amberGold,
+            borderRadius: BorderRadius.circular(22),
+            boxShadow: [
+              BoxShadow(
+                color: AppColors.amberGold.withValues(alpha: 0.35),
+                blurRadius: 12,
+                offset: const Offset(0, 4),
+              ),
+            ],
           ),
-          child: const Icon(Icons.add, size: 20, color: Colors.white),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(Icons.add_rounded, size: 16, color: Colors.white),
+              const SizedBox(width: 4),
+              Text(
+                "Create",
+                style: GoogleFonts.inter(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
+            ],
+          ),
         ),
       ),
     );
@@ -325,23 +449,10 @@ class _PriestSessionCard extends StatefulWidget {
 
 class _PriestSessionCardState extends State<_PriestSessionCard> {
   double _scale = 1.0;
-  static const Color _kUpcomingGreen = Color(0xFF059669);
 
   @override
   Widget build(BuildContext context) {
     final session = widget.session;
-    final statusText = session.isUpcoming
-        ? session.startsInText
-        : session.isCancelled
-            ? 'Cancelled'
-            : 'Completed';
-    final statusColor = session.isUpcoming
-        ? _kUpcomingGreen
-        : session.isCancelled
-            ? AppColors.errorRed
-            : AppColors.muted;
-
-    final warning = session.linkWarning;
 
     return GestureDetector(
       onTapDown: (_) => setState(() => _scale = 0.98),
@@ -352,13 +463,16 @@ class _PriestSessionCardState extends State<_PriestSessionCard> {
         scale: _scale,
         duration: const Duration(milliseconds: 100),
         child: Container(
-          margin: const EdgeInsets.only(bottom: 12),
-          padding: const EdgeInsets.all(16),
+          margin: const EdgeInsets.only(bottom: 10),
+          padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
-            borderRadius: BorderRadius.circular(16),
+            borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.06),
+              color: session.isLive
+                  ? _kLiveRed.withValues(alpha: 0.35)
+                  : AppColors.muted.withValues(alpha: 0.06),
+              width: session.isLive ? 1.4 : 1.0,
             ),
             boxShadow: [
               BoxShadow(
@@ -368,126 +482,48 @@ class _PriestSessionCardState extends State<_PriestSessionCard> {
               ),
             ],
           ),
-          child: Column(
+          child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              if (warning != null) ...[
-                Container(
-                  width: double.infinity,
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color:
-                        AppColors.amberGold.withValues(alpha: 0.12),
-                    borderRadius: BorderRadius.circular(8),
-                    border: Border.all(
-                      color: AppColors.amberGold.withValues(alpha: 0.3),
-                    ),
-                  ),
-                  child: Row(
-                    children: [
-                      Icon(
-                        Icons.warning_amber_rounded,
-                        size: 14,
-                        color: AppColors.amberGold,
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: Text(
-                          warning,
-                          style: GoogleFonts.inter(
-                            fontSize: 11,
-                            fontWeight: FontWeight.w600,
-                            color: AppColors.amberGold
-                                .withValues(alpha: 0.9),
-                          ),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-                const SizedBox(height: 12),
-              ],
-              Text(
-                session.title,
-                maxLines: 2,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.deepDarkBrown,
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(
-                session.category.isNotEmpty
-                    ? "${session.category} · ${session.description}"
-                    : session.description,
-                maxLines: 1,
-                overflow: TextOverflow.ellipsis,
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted,
-                ),
-              ),
-              const SizedBox(height: 12),
-              Wrap(
-                spacing: 14,
-                runSpacing: 6,
-                children: [
-                  _meta(
-                    Icons.calendar_today_outlined,
-                    session.formattedDate,
-                  ),
-                  _meta(
-                    Icons.access_time_rounded,
-                    session.formattedTime,
-                  ),
-                  _meta(
-                    Icons.people_outline_rounded,
-                    "${session.registrationCount} registered",
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                children: [
-                  Flexible(
-                    child: Container(
-                      padding: const EdgeInsets.symmetric(
-                        horizontal: 8,
-                        vertical: 3,
-                      ),
-                      decoration: BoxDecoration(
-                        color: statusColor.withValues(alpha: 0.08),
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(
-                        statusText,
-                        overflow: TextOverflow.ellipsis,
-                        style: GoogleFonts.inter(
-                          fontSize: 11,
-                          fontWeight: FontWeight.w600,
-                          color: statusColor,
-                        ),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      session.title,
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.deepDarkBrown,
                       ),
                     ),
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    "₹${session.price}",
-                    style: GoogleFonts.inter(
-                      fontSize: 14,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.deepDarkBrown,
+                    const SizedBox(height: 4),
+                    Text(
+                      _metaLine(session),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.muted,
+                      ),
                     ),
-                  ),
-                ],
+                    const SizedBox(height: 3),
+                    Text(
+                      "${session.registrationCount} registered · ₹${session.price}",
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ],
+                ),
               ),
+              const SizedBox(width: 10),
+              _StatusPill(session: session),
             ],
           ),
         ),
@@ -495,21 +531,106 @@ class _PriestSessionCardState extends State<_PriestSessionCard> {
     );
   }
 
-  Widget _meta(IconData icon, String text) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Icon(icon, size: 13, color: AppColors.muted.withValues(alpha: 0.5)),
-        const SizedBox(width: 5),
-        Text(
-          text,
+  String _metaLine(BibleSessionModel s) {
+    final parts = <String>[];
+    if (s.category.isNotEmpty) parts.add(s.category);
+    if (s.scheduledAt != null) {
+      parts.add(_formatShortDate(s.scheduledAt!));
+      parts.add(s.formattedTime);
+    }
+    return parts.join(' · ');
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final BibleSessionModel session;
+  const _StatusPill({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    if (session.isLive) {
+      return _Pill(
+        bg: _kLiveRed.withValues(alpha: 0.12),
+        fg: _kLiveRed,
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const PulsingDot(size: 6, color: _kLiveRed),
+            const SizedBox(width: 5),
+            Text(
+              "LIVE",
+              style: GoogleFonts.inter(
+                fontSize: 10,
+                fontWeight: FontWeight.w700,
+                color: _kLiveRed,
+                letterSpacing: 0.6,
+              ),
+            ),
+          ],
+        ),
+      );
+    }
+    if (session.isUpcoming) {
+      return _Pill(
+        bg: AppColors.amberGold.withValues(alpha: 0.14),
+        fg: AppColors.amberGold,
+        child: Text(
+          "Upcoming",
           style: GoogleFonts.inter(
-            fontSize: 12,
-            fontWeight: FontWeight.w400,
-            color: AppColors.muted,
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppColors.amberGold,
           ),
         ),
-      ],
+      );
+    }
+    if (session.isCompleted) {
+      return _Pill(
+        bg: _kCompletedGreen.withValues(alpha: 0.1),
+        fg: _kCompletedGreen,
+        child: Text(
+          "Completed",
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: _kCompletedGreen,
+          ),
+        ),
+      );
+    }
+    // Cancelled
+    return _Pill(
+      bg: AppColors.muted.withValues(alpha: 0.12),
+      fg: AppColors.muted,
+      child: Text(
+        "Cancelled",
+        style: GoogleFonts.inter(
+          fontSize: 11,
+          fontWeight: FontWeight.w600,
+          color: AppColors.muted,
+        ),
+      ),
+    );
+  }
+}
+
+class _Pill extends StatelessWidget {
+  final Color bg;
+  // ignore: unused_element_parameter
+  final Color fg;
+  final Widget child;
+  const _Pill({required this.bg, required this.fg, required this.child});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding:
+          const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(7),
+      ),
+      child: child,
     );
   }
 }
@@ -544,9 +665,23 @@ class _CreateBibleSessionSheetState
     "Worship",
     "Testimony",
   ];
+  // Curated set rather than a free-form input — keeps every session
+  // in a predictable bucket (avoids 7-min curiosities) and lets the
+  // user-side card show a tidy "1 hour" instead of arbitrary numbers.
+  static const _durationOptions = [30, 45, 60, 90, 120];
+
+  // V2 pricing band. Tightened from the old ₹10–5,000 range to reduce
+  // priest variance and keep the bar high enough that users feel
+  // committed once they pay. Enforced both in the UI helper text and
+  // in the publish-button gate; the CF doesn't enforce a max so the
+  // UI is the only place holding this guardrail.
+  static const int _minPrice = 49;
+  static const int _maxPrice = 499;
+
   String? _category;
   DateTime? _date;
   TimeOfDay? _time;
+  int _durationMinutes = 60;
   bool _creating = false;
   String? _formError;
 
@@ -560,14 +695,137 @@ class _CreateBibleSessionSheetState
     super.dispose();
   }
 
+  // The single source of truth for "can we publish?". Used by the
+  // button's enabled state. The actual user-facing breakdown of what
+  // is missing lives in `_missingFields` so the two never drift.
   bool get _isValid {
     if (_titleCtrl.text.trim().length < 5) return false;
     if (_descCtrl.text.trim().length < 20) return false;
     if (_category == null) return false;
     if (_date == null || _time == null) return false;
     final price = int.tryParse(_priceCtrl.text.trim());
-    if (price == null || price < 10 || price > 5000) return false;
+    if (price == null || price < _minPrice || price > _maxPrice) {
+      return false;
+    }
     return true;
+  }
+
+  List<String> get _missingFields {
+    final issues = <String>[];
+
+    final titleLen = _titleCtrl.text.trim().length;
+    if (titleLen < 5) {
+      final need = 5 - titleLen;
+      issues.add(titleLen == 0
+          ? 'Title'
+          : 'Title — $need more character${need == 1 ? '' : 's'}');
+    }
+
+    final descLen = _descCtrl.text.trim().length;
+    if (descLen < 20) {
+      final need = 20 - descLen;
+      issues.add(descLen == 0
+          ? 'Description'
+          : 'Description — $need more character${need == 1 ? '' : 's'}');
+    }
+
+    if (_category == null) issues.add('Category');
+    if (_date == null) issues.add('Date');
+    if (_time == null) issues.add('Time');
+
+    final price = int.tryParse(_priceCtrl.text.trim());
+    if (price == null) {
+      issues.add('Price');
+    } else if (price < _minPrice || price > _maxPrice) {
+      issues.add('Price ₹$_minPrice–$_maxPrice');
+    }
+
+    return issues;
+  }
+
+  _HelperMood _moodFor({required int len, required int min}) {
+    if (len == 0) return _HelperMood.neutral;
+    if (len < min) return _HelperMood.error;
+    return _HelperMood.success;
+  }
+
+  String _titleHelperText() {
+    final len = _titleCtrl.text.trim().length;
+    if (len == 0) return 'Min 5 characters · max 100';
+    if (len < 5) {
+      final need = 5 - len;
+      return 'Need $need more character${need == 1 ? '' : 's'} · $len/100';
+    }
+    return 'Looks good · $len/100';
+  }
+
+  String _descHelperText() {
+    final len = _descCtrl.text.trim().length;
+    if (len == 0) return 'Min 20 characters · max 300';
+    if (len < 20) {
+      final need = 20 - len;
+      return 'Need $need more character${need == 1 ? '' : 's'} · $len/300';
+    }
+    return 'Looks good · $len/300';
+  }
+
+  ({String text, _HelperMood mood}) _priceHelper() {
+    final raw = _priceCtrl.text.trim();
+    if (raw.isEmpty) {
+      return (
+        text: 'Minimum ₹$_minPrice · Maximum ₹$_maxPrice',
+        mood: _HelperMood.neutral,
+      );
+    }
+    final p = int.tryParse(raw);
+    if (p == null) {
+      return (text: 'Enter a valid number', mood: _HelperMood.error);
+    }
+    if (p < _minPrice) {
+      return (text: 'At least ₹$_minPrice', mood: _HelperMood.error);
+    }
+    if (p > _maxPrice) {
+      return (text: 'Up to ₹$_maxPrice', mood: _HelperMood.error);
+    }
+    return (text: 'Looks good · ₹$p', mood: _HelperMood.success);
+  }
+
+  // Link is optional, so empty is neutral (not an error). We auto-
+  // prepend https:// on submit, which lets the priest paste either
+  // "meet.google.com/abc-defg-hij" or the full URL — the helper text
+  // here makes that behaviour discoverable rather than magic.
+  ({String text, _HelperMood mood}) _linkHelper() {
+    final raw = _linkCtrl.text.trim();
+    if (raw.isEmpty) {
+      return (
+        text: 'Optional · you can add this later from Manage Session',
+        mood: _HelperMood.neutral,
+      );
+    }
+    if (!raw.startsWith('https://') && !raw.startsWith('http://')) {
+      return (
+        text: "We'll add https:// for you on publish",
+        mood: _HelperMood.neutral,
+      );
+    }
+    final uri = Uri.tryParse(raw);
+    if (uri == null) {
+      return (text: 'This link looks invalid', mood: _HelperMood.error);
+    }
+    if (uri.scheme != 'https') {
+      return (text: 'Must start with https://', mood: _HelperMood.error);
+    }
+    return (text: 'Looks good', mood: _HelperMood.success);
+  }
+
+  String _normalizeLink(String raw) {
+    final trimmed = raw.trim();
+    if (trimmed.isEmpty) return '';
+    if (trimmed.startsWith('https://')) return trimmed;
+    if (trimmed.startsWith('http://')) {
+      return 'https://${trimmed.substring(7)}';
+    }
+    return 'https://$trimmed';
   }
 
   Future<void> _pickDate() async {
@@ -576,7 +834,7 @@ class _CreateBibleSessionSheetState
       context: context,
       initialDate: _date ?? now.add(const Duration(days: 7)),
       firstDate: now,
-      lastDate: now.add(const Duration(days: 365)),
+      lastDate: now.add(const Duration(days: 90)),
       builder: (context, child) => Theme(
         data: Theme.of(context).copyWith(
           colorScheme: ColorScheme.light(
@@ -613,12 +871,6 @@ class _CreateBibleSessionSheetState
     }
   }
 
-  String _formatTime(TimeOfDay t) {
-    final h = t.hour > 12 ? t.hour - 12 : (t.hour == 0 ? 12 : t.hour);
-    final period = t.hour >= 12 ? 'PM' : 'AM';
-    return '$h:${t.minute.toString().padLeft(2, '0')} $period';
-  }
-
   Future<void> _showLinkGuide() async {
     await showModalBottomSheet<void>(
       context: context,
@@ -628,13 +880,13 @@ class _CreateBibleSessionSheetState
     );
   }
 
-  Future<void> _create() async {
+  // The Review & Publish flow: validate locally, build a snapshot of
+  // everything the priest entered, open a modal review sheet, and
+  // only call createSession if the priest taps "Confirm & Publish".
+  // The review sheet returns true → publish; false (or backdrop) →
+  // keep this form open with state intact.
+  Future<void> _openReview() async {
     if (!_isValid || _creating) return;
-    final user = FirebaseAuth.instance.currentUser;
-    if (user == null) {
-      setState(() => _formError = "You're signed out.");
-      return;
-    }
 
     final scheduledAt = DateTime(
       _date!.year,
@@ -648,13 +900,60 @@ class _CreateBibleSessionSheetState
       return;
     }
 
-    final link = _linkCtrl.text.trim();
+    final link = _normalizeLink(_linkCtrl.text);
     if (link.isNotEmpty) {
       final uri = Uri.tryParse(link);
-      if (uri == null || !uri.hasScheme) {
-        setState(() => _formError = "Please paste a valid link.");
+      if (uri == null || uri.scheme != 'https' || uri.host.isEmpty) {
+        setState(() => _formError =
+            "That doesn't look like a valid meeting link.");
         return;
       }
+    }
+
+    setState(() => _formError = null);
+
+    final maxRaw = _maxCtrl.text.trim();
+    final maxAttendees = maxRaw.isEmpty ? 0 : (int.tryParse(maxRaw) ?? 0);
+    final price = int.parse(_priceCtrl.text.trim());
+
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      isDismissible: true,
+      builder: (_) => _ReviewSheet(
+        title: _titleCtrl.text.trim(),
+        description: _descCtrl.text.trim(),
+        category: _category!,
+        scheduledAt: scheduledAt,
+        durationMinutes: _durationMinutes,
+        price: price,
+        maxAttendees: maxAttendees,
+        meetingLink: link,
+      ),
+    );
+    if (!mounted) return;
+    if (confirmed != true) return;
+
+    await _create(
+      scheduledAt: scheduledAt,
+      link: link,
+      price: price,
+      maxAttendees: maxAttendees,
+    );
+  }
+
+  Future<void> _create({
+    required DateTime scheduledAt,
+    required String link,
+    required int price,
+    required int maxAttendees,
+  }) async {
+    if (_creating) return;
+    final user = FirebaseAuth.instance.currentUser;
+    if (user == null) {
+      setState(() => _formError = "You're signed out.");
+      return;
     }
 
     setState(() {
@@ -663,13 +962,11 @@ class _CreateBibleSessionSheetState
     });
 
     try {
-      // Pull priest profile for name + photo. Falling back to auth
-      // displayName if the priests/{uid} doc isn't fully populated
-      // (shouldn't happen post-approval, but the fallback keeps the
-      // form usable rather than silently failing).
       final priestDoc = await FirebaseFirestore.instance
           .doc('priests/${user.uid}')
-          .get();
+          .get()
+          .timeout(const Duration(seconds: 8));
+      if (!mounted) return;
       final priestData = priestDoc.data() ?? const {};
       final name = (priestData['fullName'] as String?) ??
           user.displayName ??
@@ -677,10 +974,6 @@ class _CreateBibleSessionSheetState
       final photo = (priestData['photoUrl'] as String?) ??
           user.photoURL ??
           '';
-
-      final price = int.parse(_priceCtrl.text.trim());
-      final maxRaw = _maxCtrl.text.trim();
-      final maxAttendees = maxRaw.isEmpty ? 0 : (int.tryParse(maxRaw) ?? 0);
 
       await _repository.createSession(
         priestId: user.uid,
@@ -690,7 +983,7 @@ class _CreateBibleSessionSheetState
         description: _descCtrl.text.trim(),
         category: _category!,
         scheduledAt: scheduledAt,
-        durationMinutes: 60,
+        durationMinutes: _durationMinutes,
         maxParticipants: maxAttendees,
         price: price,
         meetingLink: link,
@@ -702,6 +995,21 @@ class _CreateBibleSessionSheetState
         context,
         "Session published — users can register now.",
       );
+    } on FirebaseFunctionsException catch (e) {
+      // The CF now owns create — its HttpsError codes map cleanly
+      // to user-facing copy. `already-exists` is the overlap case
+      // (CF includes the conflicting session's title + time in the
+      // message, so we surface that verbatim). `permission-denied`
+      // covers not-approved / not-activated. `invalid-argument`
+      // covers shape failures the form should have prevented but
+      // a race / tampered client slipped through.
+      if (!mounted) return;
+      setState(() {
+        _creating = false;
+        _formError = e.message?.isNotEmpty == true
+            ? e.message
+            : "Couldn't create session. Please try again.";
+      });
     } on FirebaseException catch (e) {
       if (!mounted) return;
       setState(() {
@@ -771,6 +1079,10 @@ class _CreateBibleSessionSheetState
                 maxLength: 100,
                 onChanged: (_) => setState(() {}),
               ),
+              _FieldHelper(
+                text: _titleHelperText(),
+                mood: _moodFor(len: _titleCtrl.text.trim().length, min: 5),
+              ),
               const SizedBox(height: 16),
 
               // Description
@@ -783,6 +1095,10 @@ class _CreateBibleSessionSheetState
                 maxLines: 3,
                 maxLength: 300,
                 onChanged: (_) => setState(() {}),
+              ),
+              _FieldHelper(
+                text: _descHelperText(),
+                mood: _moodFor(len: _descCtrl.text.trim().length, min: 20),
               ),
               const SizedBox(height: 16),
 
@@ -813,9 +1129,8 @@ class _CreateBibleSessionSheetState
                         const SizedBox(height: 8),
                         _DateTimeField(
                           icon: Icons.calendar_today_outlined,
-                          value: _date != null
-                              ? "${_date!.month}/${_date!.day}/${_date!.year}"
-                              : null,
+                          value:
+                              _date != null ? _formatFullDate(_date!) : null,
                           hint: "Select date",
                           onTap: _pickDate,
                         ),
@@ -827,12 +1142,12 @@ class _CreateBibleSessionSheetState
                     child: Column(
                       crossAxisAlignment: CrossAxisAlignment.start,
                       children: [
-                        const _FormLabel("TIME", required: true),
+                        const _FormLabel("TIME (IST)", required: true),
                         const SizedBox(height: 8),
                         _DateTimeField(
                           icon: Icons.access_time_rounded,
                           value: _time != null
-                              ? _formatTime(_time!)
+                              ? '${_formatTime(_time!)} IST'
                               : null,
                           hint: "Select time",
                           onTap: _pickTime,
@@ -841,6 +1156,22 @@ class _CreateBibleSessionSheetState
                     ),
                   ),
                 ],
+              ),
+              const SizedBox(height: 16),
+
+              const _FormLabel("DURATION", required: true),
+              const SizedBox(height: 8),
+              Wrap(
+                spacing: 8,
+                runSpacing: 8,
+                children: _durationOptions
+                    .map((m) => _CategoryChip(
+                          label: _formatDurationLabel(m),
+                          selected: _durationMinutes == m,
+                          onTap: () =>
+                              setState(() => _durationMinutes = m),
+                        ))
+                    .toList(),
               ),
               const SizedBox(height: 16),
 
@@ -872,18 +1203,15 @@ class _CreateBibleSessionSheetState
               const SizedBox(height: 8),
               _FormField(
                 controller: _linkCtrl,
-                hint: "https://meet.google.com/...",
+                hint: "Paste from Google Meet (or type the URL)",
                 keyboardType: TextInputType.url,
                 onChanged: (_) => setState(() {}),
               ),
-              const SizedBox(height: 4),
-              Text(
-                "You can add or update this anytime before the session starts.",
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted.withValues(alpha: 0.6),
-                ),
+              Builder(
+                builder: (_) {
+                  final h = _linkHelper();
+                  return _FieldHelper(text: h.text, mood: h.mood);
+                },
               ),
               const SizedBox(height: 16),
 
@@ -892,7 +1220,7 @@ class _CreateBibleSessionSheetState
               const SizedBox(height: 8),
               _FormField(
                 controller: _priceCtrl,
-                hint: "e.g. 50",
+                hint: "e.g. 99",
                 keyboardType: TextInputType.number,
                 inputFormatters: [
                   FilteringTextInputFormatter.digitsOnly,
@@ -900,14 +1228,11 @@ class _CreateBibleSessionSheetState
                 prefixText: "₹ ",
                 onChanged: (_) => setState(() {}),
               ),
-              const SizedBox(height: 4),
-              Text(
-                "Min ₹10 · Max ₹5,000",
-                style: GoogleFonts.inter(
-                  fontSize: 11,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted.withValues(alpha: 0.6),
-                ),
+              Builder(
+                builder: (_) {
+                  final h = _priceHelper();
+                  return _FieldHelper(text: h.text, mood: h.mood);
+                },
               ),
               const SizedBox(height: 16),
 
@@ -926,9 +1251,9 @@ class _CreateBibleSessionSheetState
               const SizedBox(height: 16),
 
               const _InfoTip(
-                "Free to cancel within 24 hours of publishing. After "
-                "that, cancellations are reported to admin. Repeated "
-                "cancellations may affect your account.",
+                "Price, title, and description cannot be edited after "
+                "publishing. You'll be able to add or change the meeting "
+                "link any time before Start Meeting.",
               ),
 
               if (_formError != null) ...[
@@ -943,23 +1268,28 @@ class _CreateBibleSessionSheetState
                 ),
               ],
 
+              if (_missingFields.isNotEmpty && !_creating) ...[
+                const SizedBox(height: 20),
+                _AlmostThereCard(missing: _missingFields),
+              ],
+
               const SizedBox(height: 24),
 
               _PressableButton(
-                onTap: (_isValid && !_creating) ? _create : null,
+                onTap: (_isValid && !_creating) ? _openReview : null,
                 child: Container(
                   width: double.infinity,
                   height: 52,
                   decoration: BoxDecoration(
                     color: _isValid
-                        ? AppColors.primaryBrown
+                        ? AppColors.amberGold
                         : AppColors.muted.withValues(alpha: 0.2),
                     borderRadius: BorderRadius.circular(14),
                     boxShadow: _isValid
                         ? [
                             BoxShadow(
-                              color: AppColors.primaryBrown
-                                  .withValues(alpha: 0.2),
+                              color: AppColors.amberGold
+                                  .withValues(alpha: 0.35),
                               blurRadius: 16,
                               offset: const Offset(0, 6),
                             ),
@@ -979,7 +1309,7 @@ class _CreateBibleSessionSheetState
                             ),
                           )
                         : Text(
-                            "Publish Session",
+                            "Review & Publish",
                             style: GoogleFonts.inter(
                               fontSize: 15,
                               fontWeight: FontWeight.w700,
@@ -1002,7 +1332,396 @@ class _CreateBibleSessionSheetState
   }
 }
 
+// ════════════════════════════════════════════════════════════════
+// REVIEW & PUBLISH SHEET
+// ════════════════════════════════════════════════════════════════
+//
+// Stateless review of everything the priest just entered. Two
+// terminal actions: "Edit" (pops false → caller keeps the form open
+// untouched) or "Confirm & Publish" (pops true → caller calls the
+// CF). Deliberately keeps the same value-formatting as the cards so
+// the priest sees the session exactly as users will see it.
+
+class _ReviewSheet extends StatelessWidget {
+  final String title;
+  final String description;
+  final String category;
+  final DateTime scheduledAt;
+  final int durationMinutes;
+  final int price;
+  final int maxAttendees;
+  final String meetingLink;
+
+  const _ReviewSheet({
+    required this.title,
+    required this.description,
+    required this.category,
+    required this.scheduledAt,
+    required this.durationMinutes,
+    required this.price,
+    required this.maxAttendees,
+    required this.meetingLink,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      constraints: BoxConstraints(
+        maxHeight: MediaQuery.of(context).size.height * 0.92,
+      ),
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      child: SingleChildScrollView(
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Center(
+              child: Text(
+                "Review Your Session",
+                style: GoogleFonts.inter(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            Center(
+              child: Text(
+                "Make sure everything is correct.",
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w400,
+                  color: AppColors.muted,
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+
+            _ReviewRow(label: "Title", value: title),
+            _ReviewRow(label: "Category", value: category),
+            _ReviewRow(label: "Description", value: description),
+            _ReviewRow(
+              label: "Date & Time",
+              value:
+                  "${_formatFullDate(scheduledAt)} · ${_formatTimeFromDate(scheduledAt)} IST",
+            ),
+            _ReviewRow(
+              label: "Duration",
+              value: _formatDurationLabel(durationMinutes),
+            ),
+            _ReviewRow(label: "Price", value: "₹$price per person"),
+            _ReviewRow(
+              label: "Max Participants",
+              value: maxAttendees == 0 ? "Unlimited" : "$maxAttendees",
+            ),
+            _ReviewRow(
+              label: "Meeting Link",
+              value: meetingLink.isEmpty
+                  ? "Not added yet — add before Start Meeting"
+                  : meetingLink,
+              mutedIfEmpty: meetingLink.isEmpty,
+            ),
+
+            const SizedBox(height: 16),
+
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                color: AppColors.amberGold.withValues(alpha: 0.1),
+                borderRadius: BorderRadius.circular(10),
+                border: Border.all(
+                  color: AppColors.amberGold.withValues(alpha: 0.25),
+                ),
+              ),
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Icon(
+                    Icons.warning_amber_rounded,
+                    size: 14,
+                    color: AppColors.amberGold,
+                  ),
+                  const SizedBox(width: 8),
+                  Expanded(
+                    child: Text(
+                      "Price, title, and description cannot be changed "
+                      "after publishing.",
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.amberGold.withValues(alpha: 0.95),
+                        height: 1.4,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+
+            const SizedBox(height: 24),
+
+            Row(
+              children: [
+                Expanded(
+                  child: _PressableButton(
+                    onTap: () => Navigator.of(context).pop(false),
+                    child: Container(
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(12),
+                        border: Border.all(
+                          color: AppColors.muted.withValues(alpha: 0.4),
+                          width: 1.5,
+                        ),
+                      ),
+                      child: Center(
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.arrow_back_rounded,
+                              size: 16,
+                              color: AppColors.deepDarkBrown,
+                            ),
+                            const SizedBox(width: 6),
+                            Text(
+                              "Edit",
+                              style: GoogleFonts.inter(
+                                fontSize: 14,
+                                fontWeight: FontWeight.w600,
+                                color: AppColors.deepDarkBrown,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  flex: 2,
+                  child: _PressableButton(
+                    onTap: () => Navigator.of(context).pop(true),
+                    child: Container(
+                      height: 50,
+                      decoration: BoxDecoration(
+                        color: AppColors.primaryBrown,
+                        borderRadius: BorderRadius.circular(12),
+                        boxShadow: [
+                          BoxShadow(
+                            color: AppColors.primaryBrown
+                                .withValues(alpha: 0.25),
+                            blurRadius: 12,
+                            offset: const Offset(0, 4),
+                          ),
+                        ],
+                      ),
+                      child: Center(
+                        child: Text(
+                          "Confirm & Publish",
+                          style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w700,
+                            color: Colors.white,
+                          ),
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(
+              height: MediaQuery.of(context).padding.bottom + 12,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ReviewRow extends StatelessWidget {
+  final String label;
+  final String value;
+  // ignore: unused_element_parameter
+  final bool mutedIfEmpty;
+  const _ReviewRow({
+    required this.label,
+    required this.value,
+    this.mutedIfEmpty = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 14),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Text(
+            label.toUpperCase(),
+            style: GoogleFonts.inter(
+              fontSize: 11,
+              fontWeight: FontWeight.w600,
+              color: AppColors.muted,
+              letterSpacing: 0.8,
+            ),
+          ),
+          const SizedBox(height: 4),
+          Text(
+            value,
+            style: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w600,
+              color: mutedIfEmpty
+                  ? AppColors.muted
+                  : AppColors.deepDarkBrown,
+              height: 1.4,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
 // ─── Form primitives ────────────────────────────────────────────
+
+enum _HelperMood { neutral, error, success }
+
+class _AlmostThereCard extends StatelessWidget {
+  final List<String> missing;
+  const _AlmostThereCard({required this.missing});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 14),
+      decoration: BoxDecoration(
+        color: AppColors.amberGold.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.amberGold.withValues(alpha: 0.22),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Icon(
+                Icons.info_outline_rounded,
+                size: 14,
+                color: AppColors.amberGold,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                "Almost there — still needed",
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.amberGold,
+                  letterSpacing: 0.3,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            children: missing
+                .map(
+                  (issue) => Container(
+                    padding: const EdgeInsets.symmetric(
+                      horizontal: 10,
+                      vertical: 5,
+                    ),
+                    decoration: BoxDecoration(
+                      color: AppColors.amberGold.withValues(alpha: 0.14),
+                      borderRadius: BorderRadius.circular(7),
+                    ),
+                    child: Text(
+                      issue,
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.amberGold.withValues(alpha: 0.95),
+                      ),
+                    ),
+                  ),
+                )
+                .toList(),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FieldHelper extends StatelessWidget {
+  final String text;
+  final _HelperMood mood;
+  const _FieldHelper({required this.text, required this.mood});
+
+  static const _successGreen = Color(0xFF2E7D4F);
+
+  @override
+  Widget build(BuildContext context) {
+    final color = switch (mood) {
+      _HelperMood.neutral => AppColors.muted.withValues(alpha: 0.7),
+      _HelperMood.error => AppColors.errorRed,
+      _HelperMood.success => _successGreen,
+    };
+    final icon = switch (mood) {
+      _HelperMood.neutral => null,
+      _HelperMood.error => Icons.error_outline_rounded,
+      _HelperMood.success => Icons.check_circle_rounded,
+    };
+    return Padding(
+      padding: const EdgeInsets.only(top: 6, left: 2),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          if (icon != null) ...[
+            Icon(icon, size: 12, color: color),
+            const SizedBox(width: 5),
+          ],
+          Flexible(
+            child: Text(
+              text,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w500,
+                color: color,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
 
 class _FormLabel extends StatelessWidget {
   final String text;
@@ -1091,8 +1810,6 @@ class _FormField extends StatelessWidget {
         fillColor: AppColors.warmBeige.withValues(alpha: 0.5),
         contentPadding:
             const EdgeInsets.symmetric(horizontal: 14, vertical: 12),
-        // Hide the bottom-right counter — it's noise alongside our
-        // own helper text and adds vertical bulk.
         counterText: '',
         border: OutlineInputBorder(
           borderRadius: BorderRadius.circular(12),
@@ -1504,4 +2221,42 @@ class _GuideStep extends StatelessWidget {
       ],
     );
   }
+}
+
+// ─── Date / time / duration formatters ──────────────────────────
+
+const _kMonthNames = [
+  '',
+  'January', 'February', 'March', 'April', 'May', 'June',
+  'July', 'August', 'September', 'October', 'November', 'December',
+];
+
+String _formatFullDate(DateTime d) {
+  return '${_kMonthNames[d.month]} ${d.day}, ${d.year}';
+}
+
+String _formatShortDate(DateTime d) {
+  const short = [
+    '', 'Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun',
+    'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec',
+  ];
+  return '${short[d.month]} ${d.day}';
+}
+
+String _formatTime(TimeOfDay t) {
+  final h = t.hour > 12 ? t.hour - 12 : (t.hour == 0 ? 12 : t.hour);
+  final period = t.hour >= 12 ? 'PM' : 'AM';
+  return '$h:${t.minute.toString().padLeft(2, '0')} $period';
+}
+
+String _formatTimeFromDate(DateTime d) {
+  return _formatTime(TimeOfDay(hour: d.hour, minute: d.minute));
+}
+
+String _formatDurationLabel(int mins) {
+  if (mins < 60) return '$mins min';
+  final hours = mins ~/ 60;
+  final remaining = mins % 60;
+  if (remaining == 0) return hours == 1 ? '1 hour' : '$hours hours';
+  return '${hours}h ${remaining}m';
 }

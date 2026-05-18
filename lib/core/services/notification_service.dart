@@ -95,6 +95,35 @@ class MissedRequestForegroundEvent {
   });
 }
 
+// Foreground-only payload that drives the call-like Bible session
+// live overlay. Fires from _onForegroundMessage when a CF push of
+// type=bible_session_live arrives. The overlay (mounted at
+// MaterialApp.router.builder) listens to bibleSessionLiveEvent and
+// covers the whole screen with a Join/Decline UI, similar in
+// urgency to an incoming call.
+//
+// Photo URL is not currently included in the CF push payload — we
+// fall back to an initial-letter avatar on the overlay. Adding the
+// photo would require a CF deploy; the overlay is a 3-second
+// decision moment where the initial fallback reads cleanly enough.
+class BibleSessionLiveEvent {
+  final String id;
+  final String sessionId;
+  final String sessionTitle;
+  final String priestName;
+  final String priestPhotoUrl;
+  final int price;
+
+  const BibleSessionLiveEvent({
+    required this.id,
+    required this.sessionId,
+    required this.sessionTitle,
+    required this.priestName,
+    this.priestPhotoUrl = '',
+    required this.price,
+  });
+}
+
 class NotificationService {
   static final NotificationService _instance = NotificationService._();
   factory NotificationService() => _instance;
@@ -125,6 +154,18 @@ class NotificationService {
   // responsibility; the service only ever pushes new events.
   static final ValueNotifier<MissedRequestForegroundEvent?>
       foregroundMissedRequestEvent = ValueNotifier(null);
+
+  // Fires when an FCM message of type=bible_session_live arrives
+  // while the app is in foreground. The BibleSessionLiveOverlay
+  // (mounted at MaterialApp.router.builder, OUTER to the missed-
+  // request banner so it wins z-order) listens and renders a full-
+  // screen call-like UI with Join Meeting / Not Now buttons + a
+  // vibration loop. Same pattern as foregroundMissedRequestEvent —
+  // the overlay clears the notifier after the user acts (or after
+  // a 60-second auto-dismiss), and the service only ever pushes
+  // new events.
+  static final ValueNotifier<BibleSessionLiveEvent?>
+      bibleSessionLiveEvent = ValueNotifier(null);
 
   Future<void> init() async {
     if (_isInitialized) return;
@@ -439,6 +480,39 @@ class NotificationService {
       return;
     }
 
+    // Bible session went LIVE — fires a full-screen call-like
+    // overlay with Join Meeting / Not Now and a vibration loop.
+    // Same rationale as missed_request: a system heads-up doesn't
+    // reliably pop on OEM-themed Android while foregrounded, and a
+    // session-just-started moment is high-urgency for a registered
+    // user (they've been waiting). We deliberately suppress the
+    // local-notification fallback below in this case so we don't
+    // double up on the tray + overlay.
+    //
+    // Background / killed: the CF push still uses the default FCM
+    // channel and Android renders the system notification itself —
+    // tap routes to /bible/detail/{id} via _onNotificationTap.
+    if (type == 'bible_session_live') {
+      final data = message.data;
+      // Diagnostic — surfaces in `flutter run` / adb logcat so a
+      // priest-side test can confirm the foreground push actually
+      // reached this device. Useful for triaging "overlay didn't
+      // fire" reports where the FCM might not have arrived at all.
+      debugPrint(
+        '[NotifService] bible_session_live received: $data',
+      );
+      bibleSessionLiveEvent.value = BibleSessionLiveEvent(
+        id: message.messageId ??
+            DateTime.now().microsecondsSinceEpoch.toString(),
+        sessionId: (data['sessionId'] as String?) ?? '',
+        sessionTitle: (data['sessionTitle'] as String?) ?? 'Bible Session',
+        priestName: (data['priestName'] as String?) ?? 'Speaker',
+        priestPhotoUrl: (data['priestPhotoUrl'] as String?) ?? '',
+        price: int.tryParse((data['price'] as String?) ?? '') ?? 0,
+      );
+      return;
+    }
+
     final isSessionRequest = type == 'session_request';
     final channelId = isSessionRequest
         ? 'gospel_vox_sessions_v2'
@@ -477,10 +551,49 @@ class NotificationService {
     // start tap (getInitialMessage) since both share this handler.
     final type = message.data['type'] as String? ?? '';
     final dataRoute = message.data['route'] as String?;
-    final route = type == 'missed_request'
-        ? '/priest/missed-requests'
-        : dataRoute;
+    String? route;
+    if (type == 'missed_request') {
+      route = '/priest/missed-requests';
+    } else if (dataRoute != null && dataRoute.isNotEmpty) {
+      route = dataRoute;
+    } else if (type.startsWith('bible_session_')) {
+      // Defensive fallback for Bible pushes that arrive without an
+      // explicit route field (every CF in the bible/ folder DOES
+      // include one today — this branch catches a hypothetical
+      // future writer that doesn't, so the tap still lands on the
+      // right detail page). User-facing types route to the user
+      // detail page; priest-side life-cycle types to the priest
+      // manage page.
+      route = _fallbackBibleRouteForType(type, message.data);
+    }
     _handleNotificationTapFromPayload(route);
+  }
+
+  // Resolves a /bible/detail/{id} vs /priest/bible/{id} fallback for
+  // Bible CF pushes that omit an explicit `route`. Returns null when
+  // the sessionId is missing — better to no-op than to route to a
+  // detail page with an empty id and crash the route loader.
+  String? _fallbackBibleRouteForType(
+    String type,
+    Map<String, dynamic> data,
+  ) {
+    final sessionId = (data['sessionId'] as String?) ?? '';
+    if (sessionId.isEmpty) return null;
+    // Types that target the priest (writer / host of the session).
+    const priestSide = <String>{
+      'bible_session_payment_received',
+      'bible_session_link_reminder',
+      'bible_session_link_urgent',
+      'bible_session_golive',
+      'bible_session_starting_priest',
+      'bible_session_completed',
+      'bible_session_auto_completed',
+      'bible_session_first_registration',
+      'bible_session_full',
+    };
+    return priestSide.contains(type)
+        ? '/priest/bible/$sessionId'
+        : '/bible/detail/$sessionId';
   }
 
   void _handleNotificationTapFromPayload(String? route) {

@@ -28,7 +28,7 @@ const db = admin.firestore();
 //      price * 100. Server-side price is authoritative; the client's
 //      `amount` is advisory only.
 exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d;
+    var _a, _b, _c, _d, _e, _f, _g, _h;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -110,7 +110,24 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
     catch (e) {
         throw new https_1.HttpsError("internal", "Could not verify payment with Razorpay");
     }
-    if (paymentStatus !== "captured") {
+    // Razorpay merchant accounts on manual-capture mode return
+    // `authorized` after a successful payment — funds are held but
+    // not settled. Capture explicitly before crediting, otherwise
+    // the user has paid but we never see the money. The capture call
+    // is idempotent on Razorpay's side — a "already been captured"
+    // error is swallowed because it just means we won the race.
+    if (paymentStatus === "authorized") {
+        try {
+            await razorpay.payments.capture(paymentId, expectedPaise, "INR");
+        }
+        catch (captureErr) {
+            const description = (_e = (_d = captureErr === null || captureErr === void 0 ? void 0 : captureErr.error) === null || _d === void 0 ? void 0 : _d.description) !== null && _e !== void 0 ? _e : String(captureErr);
+            if (!description.includes("already been captured")) {
+                throw new https_1.HttpsError("internal", `Could not capture payment: ${description}`);
+            }
+        }
+    }
+    else if (paymentStatus !== "captured") {
         throw new https_1.HttpsError("failed-precondition", `Payment not captured (status=${paymentStatus})`);
     }
     if (paymentCurrency !== "INR") {
@@ -131,14 +148,38 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
         console.warn(`[verifyBibleSessionPayment] client-amount drift uid=${uid} ` +
             `session=${sessionId} client=${amount} server=${priceRupees}`);
     }
+    // ── 4b. Resolve commission split ────────────────────────────
+    // Same split semantics as payAndJoinBibleSession (the new flow).
+    // Read `app_config/settings.bibleCommissionPercent` (default 20).
+    // Math.floor on the priest side mirrors endSession.ts — any
+    // rounding loss lands with the platform.
+    let bibleCommissionPercent = 20;
+    try {
+        const configSnap = await db.doc("app_config/settings").get();
+        const raw = (_f = configSnap.data()) === null || _f === void 0 ? void 0 : _f.bibleCommissionPercent;
+        const parsed = Number(raw);
+        if (Number.isFinite(parsed) && parsed >= 0 && parsed <= 100) {
+            bibleCommissionPercent = parsed;
+        }
+    }
+    catch (err) {
+        console.error("[verifyBibleSessionPayment] commission config read failed; " +
+            "using default 20%:", err);
+    }
+    const priestEarning = Math.floor(priceRupees * (1 - bibleCommissionPercent / 100));
+    const platformCommission = priceRupees - priestEarning;
     // ── 5. Atomic credit ────────────────────────────────────────
     // The registration flip, the wallet_transactions ledger row
-    // (which the cross-session check above relies on), and the
-    // in-app notification all go in one batch. If any of them
-    // can't be written, none of them are — that's important
-    // because the ledger row is what blocks future replays of
-    // this paymentId.
-    const sessionTitle = String((_d = sessionData.title) !== null && _d !== void 0 ? _d : "Bible Session");
+    // (which the cross-session check above relies on), and BOTH
+    // in-app notifications (user + priest) all go in one batch.
+    // If any of them can't be written, none of them are — that's
+    // important because the ledger row is what blocks future
+    // replays of this paymentId, and keeping the priest notif in
+    // the same batch means the priest's inbox stays in sync with
+    // the user's even if a partial commit would otherwise diverge.
+    const sessionTitle = String((_g = sessionData.title) !== null && _g !== void 0 ? _g : "Bible Session");
+    const priestId = sessionData.priestId;
+    const userName = String((_h = regData.userName) !== null && _h !== void 0 ? _h : "Someone");
     const batch = db.batch();
     batch.update(regRef, {
         status: "paid",
@@ -146,6 +187,8 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
         paidAt: admin.firestore.FieldValue.serverTimestamp(),
         amountPaid: priceRupees,
     });
+    // Buyer-side ledger row. Drives the user's bible session
+    // history (session_history_repository.getUserBibleSessions).
     const txRef = db.collection("wallet_transactions").doc();
     batch.set(txRef, {
         userId: uid,
@@ -155,6 +198,45 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
         amountPaid: priceRupees,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    // Priest wallet credit + priest-side ledger row.
+    // Mirror of payAndJoinBibleSession — without this, the priest
+    // would never see bible revenue in their wallet under the
+    // legacy verify flow (still wired in the codebase even if not
+    // currently invoked from the client). `coins` is the field name
+    // the WalletTransaction model reads from.
+    if (priestId) {
+        const priestRef = db.doc(`priests/${priestId}`);
+        batch.update(priestRef, {
+            walletBalance: admin.firestore.FieldValue.increment(priestEarning),
+            totalEarnings: admin.firestore.FieldValue.increment(priestEarning),
+        });
+        const priestTxRef = db.collection("wallet_transactions").doc();
+        batch.set(priestTxRef, {
+            userId: priestId,
+            type: "bible_session_earning",
+            sessionId,
+            paymentId,
+            coins: priestEarning,
+            description: `Bible Session earning: ${sessionTitle}`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+    // Platform commission ledger row. `__platform__` is a rule-safe
+    // sentinel uid (Firebase auth uids never contain underscores)
+    // that lets the admin dashboard sum platform revenue via a
+    // single-field equality query.
+    if (platformCommission > 0) {
+        const platformTxRef = db.collection("wallet_transactions").doc();
+        batch.set(platformTxRef, {
+            userId: "__platform__",
+            type: "bible_session_commission",
+            sessionId,
+            paymentId,
+            coins: platformCommission,
+            description: `Commission from "${sessionTitle}"`,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
     const notifRef = db.collection("notifications").doc();
     batch.set(notifRef, {
         userId: uid,
@@ -162,15 +244,32 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
         title: "You're in!",
         body: `Payment confirmed for "${sessionTitle}". ` +
             "The meeting link is now available.",
+        sessionId,
         data: { sessionId },
         isRead: false,
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
+    // Priest-facing in-app notification. Only enqueued if the
+    // session doc actually carries a priestId — defensive against
+    // a malformed session row.
+    if (priestId) {
+        const priestNotifRef = db.collection("notifications").doc();
+        batch.set(priestNotifRef, {
+            userId: priestId,
+            type: "bible_session_payment_received",
+            title: "💰 Payment Received",
+            body: `${userName} paid ₹${priceRupees} for "${sessionTitle}"`,
+            sessionId,
+            data: { sessionId },
+            isRead: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
     await batch.commit();
-    // ── 6. Push (best-effort, post-commit) ──────────────────────
-    // The in-app inbox is now authoritative; the OS-level push is
-    // a nicety for backgrounded apps. Errors here are swallowed
-    // by sendPushNotification and don't roll back the credit.
+    // ── 6. Pushes (best-effort, post-commit) ────────────────────
+    // The in-app inbox is now authoritative; OS-level pushes are a
+    // nicety for backgrounded apps. Errors are swallowed by
+    // sendPushNotification and don't roll back the credit.
     await (0, sendPush_1.sendPushNotification)({
         userId: uid,
         title: "You're in!",
@@ -181,6 +280,18 @@ exports.verifyBibleSessionPayment = (0, https_1.onCall)({ region: constants_1.RE
             route: `/bible/detail/${sessionId}`,
         },
     });
+    if (priestId) {
+        await (0, sendPush_1.sendPushNotification)({
+            userId: priestId,
+            title: "💰 Payment Received",
+            body: `${userName} paid ₹${priceRupees} for "${sessionTitle}"`,
+            data: {
+                type: "bible_session_payment_received",
+                sessionId,
+                route: `/priest/bible/${sessionId}`,
+            },
+        });
+    }
     return { alreadyProcessed: false };
 });
 //# sourceMappingURL=verifyBibleSessionPayment.js.map

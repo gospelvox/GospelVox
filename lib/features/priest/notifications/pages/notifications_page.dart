@@ -10,6 +10,7 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
@@ -28,6 +29,7 @@ class NotificationsPage extends StatefulWidget {
 class _NotificationsPageState extends State<NotificationsPage> {
   bool _isLoading = true;
   bool _markingAll = false;
+  bool _clearingAll = false;
   List<NotificationModel> _notifications = const [];
 
   @override
@@ -59,8 +61,15 @@ class _NotificationsPageState extends State<NotificationsPage> {
 
       if (!mounted) return;
       setState(() {
+        // Filter out client-cleared docs. Firestore rules deny
+        // delete on /notifications, so the Clear All / per-card
+        // dismiss flows mark `dismissReason='cleared'` instead of
+        // hard-deleting. Hiding them client-side gives the user
+        // the same outcome (gone from view) without violating
+        // the rule contract.
         _notifications = snap.docs
             .map((d) => NotificationModel.fromFirestore(d.id, d.data()))
+            .where((n) => n.dismissReason == null)
             .toList();
         _isLoading = false;
       });
@@ -113,6 +122,38 @@ class _NotificationsPageState extends State<NotificationsPage> {
       case 'withdrawal_sent':
         if (mounted) context.push('/priest/wallet');
         return;
+      // Bible session lifecycle notifications addressed to the priest.
+      // Every type below has a sessionId — without one, fall through
+      // to the no-op default rather than navigating to a broken
+      // /priest/bible/ URL.
+      case 'bible_session_completed':
+      case 'bible_session_auto_completed':
+      case 'bible_session_payment_received':
+      case 'bible_session_full':
+      case 'bible_session_first_registration':
+      case 'bible_session_link_reminder':
+      case 'bible_session_link_urgent':
+      case 'bible_session_golive':
+      case 'bible_session_starting_priest':
+        final sessionId = notif.sessionId ?? '';
+        if (sessionId.isNotEmpty && mounted) {
+          context.push('/priest/bible/$sessionId');
+        }
+        return;
+      // Session lifecycle — landing on the priest's session-history
+      // matches the way these notifications are paired with past
+      // earnings on the dashboard.
+      case 'session_ended':
+        if (mounted) context.push('/priest/session-history');
+        return;
+      // priest_message addressed to a priest is unusual (the type is
+      // primarily a user-side inbox card), but if it ever reaches a
+      // priest's inbox we land on My Users so the priest can act
+      // from a familiar surface instead of a dead-end tap.
+      case 'priest_message':
+      case 'follow_up':
+        if (mounted) context.push('/priest/my-users');
+        return;
       default:
         return;
     }
@@ -154,9 +195,111 @@ class _NotificationsPageState extends State<NotificationsPage> {
     if (mounted) setState(() => _markingAll = false);
   }
 
+  // Firestore rules deny `delete` on /notifications, so "clear" means
+  // a 3-field update marking the doc as dismissed: isRead=true so it
+  // also drops out of the unread badge, dismissReason='cleared' so
+  // the load filter hides it, dismissedAt as an audit timestamp.
+  // Both this method and _dismissOne use the same shape so a future
+  // server-side reconciliation job can recognise either source.
+  Future<void> _clearAll() async {
+    if (_clearingAll) return;
+    if (_notifications.isEmpty) return;
+
+    final visible = List<NotificationModel>.from(_notifications);
+
+    setState(() {
+      _clearingAll = true;
+      _notifications = const [];
+    });
+
+    try {
+      final db = FirebaseFirestore.instance;
+      final batch = db.batch();
+      for (final n in visible) {
+        batch.update(db.doc('notifications/${n.id}'), {
+          'isRead': true,
+          'dismissReason': 'cleared',
+          'dismissedAt': FieldValue.serverTimestamp(),
+        });
+      }
+      await batch.commit().timeout(const Duration(seconds: 15));
+      if (!mounted) return;
+      AppSnackBar.success(context, 'All notifications cleared.');
+    } catch (_) {
+      // Roll back the optimistic clear so the user isn't lied to.
+      if (!mounted) return;
+      setState(() => _notifications = visible);
+      AppSnackBar.error(context, "Couldn't clear notifications. Try again.");
+    } finally {
+      if (mounted) setState(() => _clearingAll = false);
+    }
+  }
+
+  Future<void> _dismissOne(NotificationModel notif) async {
+    final index = _notifications.indexWhere((n) => n.id == notif.id);
+    if (index == -1) return;
+
+    setState(() {
+      _notifications = List.of(_notifications)..removeAt(index);
+    });
+
+    try {
+      await FirebaseFirestore.instance
+          .doc('notifications/${notif.id}')
+          .update({
+            'isRead': true,
+            'dismissReason': 'cleared',
+            'dismissedAt': FieldValue.serverTimestamp(),
+          })
+          .timeout(const Duration(seconds: 8));
+    } catch (_) {
+      // Roll back so the visible state stays honest.
+      if (!mounted) return;
+      setState(() {
+        _notifications = List.of(_notifications)..insert(index, notif);
+      });
+      AppSnackBar.error(context, "Couldn't dismiss. Try again.");
+    }
+  }
+
+  Future<void> _showClearAllSheet() async {
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _ConfirmActionSheet(
+        title: 'Clear all notifications?',
+        message:
+            'This will permanently clear every notification from your '
+            "inbox. You won't be able to undo this.",
+        confirmLabel: 'Clear All',
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await _clearAll();
+    }
+  }
+
+  Future<void> _showDismissSheet(NotificationModel notif) async {
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => _ConfirmActionSheet(
+        title: 'Dismiss this notification?',
+        message:
+            "It will be removed from your inbox. You won't be able to "
+            'undo this.',
+        confirmLabel: 'Dismiss',
+      ),
+    );
+    if (confirmed == true && mounted) {
+      await _dismissOne(notif);
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     final hasUnread = _notifications.any((n) => !n.isRead);
+    final hasAny = _notifications.isNotEmpty;
 
     return Scaffold(
       backgroundColor: AppColors.background,
@@ -207,21 +350,39 @@ class _NotificationsPageState extends State<NotificationsPage> {
         centerTitle: false,
         actions: [
           if (hasUnread)
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: _markingAll ? null : _markAllRead,
+              child: Container(
+                alignment: Alignment.center,
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                child: Text(
+                  'Mark all read',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.primaryBrown,
+                  ),
+                ),
+              ),
+            ),
+          if (hasAny)
             Padding(
-              padding: const EdgeInsets.only(right: 16),
+              padding: const EdgeInsets.only(left: 4, right: 16),
               child: GestureDetector(
                 behavior: HitTestBehavior.opaque,
-                onTap: _markingAll ? null : _markAllRead,
+                onTap: _clearingAll ? null : _showClearAllSheet,
                 child: Container(
                   alignment: Alignment.center,
                   padding:
                       const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
                   child: Text(
-                    'Mark all read',
+                    'Clear All',
                     style: GoogleFonts.inter(
                       fontSize: 13,
                       fontWeight: FontWeight.w500,
-                      color: AppColors.primaryBrown,
+                      color: AppColors.errorRed,
                     ),
                   ),
                 ),
@@ -249,6 +410,8 @@ class _NotificationsPageState extends State<NotificationsPage> {
                       itemBuilder: (_, i) => _NotificationCard(
                         notification: _notifications[i],
                         onTap: () => _onNotificationTap(_notifications[i]),
+                        onLongPress: () =>
+                            _showDismissSheet(_notifications[i]),
                       ),
                     ),
             ),
@@ -261,10 +424,12 @@ class _NotificationsPageState extends State<NotificationsPage> {
 class _NotificationCard extends StatefulWidget {
   final NotificationModel notification;
   final VoidCallback onTap;
+  final VoidCallback onLongPress;
 
   const _NotificationCard({
     required this.notification,
     required this.onTap,
+    required this.onLongPress,
   });
 
   @override
@@ -286,6 +451,10 @@ class _NotificationCardState extends State<_NotificationCard> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
+        onLongPress: () {
+          HapticFeedback.mediumImpact();
+          widget.onLongPress();
+        },
         child: AnimatedScale(
           scale: _scale,
           duration: const Duration(milliseconds: 120),
@@ -505,6 +674,138 @@ class _NotificationsShimmer extends StatelessWidget {
               ),
             ],
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Confirm action sheet (shared by Clear All + Dismiss One) ──
+//
+// Lightweight bottom-sheet confirmation for destructive notification
+// actions. Returns true via Navigator.pop() when the user confirms,
+// false on cancel, null on dismiss. Caller treats anything other than
+// `true` as "user backed out" so a swipe-down can't trigger a delete.
+class _ConfirmActionSheet extends StatelessWidget {
+  final String title;
+  final String message;
+  final String confirmLabel;
+
+  const _ConfirmActionSheet({
+    required this.title,
+    required this.message,
+    required this.confirmLabel,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return SafeArea(
+      child: Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Container(
+              width: 36,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.muted.withValues(alpha: 0.25),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.errorRed.withValues(alpha: 0.08),
+              ),
+              child: const Icon(
+                Icons.delete_sweep_outlined,
+                size: 28,
+                color: AppColors.errorRed,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              title,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+            const SizedBox(height: 8),
+            Text(
+              message,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                height: 1.5,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).pop(false),
+                    child: Container(
+                      height: 48,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: Colors.transparent,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: AppColors.muted.withValues(alpha: 0.25),
+                        ),
+                      ),
+                      child: Text(
+                        'Cancel',
+                        style: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: AppColors.deepDarkBrown,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => Navigator.of(context).pop(true),
+                    child: Container(
+                      height: 48,
+                      alignment: Alignment.center,
+                      decoration: BoxDecoration(
+                        color: AppColors.errorRed,
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                      child: Text(
+                        confirmLabel,
+                        style: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w600,
+                          color: Colors.white,
+                        ),
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
         ),
       ),
     );

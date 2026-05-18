@@ -21,6 +21,7 @@
 // at /user/wallet as a push route, reached from the Home coin pill
 // and the Me tab.
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -41,10 +42,19 @@ class UserShellPage extends StatefulWidget {
 
 class _UserShellPageState extends State<UserShellPage> {
   int _currentIndex = 0;
+  // Stream of upcoming-session count for the Bible nav badge.
+  // Created once in initState (not per-build) so we don't churn
+  // a new Firestore subscription on every shell rebuild.
+  late final Stream<int> _bibleUpcomingCount;
 
   @override
   void initState() {
     super.initState();
+    _bibleUpcomingCount = FirebaseFirestore.instance
+        .collection('bible_sessions')
+        .where('status', isEqualTo: 'upcoming')
+        .snapshots()
+        .map((s) => s.size);
     // Drain any pending notification-tap route. A tap from terminated
     // state stashes the route during NotificationService.init(); the
     // shell is the first screen mounted after auth gating, so this is
@@ -116,13 +126,19 @@ class _UserShellPageState extends State<UserShellPage> {
                 label: "Sessions",
                 onTap: () => _switchToTab(1),
               ),
-              _NavItem(
-                index: 2,
-                currentIndex: _currentIndex,
-                inactiveIcon: Icons.menu_book_outlined,
-                activeIcon: Icons.menu_book_rounded,
-                label: "Bible",
-                onTap: () => _switchToTab(2),
+              StreamBuilder<int>(
+                stream: _bibleUpcomingCount,
+                builder: (_, snap) {
+                  return _NavItem(
+                    index: 2,
+                    currentIndex: _currentIndex,
+                    inactiveIcon: Icons.menu_book_outlined,
+                    activeIcon: Icons.menu_book_rounded,
+                    label: "Bible",
+                    badgeCount: snap.data ?? 0,
+                    onTap: () => _switchToTab(2),
+                  );
+                },
               ),
               _NavItem(
                 index: 3,
@@ -174,6 +190,11 @@ class _NavItem extends StatelessWidget {
   final IconData activeIcon;
   final String label;
   final VoidCallback onTap;
+  // Optional badge rendered as a small amber pill over the icon's
+  // upper-right corner. 0 hides it. Used by the Bible tab to
+  // expose the upcoming-session count without forcing the user to
+  // open the tab to see they have somewhere to be.
+  final int badgeCount;
 
   const _NavItem({
     required this.index,
@@ -182,11 +203,16 @@ class _NavItem extends StatelessWidget {
     required this.activeIcon,
     required this.label,
     required this.onTap,
+    this.badgeCount = 0,
   });
 
   @override
   Widget build(BuildContext context) {
     final isActive = index == currentIndex;
+    // Cap the displayed count so a runaway upcoming list doesn't
+    // bloat the badge wider than the icon. "9+" is the standard
+    // iOS / Android convention.
+    final badgeText = badgeCount > 9 ? '9+' : '$badgeCount';
 
     return GestureDetector(
       onTap: onTap,
@@ -205,10 +231,61 @@ class _NavItem extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  isActive ? activeIcon : inactiveIcon,
-                  size: 22,
-                  color: isActive ? Colors.white : AppColors.muted,
+                // Icon + optional overlapping badge. Stack with
+                // clipBehavior: Clip.none lets the badge pop outside
+                // the 22-px icon bounds for the standard "notification
+                // dot on icon corner" silhouette. Sized to 22 so the
+                // row layout matches the no-badge variant exactly —
+                // adding/removing the badge doesn't shift adjacent
+                // items.
+                SizedBox(
+                  width: 22,
+                  height: 22,
+                  child: Stack(
+                    clipBehavior: Clip.none,
+                    alignment: Alignment.center,
+                    children: [
+                      Icon(
+                        isActive ? activeIcon : inactiveIcon,
+                        size: 22,
+                        color:
+                            isActive ? Colors.white : AppColors.muted,
+                      ),
+                      if (badgeCount > 0)
+                        Positioned(
+                          top: -6,
+                          right: -8,
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 5,
+                              vertical: 1,
+                            ),
+                            constraints: const BoxConstraints(
+                              minWidth: 16,
+                              minHeight: 14,
+                            ),
+                            decoration: BoxDecoration(
+                              color: AppColors.amberGold,
+                              borderRadius: BorderRadius.circular(8),
+                              border: Border.all(
+                                color: AppColors.surfaceWhite,
+                                width: 1.5,
+                              ),
+                            ),
+                            alignment: Alignment.center,
+                            child: Text(
+                              badgeText,
+                              style: GoogleFonts.inter(
+                                fontSize: 9,
+                                fontWeight: FontWeight.w700,
+                                color: Colors.white,
+                                height: 1.0,
+                              ),
+                            ),
+                          ),
+                        ),
+                    ],
+                  ),
                 ),
                 if (isActive) ...[
                   const SizedBox(width: 6),

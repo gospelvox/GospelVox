@@ -798,17 +798,44 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         ),
         if (_rating > 0) ...[
           const SizedBox(width: 10),
-          Icon(Icons.star_rounded, size: 15, color: AppColors.amberGold),
-          const SizedBox(width: 3),
+          // Whole rating chip is tap-wrapped so the priest gets a
+          // natural shortcut from "I have ratings" → "show me what
+          // they said" without needing to bounce through the
+          // dashboard. The chevron is the visual affordance.
           Flexible(
-            child: Text(
-              '${_rating.toStringAsFixed(1)} ($_reviewCount)',
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w500,
-                color: AppColors.deepDarkBrown,
+            child: GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                HapticFeedback.lightImpact();
+                context.push('/priest/reviews');
+              },
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(
+                    Icons.star_rounded,
+                    size: 15,
+                    color: AppColors.amberGold,
+                  ),
+                  const SizedBox(width: 3),
+                  Flexible(
+                    child: Text(
+                      '${_rating.toStringAsFixed(1)} ($_reviewCount)',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.deepDarkBrown,
+                      ),
+                    ),
+                  ),
+                  Icon(
+                    Icons.chevron_right_rounded,
+                    size: 14,
+                    color: AppColors.muted.withValues(alpha: 0.6),
+                  ),
+                ],
               ),
             ),
           ),

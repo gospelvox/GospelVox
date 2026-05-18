@@ -39,6 +39,8 @@
 //      into overflow on a 320-wide phone. The image top takes the
 //      remainder of the card's bounded height.
 
+import 'dart:async';
+
 import 'package:cached_network_image/cached_network_image.dart';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
@@ -49,10 +51,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+import 'package:gospel_vox/features/shared/bloc/bible_session_cubit.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
-import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
@@ -85,18 +89,32 @@ class _C {
     [Color(0xFF6B8B7B), Color(0xFF98B8A8)], // teal muted
   ];
 
-  static const sessionGradients = <List<Color>>[
-    [Color(0xFF6B3A2A), Color(0xFFC8902A)], // brown → gold
-    [Color(0xFF2C1810), Color(0xFF6B3A2A)], // dark → brown
-    [Color(0xFF8B5A3A), Color(0xFFD4A060)], // warm mid → gold
-  ];
+  // Bible session carousel used to render flat gradient cards keyed
+  // off these tokens. The format flipped to the dark-base banner
+  // (_BibleSessionBanner) where the colour story lives in the
+  // category-keyed artwork, so the gradient palette is no longer
+  // needed here.
 }
 
 // ─── Bible carousel ───────────────────────────────────────
 
 // Number of upcoming Bible sessions surfaced in the home carousel.
-// 3 keeps the rail tight and matches the original design shape.
-const int _kHomeBibleLimit = 3;
+// 5 leaves headroom on the rail without overwhelming the section —
+// the banner format is tall (216 px), so beyond five the user
+// is going to bounce to the Bible tab anyway.
+const int _kHomeBibleLimit = 5;
+
+// Asset paths for the category-keyed banner artwork. Hoisted to
+// top-level so the Home initState can precacheImage all five into
+// the ImageCache before the first carousel frame paints, killing
+// the white-flash-then-image pop on the first card.
+const List<String> _kBibleBannerAssets = <String>[
+  'assets/bible_banners/bible_book.png',
+  'assets/bible_banners/cross.png',
+  'assets/bible_banners/dove.png',
+  'assets/bible_banners/praying hands.png',
+  'assets/bible_banners/scrolls.png',
+];
 
 const _kFilterChips = <String>[
   'All',
@@ -138,19 +156,42 @@ class _HomeViewState extends State<_HomeView>
   late final Animation<double> _gridLabelAnim;
 
   final TextEditingController _searchController = TextEditingController();
+  // 0.92 makes the active banner dominate the viewport while still
+  // showing ~8% of the next card as a swipe affordance. The previous
+  // 0.78 was tuned for the old short gradient cards; with the new
+  // 216-tall banner format, a wider slot is required for the title +
+  // CTA to breathe.
   final PageController _carouselController =
-      PageController(viewportFraction: 0.78);
+      PageController(viewportFraction: 0.92);
 
   String _activeFilter = 'All';
   int _carouselIndex = 0;
 
-  // Bible sessions surfaced on the home carousel. One-shot fetch in
-  // initState — keeping it state-local (no cubit) is the lightest
-  // wiring for a single read-only rail. Empty list is a valid
-  // terminal state (just hide the rail) so we don't need an error
-  // bucket here.
+  // Bible sessions surfaced on the home carousel. Driven by a live
+  // Firestore stream now (was one-shot in initState) so a session
+  // created on another device, a status flip (upcoming → live), or
+  // a cancel all reflect on this page within seconds without a
+  // pull-to-refresh.
+  //
+  // Carousel display rules (applied in `_onBibleSnap` after each
+  // stream tick):
+  //   • only `status in {upcoming, live}` (terminal sessions don't
+  //     belong on a home rail);
+  //   • drop sessions whose end-time has passed (server might not
+  //     have flipped status yet);
+  //   • sort by scheduledAt ascending (soonest first);
+  //   • take the top _kHomeBibleLimit slots — a 2-month-out
+  //     session only surfaces if there aren't enough nearer ones.
   bool _bibleLoading = true;
   List<BibleSessionModel> _bibleSessions = const [];
+  int _liveCount = 0;
+  StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _bibleSub;
+  // First-time bootstrap guard. Fires once per home-mount: if any
+  // live session has the signed-in user as a non-cancelled
+  // registrant, surface the call-like overlay so a user who missed
+  // the FCM still gets pulled in. Set true after the first attempt
+  // regardless of outcome so we don't re-check on stream updates.
+  bool _liveBootstrapDone = false;
 
   @override
   void initState() {
@@ -167,26 +208,129 @@ class _HomeViewState extends State<_HomeView>
     _gridLabelAnim = _interval(0.32, 0.7);
     _animController.forward();
 
-    _loadBibleSessions();
+    _startBibleStream();
+
+    // Decode every banner asset into the ImageCache before the
+    // carousel paints its first frame. Combined with
+    // gaplessPlayback: true on the Image.asset, this guarantees the
+    // banner art and the text on top of it render in the same frame
+    // — no white card with text appearing before the image pops in.
+    // Scheduled post-frame because precacheImage needs a fully-set-up
+    // BuildContext for the ImageCache inherited widget.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      for (final p in _kBibleBannerAssets) {
+        precacheImage(AssetImage(p), context);
+      }
+    });
   }
 
-  Future<void> _loadBibleSessions() async {
-    try {
-      final all = await sl<BibleSessionRepository>().getUpcomingSessions();
+  void _startBibleStream() {
+    // Generous limit (20) so the client-side filter has room to
+    // drop expired/cancelled rows without leaving the carousel
+    // short. Pure `where status in [...]` keeps us inside the
+    // auto-index — no composite index required. We sort + filter
+    // in `_onBibleSnap` rather than via Firestore orderBy, which
+    // would force a composite index AND silently drop docs whose
+    // scheduledAt field is missing.
+    _bibleSub = FirebaseFirestore.instance
+        .collection('bible_sessions')
+        .where('status', whereIn: ['upcoming', 'live'])
+        .limit(20)
+        .snapshots()
+        .listen(_onBibleSnap, onError: (_) {
       if (!mounted) return;
-      setState(() {
-        _bibleSessions = all.take(_kHomeBibleLimit).toList();
-        _bibleLoading = false;
-      });
-    } catch (_) {
-      if (!mounted) return;
-      // Failure → render the rail empty rather than show a scary
-      // banner. The Bible tab has its own retry UX for users who
-      // care to dig in.
+      // Soft-fail — render empty rather than throwing. The Bible
+      // tab has its own retry UX for users who care.
       setState(() {
         _bibleSessions = const [];
+        _liveCount = 0;
         _bibleLoading = false;
       });
+    });
+  }
+
+  void _onBibleSnap(QuerySnapshot<Map<String, dynamic>> snap) {
+    if (!mounted) return;
+    final now = DateTime.now();
+    final parsed = snap.docs
+        .map((d) => BibleSessionModel.fromFirestore(d.id, d.data()))
+        .where((s) {
+      // Drop rows with no scheduledAt — we can't reason about them
+      // and they shouldn't render in a date-sorted carousel.
+      final at = s.scheduledAt;
+      if (at == null) return false;
+      // Drop expired upcoming sessions — the priest may not have
+      // marked them complete yet, but they shouldn't surface as
+      // "upcoming" on home. Live sessions get a wider tolerance
+      // (duration + 15 min buffer) to match the auto-complete cron.
+      final endTime = at.add(Duration(
+        minutes: s.durationMinutes + (s.isLive ? 15 : 0),
+      ));
+      return endTime.isAfter(now);
+    }).toList()
+      ..sort((a, b) => a.scheduledAt!.compareTo(b.scheduledAt!));
+
+    final live = parsed.where((s) => s.isLive).length;
+    final visible = parsed.take(_kHomeBibleLimit).toList();
+
+    setState(() {
+      _bibleSessions = visible;
+      _liveCount = live;
+      _bibleLoading = false;
+    });
+
+    // One-shot fallback: if the user opens the app while a session
+    // they're registered for is live, surface the call-like overlay
+    // even if the FCM never arrived (background-dropped push,
+    // missed because notifications were disabled, etc.). Runs once
+    // per page mount so the overlay isn't re-triggered on every
+    // stream tick.
+    if (!_liveBootstrapDone) {
+      _liveBootstrapDone = true;
+      final liveSessions = parsed.where((s) => s.isLive).toList();
+      if (liveSessions.isNotEmpty) {
+        _maybeFireLiveOverlay(liveSessions);
+      }
+    }
+  }
+
+  Future<void> _maybeFireLiveOverlay(
+    List<BibleSessionModel> liveSessions,
+  ) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    // Check each live session for an active (non-cancelled)
+    // registration belonging to this user. We stop at the first
+    // match — surfacing the overlay for one session is plenty;
+    // a user with two simultaneous live sessions they're registered
+    // for is a rounding-error case.
+    for (final s in liveSessions) {
+      try {
+        final regDoc = await FirebaseFirestore.instance
+            .doc('bible_sessions/${s.id}/registrations/$uid')
+            .get()
+            .timeout(const Duration(seconds: 5));
+        if (!mounted) return;
+        final regData = regDoc.data();
+        if (regData == null) continue;
+        if (regData['status'] == 'cancelled') continue;
+        // Match. Fire the overlay event. The overlay widget
+        // mounted at MaterialApp.router.builder will pick it up.
+        NotificationService.bibleSessionLiveEvent.value =
+            BibleSessionLiveEvent(
+          id: 'home-bootstrap-${s.id}',
+          sessionId: s.id,
+          sessionTitle: s.title,
+          priestName: s.priestName,
+          priestPhotoUrl: s.priestPhotoUrl,
+          price: s.price,
+        );
+        return;
+      } catch (_) {
+        // Soft-fail per session; try the next one.
+        continue;
+      }
     }
   }
 
@@ -206,8 +350,16 @@ class _HomeViewState extends State<_HomeView>
     );
   }
 
+  // didChangeDependencies / tab-return refresh is no longer needed —
+  // the Firestore stream subscribed in `_startBibleStream` keeps the
+  // carousel real-time, so a session created on another device or a
+  // status flip lands here within a Firestore tick. The earlier
+  // tab-return reload existed only because the carousel was a
+  // one-shot fetch.
+
   @override
   void dispose() {
+    _bibleSub?.cancel();
     _animController.dispose();
     _searchController.dispose();
     _carouselController.dispose();
@@ -332,6 +484,9 @@ class _HomeViewState extends State<_HomeView>
           return RefreshIndicator(
             color: _C.brandBrown,
             backgroundColor: _C.surface,
+            // Bible sessions are now live-streamed by
+            // _startBibleStream, so the pull-indicator only needs
+            // to re-fetch priests — the carousel auto-updates.
             onRefresh: () => ctx.read<HomeCubit>().refresh(),
             child: CustomScrollView(
               physics: const AlwaysScrollableScrollPhysics(
@@ -566,39 +721,54 @@ class _HomeViewState extends State<_HomeView>
       children: [
         _SectionHeader(
           title: 'UPCOMING SESSIONS',
+          // Live-count pill sits between the title and the "See all"
+          // link. Tapping it pre-selects the Bible tab's "Live" sub-
+          // tab via BibleSessionCubit.pendingInitialTab — that
+          // notifier survives a tab switch in the IndexedStack (the
+          // BibleTab listens once and consumes on each change).
+          trailing: _liveCount > 0
+              ? _LivePill(
+                  count: _liveCount,
+                  onTap: () {
+                    BibleSessionCubit.pendingInitialTab.value = 'live';
+                    _switchToBibleTab();
+                  },
+                )
+              : null,
           // "See all" lands the user on the Bible tab — that's where
           // the full list, filters, and detail page already live.
           onSeeAll: _switchToBibleTab,
         ),
         SizedBox(
-          height: 150,
+          // 216 gives the banner format enough room for a 2-line
+          // title + a description line + the date/time row + the
+          // CTA, all without the bottom edge biting into the CTA's
+          // glow on cards with the longest content.
+          height: 216,
           child: showShimmer
               ? _SessionsCarouselShimmer()
               : sessions.isEmpty
                   ? const _BibleEmptyRail()
-                  // padEnds: false stops the PageView from centring the
-                  // first/last card inside its viewport. Combined with a
-                  // left gutter of 20 that matches the page padding, the
-                  // first card's left edge now lines up with the section
-                  // label above it and the priest grid below.
+                  // padEnds:true (default) lets the first/last card
+                  // sit centred in the viewport; combined with
+                  // viewportFraction:0.92 and a 6 px symmetric inner
+                  // padding, the first card's left edge lands at
+                  // ~20 px from the screen edge — flush with the
+                  // section header above and the priest grid below.
                   : PageView.builder(
                       controller: _carouselController,
                       physics: const BouncingScrollPhysics(),
-                      padEnds: false,
                       itemCount: sessions.length,
                       onPageChanged: (i) =>
                           setState(() => _carouselIndex = i),
                       itemBuilder: (_, i) {
                         final session = sessions[i];
                         return Padding(
-                          padding: EdgeInsets.only(
-                            left: i == 0 ? 20 : 0,
-                            right: 12,
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 6,
                           ),
-                          child: _BibleSessionCard(
+                          child: _BibleSessionBanner(
                             session: session,
-                            gradient: _C.sessionGradients[
-                                i % _C.sessionGradients.length],
                             onTap: () => context.push(
                               '/bible/detail/${session.id}',
                             ),
@@ -614,15 +784,16 @@ class _HomeViewState extends State<_HomeView>
             children: List.generate(dotCount, (i) {
               final active = i == _carouselIndex;
               return AnimatedContainer(
-                duration: const Duration(milliseconds: 200),
+                duration: const Duration(milliseconds: 220),
+                curve: Curves.easeOutCubic,
                 margin: const EdgeInsets.symmetric(horizontal: 3),
-                width: active ? 16 : 6,
+                width: active ? 18 : 6,
                 height: 6,
                 decoration: BoxDecoration(
                   borderRadius: BorderRadius.circular(3),
                   color: active
-                      ? _C.brandBrown
-                      : _C.brandBrown.withValues(alpha: 0.15),
+                      ? _C.amberGold
+                      : _C.muted.withValues(alpha: 0.4),
                 ),
               );
             }),
@@ -823,10 +994,17 @@ class _PressScaleState extends State<_PressScale> {
 class _SectionHeader extends StatelessWidget {
   final String title;
   final VoidCallback onSeeAll;
+  // Optional pill / chip rendered between the title and the
+  // "See all" link. The bible carousel uses this for the LIVE
+  // indicator when any session is live; other section headers
+  // can omit it. Kept as a generic Widget so future surfaces
+  // don't need a per-feature header subclass.
+  final Widget? trailing;
 
   const _SectionHeader({
     required this.title,
     required this.onSeeAll,
+    this.trailing,
   });
 
   @override
@@ -834,7 +1012,6 @@ class _SectionHeader extends StatelessWidget {
     return Padding(
       padding: const EdgeInsets.fromLTRB(20, 24, 20, 14),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
           Flexible(
             child: Text(
@@ -849,7 +1026,11 @@ class _SectionHeader extends StatelessWidget {
               ),
             ),
           ),
-          const SizedBox(width: 8),
+          if (trailing != null) ...[
+            const SizedBox(width: 10),
+            trailing!,
+          ],
+          const Spacer(),
           _PressScale(
             onTap: onSeeAll,
             scale: 0.92,
@@ -863,6 +1044,49 @@ class _SectionHeader extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Live count pill — pulsing dot + "{N} Live" in red. Tappable;
+// on tap, caller sets `BibleSessionCubit.pendingInitialTab = 'live'`
+// before switching to the Bible tab so the user lands directly on
+// the Live sub-tab without an extra interaction.
+class _LivePill extends StatelessWidget {
+  final int count;
+  final VoidCallback onTap;
+  const _LivePill({required this.count, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return _PressScale(
+      onTap: onTap,
+      scale: 0.94,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
+        decoration: BoxDecoration(
+          color: const Color(0xFFE53E3E).withValues(alpha: 0.1),
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: const Color(0xFFE53E3E).withValues(alpha: 0.3),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const PulsingDot(size: 6, color: Color(0xFFE53E3E)),
+            const SizedBox(width: 5),
+            Text(
+              "$count Live",
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: const Color(0xFFE53E3E),
+              ),
+            ),
+          ],
+        ),
       ),
     );
   }
@@ -1117,220 +1341,578 @@ class _FilterChip extends StatelessWidget {
   }
 }
 
-// ─── Bible session card ───────────────────────────────────
+// ─── Bible session banner ─────────────────────────────────
+//
+// Dark-base premium banner: category-keyed artwork bleeds in from
+// the right, a left-side veil keeps the title/CTA legible, and the
+// drop-shadow gives the card the floating feel of the KATSEYE-style
+// reference. Replaces the older flat gradient card.
+//
+// Layout strategy:
+//
+//   • LayoutBuilder reads the real card width inside its PageView
+//     slot so the design holds from 320 px phones up to 430 px
+//     phones without a hardcoded card width fighting the
+//     viewportFraction.
+//   • TextPainter measures the title once per build; if it wraps
+//     to two lines we drop the description to one line so the CTA
+//     never bites into the bottom edge. The reverse (1-line title,
+//     2-line description) is also handled — both cases stay inside
+//     the 184 px usable vertical (216 height − 16 + 16 padding).
 
-class _BibleSessionCard extends StatelessWidget {
+class _BibleSessionBanner extends StatelessWidget {
   final BibleSessionModel session;
-  final List<Color> gradient;
   final VoidCallback onTap;
 
-  const _BibleSessionCard({
+  const _BibleSessionBanner({
     required this.session,
-    required this.gradient,
     required this.onTap,
   });
 
+  // Near-black base; the artwork overlays this and the left-edge of
+  // the gradient sits on it solid, so no priest photo shines through
+  // and harms text contrast.
+  static const _darkBase = Color(0xFF1A0E08);
+  // Pre-built mid-stop of the veil. (`_darkBase.withValues` isn't a
+  // compile-time constant, so the hex form is required for the
+  // `const LinearGradient` below.)
+  static const _veilMid = Color(0x8C1A0E08); // ~55% alpha over _darkBase
+  static const _liveRed = Color(0xFFE53E3E);
+
+  String _bannerImage(String category) {
+    // Lower-cased switch tolerates server typos like " Prayer" or
+    // "DEEP STUDY". Anything outside the curated five falls through
+    // to dove — the most neutral spiritual symbol we ship.
+    switch (category.trim().toLowerCase()) {
+      case 'deep study':
+        return 'assets/bible_banners/bible_book.png';
+      case 'prayer':
+        return 'assets/bible_banners/praying hands.png';
+      case 'worship':
+        return 'assets/bible_banners/cross.png';
+      case 'daily living':
+        return 'assets/bible_banners/scrolls.png';
+      default:
+        return 'assets/bible_banners/dove.png';
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
-    final dateLabel = session.formattedDate.isNotEmpty
-        ? session.formattedDate
-        : session.startsInText;
-    final priceLabel = session.price > 0 ? '₹${session.price}' : 'Free';
-    final categoryLine = session.category.isNotEmpty
-        ? session.category
-        : (session.description.isNotEmpty
-            ? session.description
-            : 'Bible study session');
+    final isLive = session.isLive;
+    // Price is always positive in V1 (min ₹49 — confirmed during
+    // spec sign-off); free sessions don't exist on this surface.
+    final ctaText = isLive ? 'Join Now' : 'Register Now';
+    final labelText = isLive ? 'LIVE NOW' : 'UPCOMING SESSION';
+    final labelColor = isLive ? _liveRed : _C.amberGold;
+    final timeLabel = session.formattedTime.isEmpty
+        ? ''
+        : '${session.formattedTime} IST';
+
+    final titleStyle = GoogleFonts.inter(
+      fontSize: 22,
+      fontWeight: FontWeight.w900,
+      color: Colors.white,
+      height: 1.1,
+      letterSpacing: -0.5,
+    );
 
     return _PressScale(
       onTap: onTap,
       scale: 0.97,
-      child: Container(
-        // No margin — the PageView itemBuilder applies the gutter
-        // (left: 20 for i==0, right: 12 otherwise) so the first
-        // card aligns with the page's 20px horizontal padding.
-        padding: const EdgeInsets.all(18),
+      child: DecoratedBox(
+        // Outer decoration carries the shadow — putting the shadow
+        // on the inner clipped container would clip it away too.
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(20),
-          gradient: LinearGradient(
-            begin: Alignment.topLeft,
-            end: Alignment.bottomRight,
-            colors: gradient,
-          ),
+          borderRadius: BorderRadius.circular(16),
           boxShadow: [
             BoxShadow(
-              color: gradient.first.withValues(alpha: 0.3),
-              blurRadius: 16,
-              offset: const Offset(0, 6),
+              color: Colors.black.withValues(alpha: 0.30),
+              blurRadius: 20,
+              offset: const Offset(0, 8),
             ),
           ],
         ),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(16),
+          child: ColoredBox(
+            color: _darkBase,
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final cardWidth = constraints.maxWidth;
+                // Text column owns the left 55%. Subtract the 18 px
+                // left inset so TextPainter measures against the
+                // real wrap width, not the column's bounding box.
+                final textColWidth = cardWidth * 0.55;
+                final textMeasureWidth = textColWidth - 18;
+
+                // Decide description line count based on whether the
+                // title wraps. The reverse (short title) gives the
+                // description more room, so the card never wastes
+                // vertical real-estate.
+                final titlePainter = TextPainter(
+                  text: TextSpan(text: session.title, style: titleStyle),
+                  maxLines: 2,
+                  textDirection: TextDirection.ltr,
+                  ellipsis: '…',
+                )..layout(maxWidth: textMeasureWidth);
+                final titleIsTwoLines =
+                    titlePainter.computeLineMetrics().length > 1;
+                final descMaxLines = titleIsTwoLines ? 1 : 2;
+
+                return Stack(
+                  children: [
+                    // ─── Layer 1: category artwork (right side) ───
+                    Positioned(
+                      right: -10,
+                      top: 0,
+                      bottom: 0,
+                      width: cardWidth * 0.58,
+                      child: Image.asset(
+                        _bannerImage(session.category),
+                        fit: BoxFit.cover,
+                        // gaplessPlayback holds the previous frame
+                        // through asset swaps so a category change
+                        // doesn't flash white. Combined with the
+                        // initState precache, first paint is also
+                        // flash-free.
+                        gaplessPlayback: true,
+                        // Soft fade-in if the precache somehow
+                        // missed (e.g., low-memory eviction).
+                        frameBuilder:
+                            (context, child, frame, wasSyncLoaded) {
+                          if (wasSyncLoaded || frame != null) return child;
+                          return const SizedBox.shrink();
+                        },
+                      ),
+                    ),
+
+                    // ─── Layer 2: left-to-right dark veil ─────────
+                    const Positioned.fill(
+                      child: DecoratedBox(
+                        decoration: BoxDecoration(
+                          gradient: LinearGradient(
+                            begin: Alignment.centerLeft,
+                            end: Alignment.centerRight,
+                            stops: [0.0, 0.55, 1.0],
+                            colors: [
+                              _darkBase,
+                              _veilMid,
+                              Colors.transparent,
+                            ],
+                          ),
+                        ),
+                      ),
+                    ),
+
+                    // ─── Layer 3: text + CTA (left side) ──────────
+                    Positioned(
+                      left: 18,
+                      right: cardWidth * 0.45,
+                      top: 16,
+                      bottom: 16,
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          // Top row: status label + price pill.
+                          Row(
+                            children: [
+                              Container(
+                                width: 7,
+                                height: 7,
+                                decoration: BoxDecoration(
+                                  shape: BoxShape.circle,
+                                  color: labelColor,
+                                ),
+                              ),
+                              const SizedBox(width: 5),
+                              Flexible(
+                                child: Text(
+                                  labelText,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 8.5,
+                                    fontWeight: FontWeight.w700,
+                                    color: labelColor,
+                                    letterSpacing: 0.6,
+                                  ),
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Container(
+                                padding: const EdgeInsets.symmetric(
+                                  horizontal: 8,
+                                  vertical: 3,
+                                ),
+                                decoration: BoxDecoration(
+                                  color: _C.amberGold
+                                      .withValues(alpha: 0.35),
+                                  borderRadius: BorderRadius.circular(6),
+                                  border: Border.all(
+                                    color: _C.amberGold
+                                        .withValues(alpha: 0.5),
+                                    width: 1,
+                                  ),
+                                ),
+                                child: Text(
+                                  '₹${session.price}',
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: _C.goldLight,
+                                  ),
+                                ),
+                              ),
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          // Title — max 2 lines, ellipsis on overflow.
+                          Text(
+                            session.title.isEmpty
+                                ? 'Bible Session'
+                                : session.title,
+                            maxLines: 2,
+                            overflow: TextOverflow.ellipsis,
+                            style: titleStyle,
+                          ),
+                          const SizedBox(height: 5),
+                          // Description — line count flips based on
+                          // the title's measured wrap.
+                          if (session.description.isNotEmpty)
+                            Flexible(
+                              child: Text(
+                                session.description,
+                                maxLines: descMaxLines,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.inter(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w400,
+                                  color: Colors.white
+                                      .withValues(alpha: 0.55),
+                                  height: 1.35,
+                                ),
+                              ),
+                            )
+                          else
+                            const Spacer(),
+                          const SizedBox(height: 6),
+                          // Date + time row.
+                          Row(
+                            children: [
+                              Icon(
+                                Icons.calendar_today_rounded,
+                                size: 11,
+                                color: _C.amberGold
+                                    .withValues(alpha: 0.7),
+                              ),
+                              const SizedBox(width: 4),
+                              Flexible(
+                                child: Text(
+                                  session.formattedDate,
+                                  maxLines: 1,
+                                  overflow: TextOverflow.ellipsis,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 10,
+                                    fontWeight: FontWeight.w500,
+                                    color: Colors.white
+                                        .withValues(alpha: 0.7),
+                                  ),
+                                ),
+                              ),
+                              if (timeLabel.isNotEmpty) ...[
+                                const SizedBox(width: 10),
+                                Icon(
+                                  Icons.schedule_rounded,
+                                  size: 11,
+                                  color: _C.amberGold
+                                      .withValues(alpha: 0.7),
+                                ),
+                                const SizedBox(width: 4),
+                                Flexible(
+                                  child: Text(
+                                    timeLabel,
+                                    maxLines: 1,
+                                    overflow: TextOverflow.ellipsis,
+                                    style: GoogleFonts.inter(
+                                      fontSize: 10,
+                                      fontWeight: FontWeight.w500,
+                                      color: Colors.white
+                                          .withValues(alpha: 0.7),
+                                    ),
+                                  ),
+                                ),
+                              ],
+                            ],
+                          ),
+                          const SizedBox(height: 8),
+                          // CTA — Join Now / Register Now.
+                          Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 6,
+                            ),
+                            decoration: BoxDecoration(
+                              color: _C.amberGold,
+                              borderRadius: BorderRadius.circular(7),
+                              boxShadow: [
+                                BoxShadow(
+                                  color: _C.amberGold
+                                      .withValues(alpha: 0.45),
+                                  blurRadius: 10,
+                                  offset: const Offset(0, 3),
+                                ),
+                              ],
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: [
+                                Text(
+                                  ctaText,
+                                  style: GoogleFonts.inter(
+                                    fontSize: 11,
+                                    fontWeight: FontWeight.w700,
+                                    color: Colors.white,
+                                  ),
+                                ),
+                                const SizedBox(width: 4),
+                                const Icon(
+                                  Icons.arrow_forward_rounded,
+                                  size: 13,
+                                  color: Colors.white,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                );
+              },
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// Demo: while there are no upcoming Bible sessions, the carousel
+// slot shows the welcome-offer promo banner. The artwork (2:1) is
+// text-free; the overlay below renders the offer copy on the left
+// half so the praying-hands illustration on the right stays visible
+// on every phone. The dark veil at the left guarantees text
+// legibility; a softer veil at the right mutes the bright beam so
+// attention stays on the CTA.
+class _BibleEmptyRail extends StatelessWidget {
+  const _BibleEmptyRail();
+
+  @override
+  Widget build(BuildContext context) {
+    final dpr = MediaQuery.of(context).devicePixelRatio;
+    final screenWidth = MediaQuery.of(context).size.width;
+    final cardWidth = screenWidth - 40;
+    final cacheWidth = (cardWidth * dpr).round();
+
+    // Two-tone gold gradient on the CTA — gives the button depth
+    // and the "premium card" feel rather than a flat ad button.
+    const ctaTopGold = Color(0xFFEFC25C);
+    const ctaBottomGold = Color(0xFFD8A246);
+    const valueGold = Color(0xFFEFC25C);
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(20),
+        child: Stack(
           children: [
-            Row(
-              mainAxisAlignment: MainAxisAlignment.spaceBetween,
-              children: [
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 8,
-                    vertical: 3,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.15),
-                    borderRadius: BorderRadius.circular(6),
-                  ),
-                  child: Text(
-                    'BIBLE SESSION',
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      letterSpacing: 0.8,
-                      color: Colors.white.withValues(alpha: 0.85),
-                    ),
-                  ),
-                ),
-                Icon(
-                  Icons.menu_book_rounded,
-                  size: 18,
-                  color: Colors.white.withValues(alpha: 0.45),
-                ),
-              ],
+            Positioned.fill(
+              child: Image.asset(
+                'assets/file_00000000378c71fa8bd380482da69cd1.png',
+                fit: BoxFit.cover,
+                cacheWidth: cacheWidth,
+              ),
             ),
-            const Spacer(),
-            FittedBox(
-              fit: BoxFit.scaleDown,
-              alignment: Alignment.centerLeft,
-              child: Text(
-                session.title.isNotEmpty ? session.title : 'Bible Session',
-                maxLines: 1,
-                style: GoogleFonts.inter(
-                  fontSize: 18,
-                  fontWeight: FontWeight.w700,
-                  color: Colors.white,
+            // Left veil — bullet-proofs text legibility regardless
+            // of where BoxFit.cover lands the image edges.
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      Colors.black.withValues(alpha: 0.50),
+                      Colors.transparent,
+                    ],
+                    stops: const [0.0, 0.6],
+                  ),
                 ),
               ),
             ),
-            const SizedBox(height: 2),
-            Text(
-              categoryLine,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w400,
-                color: Colors.white.withValues(alpha: 0.7),
+            // Right-side dim — softens the bright top-right beam
+            // ~15% so it doesn't out-pull the CTA. A real fix is
+            // re-exporting the PNG with a calmer light source.
+            Positioned.fill(
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  gradient: LinearGradient(
+                    begin: Alignment.centerLeft,
+                    end: Alignment.centerRight,
+                    colors: [
+                      Colors.transparent,
+                      Colors.black.withValues(alpha: 0.18),
+                    ],
+                    stops: const [0.6, 1.0],
+                  ),
+                ),
               ),
             ),
-            const SizedBox(height: 10),
-            Row(
-              children: [
-                Container(
-                  width: 22,
-                  height: 22,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: Colors.white.withValues(alpha: 0.2),
-                    border: Border.all(
-                      color: Colors.white.withValues(alpha: 0.3),
-                      width: 1,
-                    ),
-                  ),
-                  alignment: Alignment.center,
-                  child: Text(
-                    _initials(session.priestName),
-                    style: GoogleFonts.inter(
-                      fontSize: 10,
-                      fontWeight: FontWeight.w700,
-                      color: Colors.white,
-                    ),
+            // Top-anchored text column. 18-dp top inset gives the
+            // pill clear breathing room from the card edge; 14-dp
+            // bottom padding keeps the CTA glow from clipping.
+            Padding(
+              padding: const EdgeInsets.fromLTRB(14, 18, 14, 14),
+              child: Align(
+                alignment: Alignment.topLeft,
+                child: ConstrainedBox(
+                  // 0.46 (down from 0.52) gives ~10% more breathing
+                  // room between the text block and the hands.
+                  constraints: BoxConstraints(maxWidth: cardWidth * 0.46),
+                  child: Column(
+                    mainAxisSize: MainAxisSize.min,
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Container(
+                        padding: const EdgeInsets.symmetric(
+                          horizontal: 8,
+                          vertical: 3,
+                        ),
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(999),
+                          border: Border.all(color: _C.goldLight, width: 1),
+                        ),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            const Icon(
+                              Icons.card_giftcard_rounded,
+                              color: _C.goldLight,
+                              size: 10,
+                            ),
+                            const SizedBox(width: 4),
+                            Text(
+                              'WELCOME OFFER',
+                              style: GoogleFonts.inter(
+                                fontSize: 8.5,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: 0.6,
+                                color: _C.goldLight,
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                      const SizedBox(height: 9),
+                      // Price leads — bigger and brighter (with a
+                      // soft text-shadow lift) so the cost-to-value
+                      // is the first thing the eye lands on.
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'For ₹29',
+                          maxLines: 1,
+                          style: GoogleFonts.inter(
+                            fontSize: 17,
+                            fontWeight: FontWeight.w800,
+                            color: Colors.white,
+                            height: 1.05,
+                            shadows: [
+                              Shadow(
+                                color: Colors.black.withValues(alpha: 0.45),
+                                blurRadius: 6,
+                              ),
+                            ],
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 1),
+                      FittedBox(
+                        fit: BoxFit.scaleDown,
+                        alignment: Alignment.centerLeft,
+                        child: Text(
+                          'Get 100 Coins',
+                          maxLines: 1,
+                          style: GoogleFonts.inter(
+                            fontSize: 15,
+                            fontWeight: FontWeight.w700,
+                            color: valueGold,
+                            height: 1.15,
+                          ),
+                        ),
+                      ),
+                      const SizedBox(height: 10),
+                      DecoratedBox(
+                        decoration: BoxDecoration(
+                          borderRadius: BorderRadius.circular(10),
+                          gradient: const LinearGradient(
+                            begin: Alignment.topLeft,
+                            end: Alignment.bottomRight,
+                            colors: [ctaTopGold, ctaBottomGold],
+                          ),
+                          boxShadow: [
+                            BoxShadow(
+                              color: ctaTopGold.withValues(alpha: 0.38),
+                              blurRadius: 12,
+                              offset: const Offset(0, 2),
+                            ),
+                          ],
+                        ),
+                        child: const Padding(
+                          padding: EdgeInsets.symmetric(
+                            horizontal: 14,
+                            vertical: 8,
+                          ),
+                          child: _ClaimNowLabel(),
+                        ),
+                      ),
+                    ],
                   ),
                 ),
-                const SizedBox(width: 8),
-                Flexible(
-                  child: Text(
-                    session.priestName.isEmpty
-                        ? dateLabel
-                        : '${session.priestName} · $dateLabel',
-                    maxLines: 1,
-                    overflow: TextOverflow.ellipsis,
-                    style: GoogleFonts.inter(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w400,
-                      color: Colors.white.withValues(alpha: 0.75),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 10,
-                    vertical: 4,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Colors.white.withValues(alpha: 0.22),
-                    borderRadius: BorderRadius.circular(8),
-                  ),
-                  child: Text(
-                    priceLabel,
-                    style: GoogleFonts.inter(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                ),
-              ],
+              ),
             ),
           ],
         ),
       ),
     );
   }
-
-  String _initials(String name) {
-    final trimmed = name.trim();
-    if (trimmed.isEmpty) return '?';
-    final parts = trimmed.split(RegExp(r'\s+')).take(2).toList();
-    final buf = StringBuffer();
-    for (final p in parts) {
-      if (p.isNotEmpty) buf.write(p[0].toUpperCase());
-    }
-    final out = buf.toString();
-    return out.isEmpty ? '?' : out;
-  }
 }
 
-// Empty-state filler shown inside the carousel slot when there are
-// no upcoming Bible sessions. Same height as a real card so the
-// layout doesn't jump when sessions are added.
-class _BibleEmptyRail extends StatelessWidget {
-  const _BibleEmptyRail();
+class _ClaimNowLabel extends StatelessWidget {
+  const _ClaimNowLabel();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: Container(
-        decoration: BoxDecoration(
-          color: _C.surface,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(
-            color: _C.muted.withValues(alpha: 0.12),
-          ),
-        ),
-        alignment: Alignment.center,
-        padding: const EdgeInsets.symmetric(horizontal: 24),
-        child: Text(
-          'No upcoming Bible sessions yet — check back soon.',
-          textAlign: TextAlign.center,
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          'Claim Now',
           style: GoogleFonts.inter(
-            fontSize: 13,
-            fontWeight: FontWeight.w400,
-            color: _C.muted,
+            fontSize: 11.5,
+            fontWeight: FontWeight.w600,
+            color: _C.darkBrown,
           ),
         ),
-      ),
+        const SizedBox(width: 5),
+        const Icon(
+          Icons.arrow_forward_rounded,
+          size: 11,
+          color: _C.darkBrown,
+        ),
+      ],
     );
   }
 }

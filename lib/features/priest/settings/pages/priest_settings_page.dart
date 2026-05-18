@@ -19,12 +19,23 @@ import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:google_sign_in/google_sign_in.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+
+// Public legal + support endpoints. Hosted pages may not exist yet
+// at the time of writing; the URL is what we ship to users / the
+// app store and what we'll keep stable across releases. Updating
+// the page content is a separate concern from the app build.
+const String _kPrivacyPolicyUrl = 'https://gospelvox.com/privacy-policy';
+const String _kHelpCenterUrl = 'https://gospelvox.com/help';
+const String _kSupportEmail = 'support@gospelvox.com';
 
 class PriestSettingsPage extends StatefulWidget {
   const PriestSettingsPage({super.key});
@@ -93,6 +104,62 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
     // marks reads against Firestore directly, so re-aggregating is
     // the simplest way to stay in sync.
     _loadUnreadCount();
+  }
+
+  // Opens an external URL in the system browser. Surfaces a snackbar
+  // on launch failure (e.g. no browser, malformed URL) so a tap that
+  // does nothing visible at least explains itself.
+  Future<void> _launchExternalUrl(String url) async {
+    final uri = Uri.tryParse(url);
+    if (uri == null) {
+      if (!mounted) return;
+      AppSnackBar.error(context, "Couldn't open the link.");
+      return;
+    }
+    try {
+      final ok =
+          await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        AppSnackBar.error(context, "Couldn't open the link.");
+      }
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, "Couldn't open the link.");
+    }
+  }
+
+  // Opens the device's default mail composer to support@gospelvox.com.
+  // Falls back to a snackbar when no mail app is registered (some
+  // tablets / emulator builds).
+  Future<void> _openSupportEmail() async {
+    final uri = Uri(
+      scheme: 'mailto',
+      path: _kSupportEmail,
+      queryParameters: <String, String>{
+        'subject': 'Gospel Vox Support Request',
+      },
+    );
+    try {
+      final ok = await launchUrl(uri);
+      if (!ok && mounted) {
+        AppSnackBar.error(context, 'No email app available on this device.');
+      }
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'No email app available on this device.');
+    }
+  }
+
+  // Opens the irreversible delete-account confirmation sheet. The sheet
+  // owns its own state (confirm-text input, in-flight flag) so the
+  // settings page can stay mostly stateless about deletion.
+  Future<void> _showDeleteAccountSheet() async {
+    await showModalBottomSheet<void>(
+      context: context,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => const _PriestDeleteAccountSheet(),
+    );
   }
 
   Future<void> _signOut() async {
@@ -294,10 +361,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                     icon: Icons.history_rounded,
                     title: 'Session History',
                     subtitle: 'Past sessions & earnings',
-                    onTap: () => AppSnackBar.info(
-                      context,
-                      'Session History coming soon',
-                    ),
+                    onTap: () => context.push('/priest/session-history'),
                   ),
                 ],
               ),
@@ -309,20 +373,18 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                   _SettingsTile(
                     icon: Icons.help_outline_rounded,
                     title: 'Help & FAQ',
-                    onTap: () =>
-                        AppSnackBar.info(context, 'Help center coming soon'),
+                    onTap: () => _launchExternalUrl(_kHelpCenterUrl),
                   ),
                   _SettingsTile(
                     icon: Icons.mail_outline_rounded,
                     title: 'Contact Support',
                     subtitle: 'Get help with your account',
-                    onTap: () =>
-                        AppSnackBar.info(context, 'Support coming soon'),
+                    onTap: _openSupportEmail,
                   ),
                   _SettingsTile(
                     icon: Icons.description_outlined,
                     title: 'Terms & Privacy Policy',
-                    onTap: () => AppSnackBar.info(context, 'Coming soon'),
+                    onTap: () => _launchExternalUrl(_kPrivacyPolicyUrl),
                   ),
                 ],
               ),
@@ -347,6 +409,23 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                         : null,
                     onTap:
                         _signingOut ? null : _showSignOutConfirmation,
+                  ),
+                ],
+              ),
+              // Account deletion sits in its own group below sign-out
+              // with the same destructive red palette. Required by
+              // Play Store / App Store policy — every account system
+              // must offer an in-app delete path.
+              const SizedBox(height: 12),
+              _SettingsGroup(
+                children: [
+                  _SettingsTile(
+                    icon: Icons.delete_forever_rounded,
+                    title: 'Delete Account',
+                    subtitle: 'Permanently remove your account & data',
+                    titleColor: AppColors.errorRed,
+                    iconColor: AppColors.errorRed,
+                    onTap: _showDeleteAccountSheet,
                   ),
                 ],
               ),
@@ -740,6 +819,452 @@ class _AnimatedTapState extends State<_AnimatedTap> {
           curve: Curves.easeOut,
           child: widget.child,
         ),
+      ),
+    );
+  }
+}
+
+// ─── Delete Account sheet ────────────────────────────
+//
+// Mirrors the user-side _DeleteAccountSheet pattern, but writes to
+// BOTH users/{uid} and priests/{uid}: a priest is also a user, and
+// leaving the priest doc untouched would orphan it (still showing
+// in the speaker feed under their old display name).
+//
+// Soft delete strategy:
+//   • users/{uid}.isDeleted = true, PII zeroed, fcmTokens cleared
+//   • priests/{uid}.isDeleted = true, identity fields zeroed,
+//     isOnline=false / isBusy=false (so the watchdog + user-feed
+//     stop surfacing them immediately)
+//   • Auth account deleted via FirebaseAuth.user.delete()
+//
+// We deliberately do NOT touch priests/{uid}.walletBalance or
+// users/{uid}.coinBalance — both are locked from client writes by
+// Firestore rules. Reconciliation (refund pending balances, void
+// outstanding withdrawals) is a server-side cleanup job triggered
+// by the isDeleted flag — out of scope for this client-side flow.
+class _PriestDeleteAccountSheet extends StatefulWidget {
+  const _PriestDeleteAccountSheet();
+
+  @override
+  State<_PriestDeleteAccountSheet> createState() =>
+      _PriestDeleteAccountSheetState();
+}
+
+class _PriestDeleteAccountSheetState
+    extends State<_PriestDeleteAccountSheet> {
+  final TextEditingController _confirmController = TextEditingController();
+  bool _isDeleting = false;
+  bool _isConfirmed = false;
+
+  @override
+  void dispose() {
+    _confirmController.dispose();
+    super.dispose();
+  }
+
+  Future<void> _deleteAccount() async {
+    setState(() => _isDeleting = true);
+
+    try {
+      final user = FirebaseAuth.instance.currentUser;
+      if (user == null) {
+        if (!mounted) return;
+        setState(() => _isDeleting = false);
+        AppSnackBar.error(context, 'Not signed in.');
+        return;
+      }
+      final uid = user.uid;
+
+      // Best-effort token strip — without this the device keeps
+      // receiving pushes addressed to the (now deleted) account
+      // until the FCM token rotates naturally.
+      await NotificationService().removeToken();
+      if (!mounted) return;
+
+      // Soft-delete the user doc first. coinBalance / role /
+      // walletBalance / isActivated are blocked by rules — we leave
+      // them alone and let a server-side reconciliation job zero
+      // them once any outstanding balance is settled.
+      await FirebaseFirestore.instance.doc('users/$uid').update({
+        'isDeleted': true,
+        'deletedAt': FieldValue.serverTimestamp(),
+        'displayName': 'Deleted Speaker',
+        'photoUrl': '',
+        'email': '',
+        'fcmTokens': <String>[],
+      }).timeout(const Duration(seconds: 10));
+      if (!mounted) return;
+
+      // Soft-delete the priest doc. isOnline=false + isBusy=false
+      // makes the speaker disappear from the user feed immediately
+      // — same effect as a manual go-offline + watchdog pass would
+      // produce, but synchronous so there's no window during which
+      // a user could still try to dial them.
+      try {
+        await FirebaseFirestore.instance.doc('priests/$uid').update({
+          'isDeleted': true,
+          'deletedAt': FieldValue.serverTimestamp(),
+          'fullName': 'Deleted Speaker',
+          'photoUrl': '',
+          'email': '',
+          'phone': '',
+          'isOnline': false,
+          'isBusy': false,
+        }).timeout(const Duration(seconds: 10));
+      } catch (_) {
+        // Priest doc write is best-effort. The user-doc isDeleted
+        // flag above is the canonical signal — server-side cleanup
+        // will reconcile the priest doc from there. Don't block
+        // the auth.delete on a transient priest-doc write failure.
+      }
+      if (!mounted) return;
+
+      // Auth delete may need a fresh credential — Firebase requires
+      // a recent sign-in for destructive operations. If we hit
+      // requires-recent-login, reauth via Google and retry once.
+      try {
+        await user.delete();
+      } on FirebaseAuthException catch (e) {
+        if (e.code == 'requires-recent-login') {
+          final reauthed = await _reauthenticateWithGoogle(user);
+          if (!mounted) return;
+          if (!reauthed) {
+            setState(() => _isDeleting = false);
+            AppSnackBar.error(
+              context,
+              'Please sign in again to delete your account.',
+            );
+            return;
+          }
+          await user.delete();
+        } else {
+          rethrow;
+        }
+      }
+      if (!mounted) return;
+
+      Navigator.pop(context);
+      clearCachedRole();
+      if (!mounted) return;
+      context.go('/select-role');
+    } on TimeoutException {
+      if (!mounted) return;
+      setState(() => _isDeleting = false);
+      AppSnackBar.error(context, 'Delete timed out. Try again.');
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _isDeleting = false);
+      AppSnackBar.error(
+        context,
+        'Failed to delete account. Please try again.',
+      );
+    }
+  }
+
+  Future<bool> _reauthenticateWithGoogle(User user) async {
+    try {
+      final googleUser = await GoogleSignIn().signIn();
+      if (googleUser == null) return false;
+      final googleAuth = await googleUser.authentication;
+      final credential = GoogleAuthProvider.credential(
+        accessToken: googleAuth.accessToken,
+        idToken: googleAuth.idToken,
+      );
+      await user.reauthenticateWithCredential(credential);
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: const EdgeInsets.fromLTRB(24, 16, 24, 0),
+      child: SingleChildScrollView(
+        padding: EdgeInsets.only(
+          bottom: MediaQuery.of(context).viewInsets.bottom,
+        ),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Center(
+              child: Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.errorRed.withValues(alpha: 0.08),
+                ),
+                child: const Icon(
+                  Icons.warning_amber_rounded,
+                  size: 28,
+                  color: AppColors.errorRed,
+                ),
+              ),
+            ),
+            const SizedBox(height: 20),
+            Center(
+              child: Text(
+                'Delete Your Account?',
+                style: GoogleFonts.inter(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'This action is permanent and cannot be undone. '
+              'Deleting your account will:',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                color: AppColors.muted,
+                height: 1.5,
+              ),
+            ),
+            const SizedBox(height: 16),
+            Container(
+              width: double.infinity,
+              padding: const EdgeInsets.all(14),
+              decoration: BoxDecoration(
+                color: AppColors.errorRed.withValues(alpha: 0.04),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: AppColors.errorRed.withValues(alpha: 0.1),
+                ),
+              ),
+              child: const Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _ConsequenceRow('Remove your speaker profile from the feed'),
+                  SizedBox(height: 8),
+                  _ConsequenceRow('Delete your personal data'),
+                  SizedBox(height: 8),
+                  _ConsequenceRow(
+                    'Forfeit any pending wallet balance & withdrawals',
+                  ),
+                  SizedBox(height: 8),
+                  _ConsequenceRow('Revoke access to all services'),
+                ],
+              ),
+            ),
+            const SizedBox(height: 24),
+            Align(
+              alignment: Alignment.centerLeft,
+              child: Text(
+                'Type DELETE to confirm',
+                style: GoogleFonts.inter(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            const SizedBox(height: 8),
+            Container(
+              decoration: BoxDecoration(
+                color: const Color(0xFFF7F5F2),
+                borderRadius: BorderRadius.circular(12),
+                border: Border.all(
+                  color: _isConfirmed
+                      ? AppColors.errorRed.withValues(alpha: 0.3)
+                      : AppColors.muted.withValues(alpha: 0.12),
+                ),
+              ),
+              child: TextField(
+                controller: _confirmController,
+                textCapitalization: TextCapitalization.characters,
+                enabled: !_isDeleting,
+                style: GoogleFonts.inter(
+                  fontSize: 16,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.errorRed,
+                ),
+                onChanged: (v) {
+                  final next = v.trim() == 'DELETE';
+                  if (next != _isConfirmed) {
+                    setState(() => _isConfirmed = next);
+                  }
+                },
+                decoration: InputDecoration(
+                  hintText: 'DELETE',
+                  hintStyle: GoogleFonts.inter(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted.withValues(alpha: 0.3),
+                  ),
+                  border: InputBorder.none,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 16,
+                    vertical: 14,
+                  ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 24),
+            Row(
+              children: [
+                Expanded(
+                  child: _SheetActionOutlined(
+                    label: 'Cancel',
+                    onTap: _isDeleting
+                        ? null
+                        : () => Navigator.pop(context),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: _SheetActionDanger(
+                    label: 'Delete Account',
+                    isLoading: _isDeleting,
+                    onTap: (_isConfirmed && !_isDeleting)
+                        ? _deleteAccount
+                        : null,
+                  ),
+                ),
+              ],
+            ),
+            SizedBox(height: MediaQuery.of(context).padding.bottom + 20),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ConsequenceRow extends StatelessWidget {
+  final String text;
+  const _ConsequenceRow(this.text);
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Container(
+          width: 5,
+          height: 5,
+          margin: const EdgeInsets.only(top: 6),
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppColors.errorRed,
+          ),
+        ),
+        const SizedBox(width: 10),
+        Expanded(
+          child: Text(
+            text,
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: AppColors.deepDarkBrown,
+              height: 1.4,
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _SheetActionOutlined extends StatelessWidget {
+  final String label;
+  final VoidCallback? onTap;
+
+  const _SheetActionOutlined({required this.label, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onTap == null;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        height: 48,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: AppColors.muted.withValues(alpha: disabled ? 0.1 : 0.2),
+          ),
+        ),
+        child: Text(
+          label,
+          style: GoogleFonts.inter(
+            fontSize: 14,
+            fontWeight: FontWeight.w600,
+            color: AppColors.muted.withValues(alpha: disabled ? 0.5 : 1.0),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SheetActionDanger extends StatelessWidget {
+  final String label;
+  final bool isLoading;
+  final VoidCallback? onTap;
+
+  const _SheetActionDanger({
+    required this.label,
+    required this.isLoading,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final disabled = onTap == null;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        height: 48,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          color: AppColors.errorRed.withValues(
+            alpha: disabled ? 0.4 : 1.0,
+          ),
+          borderRadius: BorderRadius.circular(12),
+        ),
+        child: isLoading
+            ? const SizedBox(
+                width: 18,
+                height: 18,
+                child: CircularProgressIndicator(
+                  strokeWidth: 2,
+                  color: Colors.white,
+                ),
+              )
+            : Text(
+                label,
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                ),
+              ),
       ),
     );
   }

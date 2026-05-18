@@ -73,7 +73,7 @@ class RazorpayService {
       'amount': amountInPaise,
       'currency': 'INR',
       'name': PaymentConfig.companyName,
-      'description': description,
+      'description': _sanitizeDescription(description),
       'prefill': <String, dynamic>{
         'email': userEmail,
         'contact': userPhone ?? '',
@@ -127,7 +127,7 @@ class RazorpayService {
       'amount': amountInPaise,
       'currency': 'INR',
       'name': PaymentConfig.companyName,
-      'description': description,
+      'description': _sanitizeDescription(description),
       'notes': ?notes,
       'prefill': <String, dynamic>{
         'email': userEmail,
@@ -156,5 +156,38 @@ class RazorpayService {
     onSuccess = null;
     onFailure = null;
     onWallet = null;
+  }
+
+  // Razorpay's checkout rejects descriptions that contain non-ASCII
+  // characters and surfaces the user-facing error "description
+  // contains invalid characters" — blocking payment entirely. Common
+  // culprits are em dashes (—), smart quotes (' ' " "), emoji, and
+  // accented letters that can sneak in either as code literals OR
+  // through user-typed fields (e.g. a Bible session title typed by
+  // the priest).
+  //
+  // Strategy:
+  //   • Keep printable ASCII (0x20–0x7E) verbatim.
+  //   • Replace any non-ASCII rune with a single space so we never
+  //     accidentally fuse two words ("a—b" stays "a b", not "ab").
+  //   • Collapse the resulting runs of whitespace to a single space.
+  //   • Trim and cap at 255 chars (Razorpay's documented limit).
+  //
+  // Applied automatically inside both openCheckout entry points so
+  // callers can't forget — and so a future caller that passes raw
+  // user text doesn't reintroduce this bug.
+  String _sanitizeDescription(String input) {
+    final buffer = StringBuffer();
+    for (final rune in input.runes) {
+      if (rune >= 0x20 && rune <= 0x7E) {
+        buffer.writeCharCode(rune);
+      } else {
+        buffer.write(' ');
+      }
+    }
+    final collapsed =
+        buffer.toString().replaceAll(RegExp(r'\s+'), ' ').trim();
+    if (collapsed.length <= 255) return collapsed;
+    return collapsed.substring(0, 255);
   }
 }

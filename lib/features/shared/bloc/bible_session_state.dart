@@ -18,15 +18,30 @@ class BibleSessionLoading extends BibleSessionState {
 
 class BibleSessionLoaded extends BibleSessionState {
   final List<BibleSessionModel> upcoming;
+  // Sessions the priest has actually started — surfaced as a separate
+  // bucket so the user-side tab can show a "Live Now" strip distinct
+  // from the upcoming list. Typically very small (one per priest at
+  // most), so we don't pre-compute a sort key here.
+  final List<BibleSessionModel> live;
   final List<BibleSessionModel> past;
   final List<BibleSessionModel> all;
-  // "upcoming" / "past" / "all" — drives which list the tab renders.
+  // Session ids the CURRENT user has already paid for. Drives the
+  // live card CTA — paid sessions show "Open Meeting ✅" instead of
+  // "Join Now · ₹X". Without this the list nags every paid user to
+  // pay again on every refresh until auto-complete.
+  final Set<String> paidSessionIds;
+  // "upcoming" / "live" / "past" / "all" — drives which list the
+  // tab renders. The bible tab will likely fold "live" into the
+  // top of "upcoming" rather than render a dedicated tab; both
+  // approaches are supported because the field is just a string.
   final String activeTab;
 
   const BibleSessionLoaded({
     required this.upcoming,
+    required this.live,
     required this.past,
     required this.all,
+    this.paidSessionIds = const {},
     this.activeTab = 'upcoming',
   });
 
@@ -34,6 +49,8 @@ class BibleSessionLoaded extends BibleSessionState {
     switch (activeTab) {
       case 'upcoming':
         return upcoming;
+      case 'live':
+        return live;
       case 'past':
         return past;
       case 'all':
@@ -45,14 +62,18 @@ class BibleSessionLoaded extends BibleSessionState {
 
   BibleSessionLoaded copyWith({
     List<BibleSessionModel>? upcoming,
+    List<BibleSessionModel>? live,
     List<BibleSessionModel>? past,
     List<BibleSessionModel>? all,
+    Set<String>? paidSessionIds,
     String? activeTab,
   }) {
     return BibleSessionLoaded(
       upcoming: upcoming ?? this.upcoming,
+      live: live ?? this.live,
       past: past ?? this.past,
       all: all ?? this.all,
+      paidSessionIds: paidSessionIds ?? this.paidSessionIds,
       activeTab: activeTab ?? this.activeTab,
     );
   }

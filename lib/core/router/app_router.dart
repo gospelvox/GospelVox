@@ -25,6 +25,7 @@ import 'package:gospel_vox/features/priest/profile/pages/priest_profile_page.dar
     as priest_profile;
 import 'package:gospel_vox/features/priest/registration/pages/application_rejected_page.dart';
 import 'package:gospel_vox/features/priest/registration/pages/pending_approval_page.dart';
+import 'package:gospel_vox/features/priest/reviews/pages/priest_reviews_page.dart';
 import 'package:gospel_vox/features/admin/speakers/pages/speaker_detail_page.dart';
 import 'package:gospel_vox/features/admin/speakers/pages/speakers_list_page.dart';
 import 'package:gospel_vox/features/priest/registration/pages/priest_registration_page.dart';
@@ -671,6 +672,14 @@ List<GoRoute> _priestPlaceholderRoutes() {
     GoRoute(
       path: '/priest/notifications',
       builder: (context, state) => const NotificationsPage(),
+    ),
+    // Priest's reviews surface — average + distribution + per-review
+    // list with reply composer. Reached from the rating stat tile on
+    // the dashboard, the rating row in My Profile, and the
+    // review_milestone push deep link.
+    GoRoute(
+      path: '/priest/reviews',
+      builder: (context, state) => const PriestReviewsPage(),
     ),
     // Priest's Bible sessions list — entry point from the dashboard
     // tile. The "+" button on the page itself opens the create sheet.
