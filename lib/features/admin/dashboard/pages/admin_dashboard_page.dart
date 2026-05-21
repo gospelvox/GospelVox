@@ -17,6 +17,7 @@ import 'package:gospel_vox/features/admin/dashboard/bloc/dashboard_state.dart';
 import 'package:gospel_vox/features/admin/dashboard/data/dashboard_data.dart';
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 final NumberFormat _inr =
     NumberFormat.currency(locale: 'en_IN', symbol: '\u20B9', decimalDigits: 0);
@@ -211,7 +212,7 @@ class _HeaderState extends State<_Header> {
                   padding: const EdgeInsets.symmetric(vertical: 12),
                   child: Row(
                     children: [
-                      const Icon(Icons.logout_outlined,
+                      const AppIcon(AppIcons.logout,
                           size: 20, color: AdminColors.error),
                       const SizedBox(width: 12),
                       Text('Sign Out',
@@ -904,7 +905,7 @@ class _ErrorView extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(Icons.cloud_off_outlined,
+          const AppIcon(AppIcons.cloudOff,
               size: 48, color: AdminColors.textLight),
           const SizedBox(height: 16),
           Text(message,
@@ -914,7 +915,7 @@ class _ErrorView extends StatelessWidget {
                   color: AdminColors.textMuted)),
           const SizedBox(height: 24),
           TextButton.icon(
-            icon: const Icon(Icons.refresh, color: AdminColors.brandBrown),
+            icon: const AppIcon(AppIcons.refresh, color: AdminColors.brandBrown),
             label: Text('Try Again',
                 style: GoogleFonts.inter(
                     fontSize: 14,

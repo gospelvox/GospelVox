@@ -11,6 +11,7 @@ import 'package:gospel_vox/core/theme/admin_colors.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/settings_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/widgets/coin_packs_tab.dart';
 import 'package:gospel_vox/features/admin/settings/widgets/configuration_tab.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class AdminSettingsPage extends StatefulWidget {
   final int initialTab;
@@ -63,7 +64,7 @@ class _AdminSettingsPageState extends State<AdminSettingsPage>
               behavior: HitTestBehavior.opaque,
               child: const Padding(
                 padding: EdgeInsets.all(12),
-                child: Icon(Icons.arrow_back, color: AdminColors.textPrimary, size: 22),
+                child: AppIcon(AppIcons.back, color: AdminColors.textPrimary, size: 22),
               ),
             ),
             title: Text('Settings',

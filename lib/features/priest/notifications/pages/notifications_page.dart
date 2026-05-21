@@ -16,8 +16,10 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/notifications/data/notification_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class NotificationsPage extends StatefulWidget {
   const NotificationsPage({super.key});
@@ -308,35 +310,10 @@ class _NotificationsPageState extends State<NotificationsPage> {
         elevation: 0,
         surfaceTintColor: Colors.transparent,
         leadingWidth: 56,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 12),
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 12),
           child: Align(
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () {
-                if (context.canPop()) context.pop();
-              },
-              child: Container(
-                width: 36,
-                height: 36,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.surfaceWhite,
-                  boxShadow: [
-                    BoxShadow(
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                      color: Colors.black.withValues(alpha: 0.05),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.arrow_back_ios_new,
-                  size: 16,
-                  color: AppColors.deepDarkBrown,
-                ),
-              ),
-            ),
+            child: AppBackButton(),
           ),
         ),
         title: Text(
@@ -490,7 +467,7 @@ class _NotificationCardState extends State<_NotificationCard> {
                     color: n.accentColor.withValues(alpha: 0.08),
                     borderRadius: BorderRadius.circular(10),
                   ),
-                  child: Icon(n.icon, size: 18, color: n.accentColor),
+                  child: AppIcon(n.icon, size: 18, color: n.accentColor),
                 ),
                 const SizedBox(width: 14),
                 Expanded(
@@ -583,8 +560,8 @@ class _EmptyNotifications extends StatelessWidget {
               shape: BoxShape.circle,
               color: AppColors.muted.withValues(alpha: 0.08),
             ),
-            child: Icon(
-              Icons.notifications_off_outlined,
+            child: AppIcon(
+              AppIcons.bellOff,
               size: 32,
               color: AppColors.muted.withValues(alpha: 0.5),
             ),
@@ -725,8 +702,8 @@ class _ConfirmActionSheet extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.errorRed.withValues(alpha: 0.08),
               ),
-              child: const Icon(
-                Icons.delete_sweep_outlined,
+              child: const AppIcon(
+                AppIcons.deleteSweep,
                 size: 28,
                 color: AppColors.errorRed,
               ),

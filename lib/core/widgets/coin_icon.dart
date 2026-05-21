@@ -3,6 +3,7 @@
 // with the brand palette if we ever retune amber values.
 
 import 'package:flutter/material.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class CoinIcon extends StatelessWidget {
   final double size;
@@ -41,8 +42,8 @@ class CoinIcon extends StatelessWidget {
             shape: BoxShape.circle,
             color: Colors.white.withValues(alpha: 0.35),
           ),
-          child: Icon(
-            Icons.diamond_outlined,
+          child: AppIcon(
+            AppIcons.gem,
             size: size * 0.28,
             color: Colors.white.withValues(alpha: 0.9),
           ),

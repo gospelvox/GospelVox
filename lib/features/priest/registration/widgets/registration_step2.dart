@@ -12,6 +12,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/info_hint.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const List<String> _kDenominations = [
   'Catholic',
@@ -341,8 +342,8 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                                   ),
                                 ),
                                 if (selected)
-                                  const Icon(
-                                    Icons.check,
+                                  const AppIcon(
+                                    AppIcons.check,
                                     color: AppColors.primaryBrown,
                                     size: 18,
                                   ),
@@ -589,8 +590,8 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                 hintId: 'location_hint',
                 hintText:
                     'Your location helps users find speakers near them.',
-                suffixIcon: Icon(
-                  Icons.location_on_outlined,
+                suffixIcon: AppIcon(
+                  AppIcons.location,
                   size: 20,
                   color: AppColors.muted.withValues(alpha: 0.7),
                 ),
@@ -1021,8 +1022,8 @@ class _DropdownField extends StatelessWidget {
                       ),
                     ),
                   ),
-                  Icon(
-                    Icons.keyboard_arrow_down,
+                  AppIcon(
+                    AppIcons.chevronDown,
                     color: AppColors.muted.withValues(alpha: 0.6),
                   ),
                 ],
@@ -1129,8 +1130,8 @@ class _AiWriteButtonState extends State<_AiWriteButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.auto_awesome,
+              const AppIcon(
+                AppIcons.magic,
                 size: 14,
                 color: Colors.white,
               ),

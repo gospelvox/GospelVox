@@ -33,7 +33,9 @@ import 'package:image_picker/image_picker.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -156,7 +158,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 ),
                 const SizedBox(height: 24),
                 _PickerOption(
-                  icon: Icons.photo_library_outlined,
+                  icon: AppIcons.gallery,
                   title: 'Choose from Gallery',
                   subtitle: 'Select an existing photo',
                   onTap: () =>
@@ -164,7 +166,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 ),
                 const SizedBox(height: 12),
                 _PickerOption(
-                  icon: Icons.camera_alt_outlined,
+                  icon: AppIcons.camera,
                   title: 'Take a Photo',
                   subtitle: 'Use your camera',
                   onTap: () =>
@@ -306,12 +308,11 @@ class _EditProfilePageState extends State<EditProfilePage> {
         backgroundColor: AppColors.background,
         elevation: 0,
         scrolledUnderElevation: 0,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back,
-            color: AppColors.deepDarkBrown,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 8),
+          child: Align(
+            child: AppBackButton(),
           ),
-          onPressed: () => context.pop(),
         ),
         title: Text(
           'Edit Profile',
@@ -470,8 +471,8 @@ class _EditProfilePageState extends State<EditProfilePage> {
                           ),
                         ),
                         const SizedBox(width: 8),
-                        Icon(
-                          Icons.lock_outline,
+                        AppIcon(
+                          AppIcons.lock,
                           size: 16,
                           color: AppColors.muted.withValues(alpha: 0.3),
                         ),
@@ -579,8 +580,8 @@ class _PhotoSection extends StatelessWidget {
                   width: 2.5,
                 ),
               ),
-              child: const Icon(
-                Icons.camera_alt_outlined,
+              child: const AppIcon(
+                AppIcons.camera,
                 size: 14,
                 color: Colors.white,
               ),
@@ -628,7 +629,7 @@ class _PickerOption extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.primaryBrown.withValues(alpha: 0.08),
               ),
-              child: Icon(
+              child: AppIcon(
                 icon,
                 size: 20,
                 color: AppColors.primaryBrown,
@@ -659,8 +660,8 @@ class _PickerOption extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.4),
             ),

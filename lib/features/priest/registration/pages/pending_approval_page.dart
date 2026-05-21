@@ -14,6 +14,7 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PendingApprovalPage extends StatelessWidget {
   const PendingApprovalPage({super.key});
@@ -39,8 +40,8 @@ class PendingApprovalPage extends StatelessWidget {
                         shape: BoxShape.circle,
                         color: AppColors.amberGold.withValues(alpha: 0.1),
                       ),
-                      child: const Icon(
-                        Icons.hourglass_top_rounded,
+                      child: const AppIcon(
+                        AppIcons.hourglass,
                         size: 40,
                         color: AppColors.amberGold,
                       ),
@@ -91,8 +92,8 @@ class PendingApprovalPage extends StatelessWidget {
                       child: Row(
                         crossAxisAlignment: CrossAxisAlignment.start,
                         children: [
-                          const Icon(
-                            Icons.info_outline,
+                          const AppIcon(
+                            AppIcons.info,
                             size: 20,
                             color: AppColors.muted,
                           ),

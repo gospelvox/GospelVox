@@ -54,6 +54,7 @@ import 'package:gospel_vox/features/shared/pages/session_detail_page.dart';
 import 'package:gospel_vox/features/user/sessions/pages/chat_history_page.dart';
 import 'package:gospel_vox/features/user/wallet/pages/wallet_page.dart';
 import 'package:gospel_vox/features/shared/pages/session_history_page.dart';
+import 'package:gospel_vox/features/user/home/pages/all_speakers_page.dart';
 import 'package:gospel_vox/features/user/home/pages/priest_profile_page.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
 import 'package:gospel_vox/features/user/notifications/pages/user_notifications_page.dart';
@@ -299,6 +300,13 @@ final appRouter = GoRouter(
     GoRoute(
       path: '/user/notifications',
       builder: (context, state) => const UserNotificationsPage(),
+    ),
+    // Full priest list — destination of "Available now → See all"
+    // on the home feed. Spawns its own HomeCubit, so popping back to
+    // the shell leaves the home page's cubit/scroll position intact.
+    GoRoute(
+      path: '/user/speakers',
+      builder: (context, state) => const AllSpeakersPage(),
     ),
     GoRoute(
       path: '/priest',

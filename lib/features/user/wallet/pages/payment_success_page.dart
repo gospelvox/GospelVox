@@ -12,6 +12,7 @@ import 'package:intl/intl.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/coin_icon.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green used for the success checkmark. Kept local because
 // AppColors doesn't carry a success-green token and the checkmark
@@ -150,8 +151,8 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
             ),
           ],
         ),
-        child: const Icon(
-          Icons.check_rounded,
+        child: const AppIcon(
+          AppIcons.check,
           size: 48,
           color: _kSuccessGreen,
         ),

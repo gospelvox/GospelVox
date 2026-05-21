@@ -43,6 +43,7 @@ import 'package:intl/intl.dart';
 
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PriestDashboardPage extends StatefulWidget {
   const PriestDashboardPage({super.key});
@@ -65,6 +66,20 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   int _totalSessions = 0;
   double _totalEarnings = 0.0;
   double _rating = 0.0;
+  // Total ratings count — read directly from the priest doc where the
+  // onSessionRated Cloud Function keeps it in sync. Used as the gate
+  // for "has ratings": a priest with 1+ reviews shows the average,
+  // a priest with 0 reviews shows the empty-state hint. We can't use
+  // `_rating > 0` for this — an aggregated 0.0 average is technically
+  // possible (it isn't with our 1-5 scale, but the gate should still
+  // reflect "do we have data?" not "is the data nonzero?").
+  int _reviewCount = 0;
+  // Latches once the client-side rating fallback has run. The
+  // priest doc stream re-fires every heartbeat (lastHeartbeat
+  // updates land here), so without the latch we'd re-issue the
+  // sessions query every 30s for a priest whose CF aggregation
+  // hasn't populated rating/reviewCount yet.
+  bool _ratingFallbackAttempted = false;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
 
@@ -176,8 +191,19 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         _totalSessions = (data['totalSessions'] as num?)?.toInt() ?? 0;
         _totalEarnings = (data['totalEarnings'] as num?)?.toDouble() ?? 0.0;
         _rating = (data['rating'] as num?)?.toDouble() ?? 0.0;
+        _reviewCount = (data['reviewCount'] as num?)?.toInt() ?? 0;
         _loading = false;
       });
+
+      // Client-side rating fallback: if the priest doc has no
+      // aggregated reviewCount yet (CF hasn't fired, legacy data, or
+      // the trigger failed mid-write), compute the average locally
+      // from rated sessions. Latched so we don't re-query on every
+      // heartbeat-driven priest-doc snapshot.
+      if (_reviewCount == 0 && !_ratingFallbackAttempted) {
+        _ratingFallbackAttempted = true;
+        _computeRatingFromSessions();
+      }
 
       // Auto-online is now opt-in. We respect whatever the priest's
       // last toggle said:
@@ -289,6 +315,42 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         '[PriestDashboard] missed-request stream failed: $e\n$st',
       );
     });
+  }
+
+  // ─── Rating fallback ───────────────────────────────────────
+
+  // Runs once per dashboard mount when the priest doc reports
+  // reviewCount == 0. Reads the priest's sessions, keeps the ones a
+  // user rated, and averages them locally. The CF (onSessionRated)
+  // remains the source of truth for the priest doc fields; this
+  // method just patches the dashboard's local view so a temporarily
+  // missing aggregation doesn't show "No ratings yet" even when
+  // rated sessions exist.
+  Future<void> _computeRatingFromSessions() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('sessions')
+          .where('priestId', isEqualTo: uid)
+          .limit(500)
+          .get()
+          .timeout(const Duration(seconds: 8));
+      final ratings = <double>[];
+      for (final d in snap.docs) {
+        final r = (d.data()['userRating'] as num?)?.toDouble();
+        if (r != null && r > 0) ratings.add(r);
+      }
+      if (ratings.isEmpty || !mounted) return;
+      final avg = ratings.reduce((a, b) => a + b) / ratings.length;
+      setState(() {
+        _rating = double.parse(avg.toStringAsFixed(1));
+        _reviewCount = ratings.length;
+      });
+    } catch (_) {
+      // Best-effort — leave the empty state in place if the query
+      // fails. The CF will eventually catch up on its own.
+    }
   }
 
   // ─── Online / busy / offline lifecycle ─────────────────────
@@ -435,8 +497,8 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
                               _StatusVariant.online) ...[
                             const SizedBox(height: 24),
                             _ManageAvailabilityCard(
-                              onTap: () =>
-                                  context.push('/priest/settings'),
+                              onTap: () => context
+                                  .push('/priest/settings/availability'),
                             ),
                           ],
                         ],
@@ -544,8 +606,8 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
                   shape: BoxShape.circle,
                   color: AppColors.amberGold.withValues(alpha: 0.2),
                 ),
-                child: const Icon(
-                  Icons.lock_open_rounded,
+                child: const AppIcon(
+                  AppIcons.lockOpen,
                   size: 18,
                   color: AppColors.amberGold,
                 ),
@@ -585,7 +647,11 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   }
 
   Widget _buildStatsRow() {
-    final hasRating = _rating > 0;
+    // Gate on reviewCount, not rating: the CF stores both atomically,
+    // and reviewCount is the unambiguous "do we have any ratings?"
+    // signal. The fallback above also populates both fields so the
+    // empty state never shows when rated sessions exist.
+    final hasRating = _reviewCount > 0;
     final earnedFormatted =
         '₹${_inrFormatter.format(_totalEarnings.round())}';
 
@@ -595,7 +661,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         children: [
           Expanded(
             child: _DashStatCard(
-              icon: Icons.chat_bubble_rounded,
+              icon: AppIcons.chat,
               iconColor: AppColors.primaryBrown,
               value: _totalSessions.toString(),
               label: 'Sessions',
@@ -604,7 +670,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
           const SizedBox(width: 10),
           Expanded(
             child: _DashStatCard(
-              icon: Icons.account_balance_wallet_rounded,
+              icon: AppIcons.wallet,
               iconColor: AppColors.amberGold,
               value: earnedFormatted,
               label: 'Earned',
@@ -619,7 +685,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
             // empty-state copy and understand what will appear here
             // once the first rating lands.
             child: _DashStatCard(
-              icon: Icons.star_rounded,
+              icon: AppIcons.starFilled,
               iconColor: AppColors.amberGold,
               value: hasRating ? _rating.toStringAsFixed(1) : '',
               label: hasRating ? 'Rating' : '',
@@ -640,7 +706,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     // single monochrome strip.
     final actions = <_QuickActionData>[
       _QuickActionData(
-        icon: Icons.account_balance_wallet_outlined,
+        icon: AppIcons.wallet,
         label: 'My Wallet',
         iconColor: AppColors.amberGold,
         onTap: () => context.push('/priest/wallet'),
@@ -650,19 +716,19 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
       // No badge here: the dedicated _MissedRequestBanner above
       // surfaces the unread missed-request count.
       _QuickActionData(
-        icon: Icons.people_outline_rounded,
+        icon: AppIcons.users,
         label: 'My Users',
         iconColor: AppColors.primaryBrown,
         onTap: () => context.push('/priest/my-users'),
       ),
       _QuickActionData(
-        icon: Icons.menu_book_outlined,
+        icon: AppIcons.bible,
         label: 'Bible Sessions',
         iconColor: AppColors.amberGold,
         onTap: () => context.push('/priest/bible-sessions'),
       ),
       _QuickActionData(
-        icon: Icons.settings_outlined,
+        icon: AppIcons.settings,
         label: 'Settings',
         iconColor: AppColors.primaryBrown,
         onTap: () => context.push('/priest/settings'),
@@ -817,7 +883,7 @@ class _StatusCard extends StatelessWidget {
               shape: BoxShape.circle,
               color: spec.glyphTint,
             ),
-            child: Icon(
+            child: AppIcon(
               spec.glyph,
               size: 26,
               color: spec.glyphColor,
@@ -841,7 +907,7 @@ class _StatusCard extends StatelessWidget {
           titleColor: _kSageGreen,
           title: 'Online · Accepting requests',
           subtitle: 'Users can start chat or voice sessions',
-          glyph: Icons.cell_tower_rounded,
+          glyph: AppIcons.broadcast,
           glyphTint: _kSageGreen.withValues(alpha: 0.12),
           glyphColor: _kSageGreen,
         );
@@ -854,7 +920,7 @@ class _StatusCard extends StatelessWidget {
           title: 'Busy · In a session',
           subtitle:
               'Active session in progress. New requests are paused.',
-          glyph: Icons.hourglass_top_rounded,
+          glyph: AppIcons.hourglass,
           glyphTint: AppColors.amberGold.withValues(alpha: 0.15),
           glyphColor: AppColors.primaryBrown,
         );
@@ -867,7 +933,7 @@ class _StatusCard extends StatelessWidget {
           title: 'Offline · Not accepting requests',
           subtitle:
               "You're hidden from the user feed. Resume in Settings.",
-          glyph: Icons.do_not_disturb_on_outlined,
+          glyph: AppIcons.block,
           glyphTint: AppColors.muted.withValues(alpha: 0.12),
           glyphColor: AppColors.muted,
         );
@@ -1031,7 +1097,7 @@ class _DashStatCard extends StatelessWidget {
               shape: BoxShape.circle,
               color: iconColor.withValues(alpha: 0.14),
             ),
-            child: Icon(icon, size: 18, color: iconColor),
+            child: AppIcon(icon, size: 18, color: iconColor),
           ),
           const SizedBox(height: 14),
           if (isEmpty)
@@ -1104,13 +1170,13 @@ class _RatingStars extends StatelessWidget {
         final position = i + 1;
         final IconData icon;
         if (rating >= position) {
-          icon = Icons.star_rounded;
+          icon = AppIcons.starFilled;
         } else if (rating >= position - 0.5) {
-          icon = Icons.star_half_rounded;
+          icon = AppIcons.starHalf;
         } else {
-          icon = Icons.star_outline_rounded;
+          icon = AppIcons.starOutline;
         }
-        return Icon(
+        return AppIcon(
           icon,
           size: 11,
           color: AppColors.amberGold,
@@ -1186,7 +1252,7 @@ class _QuickActionState extends State<_QuickAction> {
                     color:
                         widget.iconColor.withValues(alpha: 0.14),
                   ),
-                  child: Icon(
+                  child: AppIcon(
                     widget.icon,
                     size: 22,
                     color: widget.iconColor,
@@ -1338,8 +1404,8 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
                     shape: BoxShape.circle,
                     color: terraCotta.withValues(alpha: 0.12),
                   ),
-                  child: const Icon(
-                    Icons.phone_missed_rounded,
+                  child: const AppIcon(
+                    AppIcons.phoneMissed,
                     size: 20,
                     color: terraCotta,
                   ),
@@ -1408,8 +1474,8 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
             ),
           ),
           const SizedBox(width: 8),
-          Icon(
-            Icons.chevron_right_rounded,
+          AppIcon(
+            AppIcons.chevronRight,
             size: 20,
             color: terraCotta.withValues(alpha: 0.5),
           ),
@@ -1491,8 +1557,8 @@ class _NotificationBellState extends State<_NotificationBell> {
                   clipBehavior: Clip.none,
                   alignment: Alignment.center,
                   children: [
-                    const Icon(
-                      Icons.notifications_outlined,
+                    const AppIcon(
+                      AppIcons.bellOutline,
                       size: 22,
                       color: AppColors.deepDarkBrown,
                     ),
@@ -1679,8 +1745,8 @@ class _ManageAvailabilityCardState extends State<_ManageAvailabilityCard> {
                 ],
               ),
             ),
-            child: const Icon(
-              Icons.self_improvement_rounded,
+            child: const AppIcon(
+              AppIcons.prayer,
               size: 34,
               color: AppColors.primaryBrown,
             ),
@@ -1748,8 +1814,8 @@ class _ManageAvailabilityCardState extends State<_ManageAvailabilityCard> {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
-                              Icons.pause_rounded,
+                            const AppIcon(
+                              AppIcons.pause,
                               size: 16,
                               color: Colors.white,
                             ),

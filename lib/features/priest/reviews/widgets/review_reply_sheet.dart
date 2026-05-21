@@ -27,6 +27,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 // would filter it out and silently break the success toast).
 import 'package:gospel_vox/features/priest/reviews/pages/priest_reviews_page.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ReviewReplySheet extends StatefulWidget {
   final SessionModel session;
@@ -212,8 +213,8 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                             : () => Navigator.of(context).pop(false),
                         child: Padding(
                           padding: const EdgeInsets.all(4),
-                          child: Icon(
-                            Icons.close_rounded,
+                          child: AppIcon(
+                            AppIcons.close,
                             size: 18,
                             color: AppColors.muted
                                 .withValues(alpha: _saving ? 0.2 : 0.5),
@@ -274,8 +275,8 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                   Row(
                     children: [
                       if (_errorText != null) ...[
-                        Icon(
-                          Icons.error_outline_rounded,
+                        AppIcon(
+                          AppIcons.error,
                           size: 13,
                           color: AppColors.errorRed,
                         ),
@@ -391,10 +392,10 @@ class _ReviewQuote extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: List.generate(5, (i) {
                   final filled = i < stars;
-                  return Icon(
+                  return AppIcon(
                     filled
-                        ? Icons.star_rounded
-                        : Icons.star_outline_rounded,
+                        ? AppIcons.starFilled
+                        : AppIcons.starOutline,
                     size: 12,
                     color: filled
                         ? AppColors.amberGold

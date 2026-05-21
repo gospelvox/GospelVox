@@ -34,6 +34,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/voice_call_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/voice_call_state.dart';
 import 'package:gospel_vox/features/shared/widgets/recharge_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Pinned locally rather than in AppColors — this is the only voice
 // call surface, and elevating these to theme tokens would pollute
@@ -645,10 +646,10 @@ class _SignalPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          AppIcon(
             isBad
-                ? Icons.signal_wifi_off_rounded
-                : Icons.signal_wifi_bad_rounded,
+                ? AppIcons.wifiOff
+                : AppIcons.wifiOff,
             size: 14,
             color: isBad ? const Color(0xFFFF6B6B) : tint,
           ),
@@ -689,7 +690,7 @@ class _ConnectionTroubleBanner extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
+          AppIcon(
             Icons.signal_cellular_connected_no_internet_0_bar_rounded,
             size: 16,
             color: _kAmber,
@@ -750,8 +751,8 @@ class _SilenceHintBanner extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.mic_off_rounded,
+          AppIcon(
+            AppIcons.micOff,
             size: 16,
             color: _kAmber,
           ),
@@ -830,8 +831,8 @@ class _LowBalanceStrip extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const Icon(
-            Icons.warning_amber_rounded,
+          const AppIcon(
+            AppIcons.warning,
             size: 16,
             color: Color(0xFFFF6B6B),
           ),
@@ -1074,7 +1075,7 @@ class _ControlsRow extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.spaceEvenly,
         children: [
           _CallControl(
-            icon: isMuted ? Icons.mic_off_rounded : Icons.mic_rounded,
+            icon: isMuted ? AppIcons.micOff : AppIcons.mic,
             label: isMuted ? 'Unmute' : 'Mute',
             isActive: isMuted,
             activeColor: _kAccentRed.withValues(alpha: 0.2),
@@ -1089,8 +1090,8 @@ class _ControlsRow extends StatelessWidget {
           ),
           _CallControl(
             icon: isSpeakerOn
-                ? Icons.volume_up_rounded
-                : Icons.volume_off_rounded,
+                ? AppIcons.volumeUp
+                : AppIcons.volumeOff,
             label: isSpeakerOn ? 'Speaker' : 'Earpiece',
             // The "active" highlight reads better as the off state
             // (earpiece) — that's the one the user has explicitly
@@ -1155,7 +1156,7 @@ class _CallControlState extends State<_CallControl> {
                       ? widget.activeColor
                       : Colors.white.withValues(alpha: 0.08),
                 ),
-                child: Icon(
+                child: AppIcon(
                   widget.icon,
                   size: 24,
                   color: Colors.white.withValues(alpha: 0.85),
@@ -1239,8 +1240,8 @@ class _EndCallButtonState extends State<_EndCallButton> {
                           ),
                         ),
                       )
-                    : const Icon(
-                        Icons.call_end_rounded,
+                    : const AppIcon(
+                        AppIcons.phoneEnd,
                         size: 32,
                         color: Colors.white,
                       ),
@@ -1305,8 +1306,8 @@ class _EndCallSheet extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: _kAccentRed.withValues(alpha: 0.15),
               ),
-              child: const Icon(
-                Icons.call_end_rounded,
+              child: const AppIcon(
+                AppIcons.phoneEnd,
                 size: 28,
                 color: _kAccentRed,
               ),

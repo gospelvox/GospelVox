@@ -30,6 +30,7 @@ import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_cubit.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_state.dart';
 import 'package:gospel_vox/features/user/wallet/widgets/payment_failure_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
 
@@ -414,17 +415,17 @@ class _PaywallContent extends StatelessWidget {
           // Three minimal benefit lines — no card, no subtitle noise.
           // Priests just read these in 2 seconds and move on.
           const _QuickBenefit(
-            icon: Icons.chat_bubble_outline_rounded,
+            icon: AppIcons.chatOutline,
             label: 'Accept chat and voice sessions',
           ),
           const SizedBox(height: 18),
           const _QuickBenefit(
-            icon: Icons.menu_book_outlined,
+            icon: AppIcons.bible,
             label: 'Host Bible study groups',
           ),
           const SizedBox(height: 18),
           const _QuickBenefit(
-            icon: Icons.account_balance_wallet_outlined,
+            icon: AppIcons.wallet,
             label: 'Earn for every minute you serve',
           ),
 
@@ -486,8 +487,8 @@ class _ApprovedBadge extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const Icon(
-            Icons.check_circle_rounded,
+          const AppIcon(
+            AppIcons.checkCircle,
             size: 16,
             color: _kSuccessGreen,
           ),
@@ -600,7 +601,7 @@ class _QuickBenefit extends StatelessWidget {
             shape: BoxShape.circle,
             color: AppColors.primaryBrown.withValues(alpha: 0.07),
           ),
-          child: Icon(
+          child: AppIcon(
             icon,
             size: 18,
             color: AppColors.primaryBrown.withValues(alpha: 0.75),
@@ -747,8 +748,8 @@ class _SecureFooter extends StatelessWidget {
     return Row(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        Icon(
-          Icons.lock_outline,
+        AppIcon(
+          AppIcons.lock,
           size: 12,
           color: AppColors.muted.withValues(alpha: 0.55),
         ),
@@ -858,8 +859,8 @@ class _PaymentStuckScreen extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.amberGold.withValues(alpha: 0.12),
               ),
-              child: const Icon(
-                Icons.mark_email_read_outlined,
+              child: const AppIcon(
+                AppIcons.mailRead,
                 size: 40,
                 color: AppColors.amberGold,
               ),
@@ -939,8 +940,8 @@ class _PaymentStuckScreen extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(width: 10),
-                          Icon(
-                            Icons.copy_outlined,
+                          AppIcon(
+                            AppIcons.copy,
                             size: 14,
                             color: AppColors.muted
                                 .withValues(alpha: 0.7),

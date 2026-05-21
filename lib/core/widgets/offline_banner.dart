@@ -19,6 +19,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/connectivity_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class OfflineBanner extends StatefulWidget {
   final Widget child;
@@ -136,8 +137,8 @@ class _BannerCard extends StatelessWidget {
                   color: AppColors.amberGold.withValues(alpha: 0.18),
                   shape: BoxShape.circle,
                 ),
-                child: const Icon(
-                  Icons.wifi_off_rounded,
+                child: const AppIcon(
+                  AppIcons.wifiOff,
                   size: 18,
                   color: AppColors.amberGold,
                 ),
@@ -176,8 +177,8 @@ class _BannerCard extends StatelessWidget {
                 onTap: onDismiss,
                 child: Padding(
                   padding: const EdgeInsets.all(2),
-                  child: Icon(
-                    Icons.close_rounded,
+                  child: AppIcon(
+                    AppIcons.close,
                     size: 18,
                     color: Colors.white.withValues(alpha: 0.7),
                   ),

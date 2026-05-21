@@ -16,6 +16,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for the earnings line — already used by the priest
 // summary page so the brand vocabulary stays consistent.
@@ -265,8 +266,8 @@ class _SessionDroppedPageState extends State<SessionDroppedPage>
         shape: BoxShape.circle,
         color: AppColors.amberGold.withValues(alpha: 0.1),
       ),
-      child: Icon(
-        Icons.call_end_rounded,
+      child: AppIcon(
+        AppIcons.phoneEnd,
         size: 36,
         color: AppColors.amberGold,
       ),
@@ -309,19 +310,19 @@ class _SummaryCard extends StatelessWidget {
       child: Column(
         children: [
           _InfoRow(
-            icon: Icons.person_outline_rounded,
+            icon: AppIcons.userOutline,
             label: 'User',
             value: userName.isNotEmpty ? userName : '—',
           ),
           const _Divider(),
           _InfoRow(
-            icon: Icons.access_time_rounded,
+            icon: AppIcons.clock,
             label: 'Duration',
             value: _formatDuration(duration),
           ),
           const _Divider(),
           _InfoRow(
-            icon: Icons.account_balance_wallet_outlined,
+            icon: AppIcons.wallet,
             label: 'You Earned',
             value: '₹$earned',
             valueColor: _kPaidGreen,
@@ -360,7 +361,7 @@ class _InfoRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 20,
             color: AppColors.muted.withValues(alpha: 0.55),

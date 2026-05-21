@@ -1,7 +1,7 @@
 // Root shell for the signed-in user role — an IndexedStack with a
-// custom pill bottom-nav. We hold all top-level tab children alive at
-// the same time so switching between them feels instant and preserves
-// scroll position; only the active tab paints.
+// custom floating bottom-nav. We hold all top-level tab children
+// alive at the same time so switching between them feels instant and
+// preserves scroll position; only the active tab paints.
 //
 // Why expose the tab-switcher via an InheritedWidget: the Me tab's
 // "My Sessions" row needs to jump to the Sessions tab without
@@ -16,22 +16,45 @@
 //   2  Bible
 //   3  Me
 //
-// Sessions sits next to Home because it's a daily-use surface;
-// Bible is a weekly cadence. Wallet is no longer a tab — it lives
-// at /user/wallet as a push route, reached from the Home coin pill
-// and the Me tab.
+// Hide-on-scroll: the nav slides down off-screen when the user
+// scrolls toward more content, and slides back up when they reverse.
+// Driven by a NotificationListener<UserScrollNotification> +
+// AnimationController. We deliberately animate via a scoped
+// AnimatedBuilder around a Transform.translate so:
+//   * The HomePage / other tab subtrees never rebuild on ticks
+//     (Transform is composite-only, no layout).
+//   * The IndexedStack never rebuilds on ticks (animation state lives
+//     outside the shell's setState path).
+//   * Content scrolls *behind* the nav rather than reflowing when it
+//     hides — reflow during scroll is the #1 cause of jank in this
+//     kind of UI.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/rendering.dart' show ScrollDirection;
 import 'package:go_router/go_router.dart';
-import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/user/bible/pages/bible_tab.dart';
 import 'package:gospel_vox/features/user/home/pages/home_page.dart';
+import 'package:gospel_vox/features/user/home/widgets/floating_bottom_nav.dart';
+import 'package:gospel_vox/features/user/matrimony/pages/matrimony_tab.dart';
 import 'package:gospel_vox/features/user/profile/pages/me_tab.dart';
 import 'package:gospel_vox/features/user/sessions/pages/sessions_tab.dart';
+
+// Layout constants for the floating nav. Kept module-private — the
+// shell needs them to compute the slide-down distance and to apply
+// the correct bottom padding to the tab content.
+const double _kNavSideMargin = 16;
+const double _kNavBottomMargin = 12;
+
+// Matrimony is appended as tab 4 (not inserted at 2) so existing
+// callers of UserShellScope.switchToTab(0..3) keep working unchanged.
+// Visual position in the nav row is still centre — that ordering is
+// handled inside FloatingBottomNav.
+const int _kMatrimonyTabIndex = 4;
+const int _kMaxTabIndex = 4;
 
 class UserShellPage extends StatefulWidget {
   const UserShellPage({super.key});
@@ -40,12 +63,23 @@ class UserShellPage extends StatefulWidget {
   State<UserShellPage> createState() => _UserShellPageState();
 }
 
-class _UserShellPageState extends State<UserShellPage> {
+class _UserShellPageState extends State<UserShellPage>
+    with SingleTickerProviderStateMixin {
   int _currentIndex = 0;
   // Stream of upcoming-session count for the Bible nav badge.
   // Created once in initState (not per-build) so we don't churn
   // a new Firestore subscription on every shell rebuild.
   late final Stream<int> _bibleUpcomingCount;
+
+  // Hide-on-scroll controller. value 0 = fully visible, value 1 =
+  // fully hidden (slid down by nav height + bottom inset + margin).
+  late final AnimationController _hideController;
+
+  // Last scroll direction we acted on. UserScrollNotification can
+  // fire repeatedly with the same direction during a single drag —
+  // tracking the last value lets us skip redundant forward()/reverse()
+  // calls and keeps the animation controller from being thrashed.
+  ScrollDirection _lastDirection = ScrollDirection.idle;
 
   @override
   void initState() {
@@ -55,6 +89,12 @@ class _UserShellPageState extends State<UserShellPage> {
         .where('status', isEqualTo: 'upcoming')
         .snapshots()
         .map((s) => s.size);
+
+    _hideController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 220),
+    );
+
     // Drain any pending notification-tap route. A tap from terminated
     // state stashes the route during NotificationService.init(); the
     // shell is the first screen mounted after auth gating, so this is
@@ -71,82 +111,109 @@ class _UserShellPageState extends State<UserShellPage> {
     });
   }
 
+  @override
+  void dispose() {
+    _hideController.dispose();
+    super.dispose();
+  }
+
   void _switchToTab(int index) {
     if (index == _currentIndex) return;
-    if (index < 0 || index > 3) return;
+    if (index < 0 || index > _kMaxTabIndex) return;
     setState(() => _currentIndex = index);
+    // Always re-reveal the nav when the user explicitly changes tabs —
+    // they just tapped it, so it shouldn't immediately slide away.
+    _hideController.reverse();
+  }
+
+  // Scroll listener. Returning false lets the notification keep
+  // bubbling (so RefreshIndicator etc. still receive it). We do NOT
+  // call setState here — the AnimationController drives a scoped
+  // AnimatedBuilder, which is the only thing that rebuilds.
+  bool _onScroll(UserScrollNotification n) {
+    final dir = n.direction;
+    if (dir == _lastDirection) return false;
+    _lastDirection = dir;
+
+    if (dir == ScrollDirection.reverse) {
+      // User dragging up to reveal content below → hide the nav.
+      _hideController.forward();
+    } else if (dir == ScrollDirection.forward) {
+      // User dragging down toward earlier content → reveal the nav.
+      _hideController.reverse();
+    }
+    // ScrollDirection.idle leaves the nav in its current state.
+    return false;
   }
 
   @override
   Widget build(BuildContext context) {
+    final bottomInset = MediaQuery.of(context).padding.bottom;
+    // Distance the nav slides when fully hidden. Uses the nav's full
+    // visual height (card + lifted FAB) plus its bottom margin and
+    // safe-area inset so the entire affordance — including the
+    // raised matrimony FAB — clears the screen edge.
+    final hideDistance =
+        kFloatingNavTotalHeight + _kNavBottomMargin + bottomInset + 8;
+
     return UserShellScope(
       currentIndex: _currentIndex,
       switchToTab: _switchToTab,
       child: Scaffold(
-        body: IndexedStack(
-          index: _currentIndex,
-          children: const [
-            HomePage(),
-            SessionsTab(),
-            BibleTab(),
-            MeTab(),
-          ],
-        ),
-        bottomNavigationBar: Container(
-          height: 72 + MediaQuery.of(context).padding.bottom,
-          padding: EdgeInsets.only(
-            bottom: MediaQuery.of(context).padding.bottom,
-          ),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceWhite,
-            boxShadow: [
-              BoxShadow(
-                color: Colors.black.withValues(alpha: 0.06),
-                blurRadius: 12,
-                offset: const Offset(0, -2),
-              ),
-            ],
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.spaceAround,
+        backgroundColor: AppColors.backgroundPrimary,
+        // extendBody lets the IndexedStack paint into the area
+        // beneath the floating nav, so scrolling content slides
+        // *behind* the nav instead of stopping above it.
+        extendBody: true,
+        body: NotificationListener<UserScrollNotification>(
+          onNotification: _onScroll,
+          child: Stack(
             children: [
-              _NavItem(
-                index: 0,
-                currentIndex: _currentIndex,
-                inactiveIcon: Icons.home_outlined,
-                activeIcon: Icons.home_rounded,
-                label: "Home",
-                onTap: () => _switchToTab(0),
+              Positioned.fill(
+                child: IndexedStack(
+                  index: _currentIndex,
+                  // Matrimony is appended at index 4 (visual centre
+                  // is handled by FloatingBottomNav) so the existing
+                  // switchToTab(0..3) call-sites keep their meanings.
+                  children: const [
+                    HomePage(),
+                    SessionsTab(),
+                    BibleTab(),
+                    MeTab(),
+                    MatrimonyTab(),
+                  ],
+                ),
               ),
-              _NavItem(
-                index: 1,
-                currentIndex: _currentIndex,
-                inactiveIcon: Icons.chat_outlined,
-                activeIcon: Icons.chat_rounded,
-                label: "Sessions",
-                onTap: () => _switchToTab(1),
-              ),
-              StreamBuilder<int>(
-                stream: _bibleUpcomingCount,
-                builder: (_, snap) {
-                  return _NavItem(
-                    index: 2,
-                    currentIndex: _currentIndex,
-                    inactiveIcon: Icons.menu_book_outlined,
-                    activeIcon: Icons.menu_book_rounded,
-                    label: "Bible",
-                    badgeCount: snap.data ?? 0,
-                    onTap: () => _switchToTab(2),
-                  );
-                },
-              ),
-              _NavItem(
-                index: 3,
-                currentIndex: _currentIndex,
-                inactiveIcon: Icons.person_outline,
-                activeIcon: Icons.person_rounded,
-                label: "Me",
-                onTap: () => _switchToTab(3),
+              Positioned(
+                left: _kNavSideMargin,
+                right: _kNavSideMargin,
+                bottom: _kNavBottomMargin + bottomInset,
+                child: AnimatedBuilder(
+                  animation: _hideController,
+                  // child is built ONCE; AnimatedBuilder only rebuilds
+                  // the Transform.translate on each tick. The nav's
+                  // own paint layer is wrapped in a RepaintBoundary
+                  // inside FloatingBottomNav, so ticking the Transform
+                  // doesn't repaint the icons/labels either.
+                  builder: (_, child) {
+                    final dy = _hideController.value * hideDistance;
+                    return Transform.translate(
+                      offset: Offset(0, dy),
+                      child: child,
+                    );
+                  },
+                  child: StreamBuilder<int>(
+                    stream: _bibleUpcomingCount,
+                    builder: (_, snap) {
+                      return FloatingBottomNav(
+                        currentIndex: _currentIndex,
+                        matrimonyIndex: _kMatrimonyTabIndex,
+                        bibleBadgeCount: snap.data ?? 0,
+                        onTap: _switchToTab,
+                      );
+                    },
+                  ),
+                ),
               ),
             ],
           ),
@@ -182,128 +249,3 @@ class UserShellScope extends InheritedWidget {
   bool updateShouldNotify(UserShellScope oldWidget) =>
       currentIndex != oldWidget.currentIndex;
 }
-
-class _NavItem extends StatelessWidget {
-  final int index;
-  final int currentIndex;
-  final IconData inactiveIcon;
-  final IconData activeIcon;
-  final String label;
-  final VoidCallback onTap;
-  // Optional badge rendered as a small amber pill over the icon's
-  // upper-right corner. 0 hides it. Used by the Bible tab to
-  // expose the upcoming-session count without forcing the user to
-  // open the tab to see they have somewhere to be.
-  final int badgeCount;
-
-  const _NavItem({
-    required this.index,
-    required this.currentIndex,
-    required this.inactiveIcon,
-    required this.activeIcon,
-    required this.label,
-    required this.onTap,
-    this.badgeCount = 0,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    final isActive = index == currentIndex;
-    // Cap the displayed count so a runaway upcoming list doesn't
-    // bloat the badge wider than the icon. "9+" is the standard
-    // iOS / Android convention.
-    final badgeText = badgeCount > 9 ? '9+' : '$badgeCount';
-
-    return GestureDetector(
-      onTap: onTap,
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          AnimatedContainer(
-            duration: const Duration(milliseconds: 200),
-            padding: isActive
-                ? const EdgeInsets.symmetric(horizontal: 16, vertical: 6)
-                : const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-            decoration: BoxDecoration(
-              color: isActive ? AppColors.primaryBrown : Colors.transparent,
-              borderRadius: BorderRadius.circular(20),
-            ),
-            child: Row(
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                // Icon + optional overlapping badge. Stack with
-                // clipBehavior: Clip.none lets the badge pop outside
-                // the 22-px icon bounds for the standard "notification
-                // dot on icon corner" silhouette. Sized to 22 so the
-                // row layout matches the no-badge variant exactly —
-                // adding/removing the badge doesn't shift adjacent
-                // items.
-                SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: Stack(
-                    clipBehavior: Clip.none,
-                    alignment: Alignment.center,
-                    children: [
-                      Icon(
-                        isActive ? activeIcon : inactiveIcon,
-                        size: 22,
-                        color:
-                            isActive ? Colors.white : AppColors.muted,
-                      ),
-                      if (badgeCount > 0)
-                        Positioned(
-                          top: -6,
-                          right: -8,
-                          child: Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 5,
-                              vertical: 1,
-                            ),
-                            constraints: const BoxConstraints(
-                              minWidth: 16,
-                              minHeight: 14,
-                            ),
-                            decoration: BoxDecoration(
-                              color: AppColors.amberGold,
-                              borderRadius: BorderRadius.circular(8),
-                              border: Border.all(
-                                color: AppColors.surfaceWhite,
-                                width: 1.5,
-                              ),
-                            ),
-                            alignment: Alignment.center,
-                            child: Text(
-                              badgeText,
-                              style: GoogleFonts.inter(
-                                fontSize: 9,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                height: 1.0,
-                              ),
-                            ),
-                          ),
-                        ),
-                    ],
-                  ),
-                ),
-                if (isActive) ...[
-                  const SizedBox(width: 6),
-                  Text(
-                    label,
-                    style: GoogleFonts.inter(
-                      fontSize: 12,
-                      fontWeight: FontWeight.w600,
-                      color: Colors.white,
-                    ),
-                  ),
-                ],
-              ],
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-

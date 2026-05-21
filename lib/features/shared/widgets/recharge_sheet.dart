@@ -1,22 +1,29 @@
-// Compact in-app top-up sheet. Used in two places — mid-chat and
-// mid-voice-call — so the visual layout deliberately matches the
-// pattern Indian consult apps (Astrotalk, Bhrigu) ship: small
-// height, contextual headline, 4-column grid of pack cards, single
-// Proceed button. Anything taller pushes the live conversation off
-// screen and tanks conversion.
+// In-app top-up sheet shown when the user runs low mid-session or
+// fails the 5-minute preflight before starting one. Used by:
+//   • voice_call_view.dart  (mid-call low-balance prompt)
+//   • chat_session_view.dart (mid-chat low-balance prompt)
+//   • session_preflight.dart (pre-session balance gate)
+//
+// The visual has two goals:
+//   1. Hero up the best-value pack so the user doesn't have to
+//      pick — a single tap on "Proceed" should close the gap.
+//   2. Cap the visible packs to 4 so a low-balance user isn't
+//      forced to read a long catalogue. The full pack list lives
+//      on the dedicated Wallet page, reachable via "See all plans".
 //
 // What this file owns vs delegates:
-//   • Owns: the visual sheet, pack selection state, Razorpay
+//   • Owns: the visual sheet, local pack selection state, Razorpay
 //     bridge, success/failure handling.
-//   • Delegates: the contextual copy (headline + subtext) is
-//     passed in by the caller — voice/chat decide their own
-//     wording so the sheet stays caller-agnostic.
+//   • Delegates: the contextual subtitle ("Add ₹X to continue...")
+//     is passed in by the caller via `infoHeadline` — voice/chat
+//     decide their own wording so the sheet stays caller-agnostic.
 
 import 'dart:math' as math;
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
 
@@ -26,15 +33,19 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class RechargeSheet extends StatefulWidget {
-  // Shown as a small wallet pill in the title row. Null hides it.
+  // Current wallet balance — displayed in the "Current balance" info
+  // strip. Defaults to 0 if the caller doesn't have a reading.
   final int? currentBalance;
-  // Bold info line at the top of the gray info card.
-  // e.g. "Minimum balance: ₹115 (for 5 minutes)"
+  // Subtitle under the title. The 3 callers already build a
+  // contextual "Add ₹X more to keep your chat going" string; the
+  // sheet just renders whatever they pass.
   final String? infoHeadline;
-  // Lighter line below the headline. Use it for the contextual
-  // "with $priestName" sentence the caller wants to surface.
+  // Kept on the API surface so callers still compile, but the new
+  // layout has no slot for a third line — intentionally unused.
+  // ignore: unused_element_parameter
   final String? infoSubtext;
 
   const RechargeSheet({
@@ -44,21 +55,31 @@ class RechargeSheet extends StatefulWidget {
     this.infoSubtext,
   });
 
-  // Convenience opener — mirrors the calling pattern callers got
-  // used to. Optional context params let voice/chat hand in their
-  // own copy without having to know about showModalBottomSheet's
-  // exact options.
   static Future<bool?> show(
     BuildContext context, {
     int? currentBalance,
     String? infoHeadline,
     String? infoSubtext,
   }) {
+    // Cap sheet height at 92% of screen so on short phones / when
+    // text scaling pushes content tall, the sheet still reads as a
+    // sheet (not a full page) and the SingleChildScrollView inside
+    // takes over.
+    final mq = MediaQuery.of(context);
     return showModalBottomSheet<bool>(
       context: context,
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       barrierColor: Colors.black.withValues(alpha: 0.5),
+      constraints: BoxConstraints(
+        // 0.88 leaves a visible strip of the underlying screen at
+        // the top so the sheet reads as a sheet (not a full page).
+        maxHeight: mq.size.height * 0.88,
+        // Tablets: don't let the sheet stretch edge-to-edge. 520
+        // matches the comfortable phone-portrait width users are
+        // already used to from every other sheet in the app.
+        maxWidth: math.min(mq.size.width, 520),
+      ),
       builder: (_) => RechargeSheet(
         currentBalance: currentBalance,
         infoHeadline: infoHeadline,
@@ -109,13 +130,11 @@ class _RechargeSheetState extends State<RechargeSheet> {
     try {
       final packs = await _wallet.getCoinPacks();
       if (!mounted) return;
-      // Default selection: the most popular pack if there is one,
-      // otherwise the cheapest. Priests / admins control which is
-      // marked popular via Firestore.
-      final popular = packs.where((p) => p.isPopular).firstOrNull;
+      final display = _orderedDisplayPacks(packs);
+      final popular = display.where((p) => p.isPopular).firstOrNull;
       setState(() {
         _packs = packs;
-        _selected = popular ?? (packs.isNotEmpty ? packs.first : null);
+        _selected = popular ?? (display.isNotEmpty ? display.first : null);
         _loading = false;
       });
     } catch (_) {
@@ -212,25 +231,44 @@ class _RechargeSheetState extends State<RechargeSheet> {
     _pendingPack = null;
     if (!mounted) return;
     setState(() => _payInFlight = false);
-    // Code 2 is Razorpay's "user dismissed the sheet" signal —
-    // matches the wallet_page pattern. Returning silently keeps the
-    // recharge sheet open so the user can pick another pack without
-    // any error banner shouting at them for a deliberate cancel.
     if (response.code == 2) return;
-    // Real failures still leave the sheet open (so the user can
-    // retry) but a future change might want to surface a banner here
-    // — keeping the early-return explicit prevents that change from
-    // accidentally snackbar-ing a cancel.
+  }
+
+  // Picks the 4 packs to show and arranges them so the popular one
+  // (if any) sits in slot 0 (top-left). Remaining slots are filled in
+  // price-ascending order — so the user reads a coherent ladder of
+  // increasing value, with the "best value" pre-selected at the top.
+  List<CoinPackModel> _orderedDisplayPacks(List<CoinPackModel> all) {
+    final active = all.where((p) => p.isActive).toList()
+      ..sort((a, b) => a.price.compareTo(b.price));
+    final firstFour = active.take(4).toList();
+    final popIdx = firstFour.indexWhere((p) => p.isPopular);
+    if (popIdx > 0) {
+      final pop = firstFour.removeAt(popIdx);
+      firstFour.insert(0, pop);
+    }
+    return firstFour;
+  }
+
+  // Data-driven image mapping. Admin can change coin counts on any
+  // pack via the settings panel — this function maps the live coin
+  // value to the visual tier so the icon always matches the
+  // perceived "size" of the pack.
+  String _coinPackImage(int coins) {
+    if (coins >= 1000) return 'assets/coins_images/box_coins.png';
+    if (coins >= 500) return 'assets/coins_images/sack_coins.png';
+    if (coins >= 200) return 'assets/coins_images/3coins.png';
+    return 'assets/coins_images/single_coins.png';
+  }
+
+  void _openWalletForAllPlans() {
+    Navigator.of(context).pop();
+    GoRouter.of(context).push('/user/wallet');
   }
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      // Clip to the rounded shape so content can't visibly paint
-      // outside the sheet's corners during the slide-up / dismiss
-      // animation. The Most Popular hat sits comfortably inside
-      // the sheet bounds (well below the top edge), so clipping
-      // doesn't crop it.
       clipBehavior: Clip.antiAlias,
       decoration: const BoxDecoration(
         color: AppColors.surfaceWhite,
@@ -240,30 +278,54 @@ class _RechargeSheetState extends State<RechargeSheet> {
       ),
       child: SafeArea(
         top: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 10, 20, 16),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            crossAxisAlignment: CrossAxisAlignment.stretch,
-            children: [
-              const _DragHandle(),
-              const SizedBox(height: 14),
-              _TitleRow(
-                currentBalance: widget.currentBalance,
-                onClose: () => Navigator.of(context).pop(),
+        // Outer Stack lifts the close button onto a top layer so it
+        // always renders ABOVE the wallet image (which overhangs
+        // upward from the info strip into this region).
+        child: Stack(
+          clipBehavior: Clip.none,
+          children: [
+            // Scroll fallback: if the user has large system text
+            // scaling or is on a tiny device, content scrolls inside
+            // the capped sheet instead of overflowing.
+            SingleChildScrollView(
+              padding: const EdgeInsets.fromLTRB(16, 8, 16, 10),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  const _DragHandle(),
+                  const SizedBox(height: 12),
+                  // Title + subtitle only. The wallet image isn't
+                  // here — it lives inside _InfoStripWithWallet below,
+                  // anchored to the info strip's top border.
+                  _HeaderText(
+                    subtitle: widget.infoHeadline ??
+                        'Add coins to continue your session',
+                  ),
+                  // Gap is sized so the wallet image (which overhangs
+                  // up from the info strip below) sits at the same
+                  // vertical band as the title block.
+                  const SizedBox(height: 14),
+                  _InfoStripWithWallet(
+                    currentBalance: widget.currentBalance ?? 0,
+                  ),
+                  const SizedBox(height: 16),
+                  _SectionTitle('Pick the best plan for you'),
+                  const SizedBox(height: 10),
+                  _buildBody(),
+                ],
               ),
-              if (widget.infoHeadline != null ||
-                  widget.infoSubtext != null) ...[
-                const SizedBox(height: 14),
-                _InfoCard(
-                  headline: widget.infoHeadline,
-                  subtext: widget.infoSubtext,
-                ),
-              ],
-              const SizedBox(height: 16),
-              _buildBody(),
-            ],
-          ),
+            ),
+            // Close button — overlaid at the top-right of the sheet,
+            // ABOVE the wallet image in z-order.
+            Positioned(
+              top: 14,
+              right: 14,
+              child: _CloseButton(
+                onTap: () => Navigator.of(context).pop(),
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -274,23 +336,32 @@ class _RechargeSheetState extends State<RechargeSheet> {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 40),
         child: Center(
-          child: CircularProgressIndicator(
-            color: AppColors.primaryBrown,
-            strokeWidth: 2.5,
+          child: SizedBox(
+            width: 28,
+            height: 28,
+            child: CircularProgressIndicator(
+              color: AppColors.amberGold,
+              strokeWidth: 2.5,
+            ),
           ),
         ),
       );
     }
     if (_error != null) {
-      return _ErrorState(message: _error!, onRetry: () {
-        setState(() {
-          _loading = true;
-          _error = null;
-        });
-        _loadPacks();
-      });
+      return _ErrorState(
+        message: _error!,
+        onRetry: () {
+          setState(() {
+            _loading = true;
+            _error = null;
+          });
+          _loadPacks();
+        },
+      );
     }
-    if (_packs.isEmpty) {
+
+    final display = _orderedDisplayPacks(_packs);
+    if (display.isEmpty) {
       return _ErrorState(
         message: 'No coin packs available right now.',
         onRetry: _loadPacks,
@@ -301,19 +372,27 @@ class _RechargeSheetState extends State<RechargeSheet> {
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _PacksGrid(
-          packs: _packs,
+          packs: display,
           selectedId: _selected?.id,
+          imageFor: _coinPackImage,
           onSelect: (pack) {
             HapticFeedback.selectionClick();
             setState(() => _selected = pack);
           },
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 12),
+        const _TrustPillsRow(),
+        const SizedBox(height: 12),
         _ProceedButton(
+          label: _selected != null
+              ? 'Proceed with ₹${_selected!.price}'
+              : 'Proceed',
           loading: _payInFlight,
           enabled: _selected != null,
           onTap: _startPayment,
         ),
+        const SizedBox(height: 4),
+        _SeeAllPlansLink(onTap: _openWalletForAllPlans),
       ],
     );
   }
@@ -327,10 +406,10 @@ class _DragHandle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Center(
       child: Container(
-        width: 38,
+        width: 36,
         height: 4,
         decoration: BoxDecoration(
-          color: AppColors.muted.withValues(alpha: 0.2),
+          color: AppColors.muted.withValues(alpha: 0.25),
           borderRadius: BorderRadius.circular(2),
         ),
       ),
@@ -338,50 +417,117 @@ class _DragHandle extends StatelessWidget {
   }
 }
 
-class _TitleRow extends StatelessWidget {
-  final int? currentBalance;
-  final VoidCallback onClose;
-
-  const _TitleRow({required this.currentBalance, required this.onClose});
+// Title + subtitle only. Right-padded so the wallet image (which
+// floats over from _InfoStripWithWallet below) doesn't overlap the
+// text horizontally.
+class _HeaderText extends StatelessWidget {
+  final String subtitle;
+  const _HeaderText({required this.subtitle});
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      children: [
-        Flexible(
-          child: Text(
-            'Low wallet balance!',
+    return Padding(
+      // 96 = wallet image width (88) + 4 right margin + 4 buffer.
+      // Keeps title text strictly to the left of the image's column.
+      padding: const EdgeInsets.only(right: 96, top: 4),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Text(
+            'Low wallet balance',
             maxLines: 1,
             overflow: TextOverflow.ellipsis,
             style: GoogleFonts.inter(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
+              fontSize: 20,
+              fontWeight: FontWeight.w800,
               color: AppColors.deepDarkBrown,
+              height: 1.15,
+              letterSpacing: -0.3,
             ),
           ),
-        ),
-        if (currentBalance != null) ...[
-          const SizedBox(width: 10),
-          _BalancePill(balance: currentBalance!),
-        ],
-        const Spacer(),
-        // Close pill — small circular tap target, not the whole
-        // background, so accidental brushes near the edge don't
-        // dismiss the sheet.
-        GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: onClose,
-          child: Container(
-            width: 30,
-            height: 30,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.muted.withValues(alpha: 0.12),
-            ),
-            child: Icon(
-              Icons.close_rounded,
-              size: 16,
+          const SizedBox(height: 4),
+          Text(
+            subtitle,
+            maxLines: 2,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              fontSize: 12.5,
+              fontWeight: FontWeight.w400,
               color: AppColors.muted,
+              height: 1.3,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Close button — extracted so the parent build can overlay it on
+// the outer Stack (ensuring it z-orders above the wallet image).
+class _CloseButton extends StatelessWidget {
+  final VoidCallback onTap;
+  const _CloseButton({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        width: 32,
+        height: 32,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.muted.withValues(alpha: 0.14),
+        ),
+        child: AppIcon(
+          AppIcons.close,
+          size: 17,
+          color: AppColors.deepDarkBrown,
+        ),
+      ),
+    );
+  }
+}
+
+// Info strip + wallet image as a single composite. The image is
+// Positioned with a negative `top` so its bottom edge LOCKS to the
+// info strip's top border — no matter how the surrounding layout
+// changes (text scaling, screen width, locale), the visual "attached"
+// relationship between wallet and strip is preserved.
+class _InfoStripWithWallet extends StatelessWidget {
+  final int currentBalance;
+  const _InfoStripWithWallet({required this.currentBalance});
+
+  // Image size — kept here so the negative-top math is easy to read.
+  static const double _imgSize = 88;
+  // How many pixels of the image dip INTO the info strip below its
+  // top border. A small dip (~12px) lets the visible PNG content
+  // (which has internal transparent padding) appear to sit *on* the
+  // border rather than floating above it.
+  static const double _overlap = 12;
+
+  @override
+  Widget build(BuildContext context) {
+    return Stack(
+      clipBehavior: Clip.none,
+      children: [
+        _InfoStrip(currentBalance: currentBalance),
+        // top = -(imgSize - overlap) = -76.
+        // Image extends 76px ABOVE the info strip's top and dips
+        // 12px INTO the info strip.
+        Positioned(
+          right: 4,
+          top: -(_imgSize - _overlap),
+          child: SizedBox(
+            width: _imgSize,
+            height: _imgSize,
+            child: Image.asset(
+              'assets/coins_images/wallet_coins.png',
+              fit: BoxFit.contain,
+              alignment: Alignment.bottomCenter,
             ),
           ),
         ),
@@ -390,37 +536,117 @@ class _TitleRow extends StatelessWidget {
   }
 }
 
-class _BalancePill extends StatelessWidget {
-  final int balance;
-  const _BalancePill({required this.balance});
+class _InfoStrip extends StatelessWidget {
+  final int currentBalance;
+  const _InfoStrip({required this.currentBalance});
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 9),
       decoration: BoxDecoration(
-        color: AppColors.muted.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(8),
+        color: AppColors.warmBeige.withValues(alpha: 0.55),
+        borderRadius: BorderRadius.circular(14),
         border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.2),
+          color: AppColors.borderLight,
           width: 1,
         ),
       ),
+      child: IntrinsicHeight(
+        child: Row(
+          children: [
+            Expanded(
+              child: _InfoColumn(
+                icon: AppIcons.wallet,
+                label: 'Current balance',
+                value: '₹$currentBalance',
+                valueIsAmount: true,
+              ),
+            ),
+            Container(
+              width: 1,
+              color: AppColors.borderLight,
+              margin: const EdgeInsets.symmetric(vertical: 3),
+            ),
+            Expanded(
+              child: _InfoColumn(
+                icon: AppIcons.verified,
+                label: 'Safe & secure',
+                value: '100% secure payments',
+                valueIsAmount: false,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _InfoColumn extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final String value;
+  final bool valueIsAmount;
+
+  const _InfoColumn({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.valueIsAmount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 4),
       child: Row(
-        mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.account_balance_wallet_outlined,
-            size: 13,
-            color: AppColors.muted,
+          Container(
+            width: 30,
+            height: 30,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.amberGold.withValues(alpha: 0.18),
+            ),
+            child: AppIcon(icon, size: 15, color: AppColors.amberGold),
           ),
-          const SizedBox(width: 5),
-          Text(
-            '₹ $balance',
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              fontWeight: FontWeight.w600,
-              color: AppColors.deepDarkBrown,
+          const SizedBox(width: 8),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisAlignment: MainAxisAlignment.center,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  label,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w500,
+                    color: AppColors.muted,
+                    height: 1.2,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  value,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: valueIsAmount ? 15 : 10.5,
+                    fontWeight: valueIsAmount
+                        ? FontWeight.w800
+                        : FontWeight.w500,
+                    color: valueIsAmount
+                        ? AppColors.deepDarkBrown
+                        : AppColors.muted,
+                    height: 1.2,
+                    letterSpacing: valueIsAmount ? -0.2 : 0,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -429,47 +655,19 @@ class _BalancePill extends StatelessWidget {
   }
 }
 
-class _InfoCard extends StatelessWidget {
-  final String? headline;
-  final String? subtext;
-  const _InfoCard({required this.headline, required this.subtext});
+class _SectionTitle extends StatelessWidget {
+  final String text;
+  const _SectionTitle(this.text);
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
-      decoration: BoxDecoration(
-        color: AppColors.muted.withValues(alpha: 0.06),
-        borderRadius: BorderRadius.circular(10),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          if (headline != null)
-            Text(
-              headline!,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                height: 1.4,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          if (headline != null && subtext != null)
-            const SizedBox(height: 4),
-          if (subtext != null)
-            Text(
-              subtext!,
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w400,
-                height: 1.4,
-                color: AppColors.muted,
-              ),
-            ),
-        ],
+    return Text(
+      text,
+      style: GoogleFonts.inter(
+        fontSize: 15,
+        fontWeight: FontWeight.w700,
+        color: AppColors.deepDarkBrown,
+        letterSpacing: -0.2,
       ),
     );
   }
@@ -478,29 +676,30 @@ class _InfoCard extends StatelessWidget {
 class _PacksGrid extends StatelessWidget {
   final List<CoinPackModel> packs;
   final String? selectedId;
+  final String Function(int coins) imageFor;
   final ValueChanged<CoinPackModel> onSelect;
 
   const _PacksGrid({
     required this.packs,
     required this.selectedId,
+    required this.imageFor,
     required this.onSelect,
   });
 
   @override
   Widget build(BuildContext context) {
-    // 4-column grid with matched 10px gaps on both axes so the
-    // two rows read as a single cohesive block. The "Most Popular"
-    // hat overhangs row 1 only and has 16px of clearance above the
-    // grid, so the row gap doesn't crowd it.
     return GridView.builder(
-      padding: EdgeInsets.zero,
+      padding: const EdgeInsets.only(top: 8),
       shrinkWrap: true,
       physics: const NeverScrollableScrollPhysics(),
       gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-        crossAxisCount: 4,
-        crossAxisSpacing: 12,
+        crossAxisCount: 2,
+        crossAxisSpacing: 10,
         mainAxisSpacing: 12,
-        childAspectRatio: 0.82,
+        // 1.22 = cards distinctly shorter than they are wide. Combined
+        // with the bigger text inside, content fills the card without
+        // a visible empty band in the middle.
+        childAspectRatio: 1.22,
       ),
       itemCount: packs.length,
       itemBuilder: (_, i) {
@@ -508,6 +707,7 @@ class _PacksGrid extends StatelessWidget {
         return _PackCard(
           pack: pack,
           selected: pack.id == selectedId,
+          imagePath: imageFor(pack.coins),
           onTap: () => onSelect(pack),
         );
       },
@@ -518,11 +718,13 @@ class _PacksGrid extends StatelessWidget {
 class _PackCard extends StatefulWidget {
   final CoinPackModel pack;
   final bool selected;
+  final String imagePath;
   final VoidCallback onTap;
 
   const _PackCard({
     required this.pack,
     required this.selected,
+    required this.imagePath,
     required this.onTap,
   });
 
@@ -538,11 +740,10 @@ class _PackCardState extends State<_PackCard> {
     final pack = widget.pack;
     final selected = widget.selected;
 
-    final borderColor = selected
-        ? AppColors.amberGold
-        : AppColors.muted.withValues(alpha: 0.18);
+    final borderColor =
+        selected ? AppColors.amberGold : AppColors.borderLight;
     final bgColor = selected
-        ? AppColors.amberGold.withValues(alpha: 0.06)
+        ? AppColors.amberGold.withValues(alpha: 0.08)
         : AppColors.surfaceWhite;
 
     return Stack(
@@ -550,7 +751,7 @@ class _PackCardState extends State<_PackCard> {
       fit: StackFit.expand,
       children: [
         Listener(
-          onPointerDown: (_) => setState(() => _scale = 0.96),
+          onPointerDown: (_) => setState(() => _scale = 0.97),
           onPointerUp: (_) => setState(() => _scale = 1.0),
           onPointerCancel: (_) => setState(() => _scale = 1.0),
           child: GestureDetector(
@@ -558,73 +759,130 @@ class _PackCardState extends State<_PackCard> {
             onTap: widget.onTap,
             child: AnimatedScale(
               scale: _scale,
-              duration: const Duration(milliseconds: 100),
+              duration: const Duration(milliseconds: 110),
               curve: Curves.easeOut,
               child: AnimatedContainer(
                 duration: const Duration(milliseconds: 160),
                 curve: Curves.easeOutCubic,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 8,
-                  vertical: 12,
-                ),
+                padding: const EdgeInsets.fromLTRB(10, 10, 10, 9),
                 decoration: BoxDecoration(
                   color: bgColor,
                   borderRadius: BorderRadius.circular(14),
                   border: Border.all(
                     color: borderColor,
-                    width: 1.5,
+                    width: selected ? 1.6 : 1,
                   ),
+                  boxShadow: selected
+                      ? null
+                      : [
+                          BoxShadow(
+                            color: AppColors.deepDarkBrown
+                                .withValues(alpha: 0.03),
+                            blurRadius: 5,
+                            offset: const Offset(0, 1),
+                          ),
+                        ],
                 ),
                 child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
                   mainAxisAlignment: MainAxisAlignment.spaceBetween,
-                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
+                    // Top block: image circle + (count, "coins") +
+                    // optional "Best value" pill.
                     Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        FittedBox(
-                          fit: BoxFit.scaleDown,
-                          child: Text(
-                            '${pack.coins}',
-                            textAlign: TextAlign.center,
-                            maxLines: 1,
-                            style: GoogleFonts.inter(
-                              fontSize: 18,
-                              fontWeight: FontWeight.w800,
-                              color: AppColors.deepDarkBrown,
-                              height: 1.0,
-                              letterSpacing: -0.2,
+                        Row(
+                          crossAxisAlignment: CrossAxisAlignment.center,
+                          children: [
+                            Container(
+                              width: 48,
+                              height: 48,
+                              decoration: BoxDecoration(
+                                shape: BoxShape.circle,
+                                color: AppColors.warmBeige
+                                    .withValues(alpha: 0.7),
+                              ),
+                              padding: const EdgeInsets.all(5),
+                              child: Image.asset(
+                                widget.imagePath,
+                                fit: BoxFit.contain,
+                              ),
                             ),
-                          ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment:
+                                    CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  FittedBox(
+                                    fit: BoxFit.scaleDown,
+                                    alignment: Alignment.centerLeft,
+                                    child: Text(
+                                      '${pack.coins}',
+                                      maxLines: 1,
+                                      style: GoogleFonts.inter(
+                                        fontSize: 23,
+                                        fontWeight: FontWeight.w800,
+                                        color: AppColors.deepDarkBrown,
+                                        height: 1.0,
+                                        letterSpacing: -0.5,
+                                      ),
+                                    ),
+                                  ),
+                                  const SizedBox(height: 3),
+                                  Text(
+                                    'coins',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: AppColors.muted,
+                                      height: 1.0,
+                                    ),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                        const SizedBox(height: 3),
-                        Text(
-                          'coins',
-                          textAlign: TextAlign.center,
-                          maxLines: 1,
-                          style: GoogleFonts.inter(
-                            fontSize: 10,
-                            fontWeight: FontWeight.w500,
-                            color: AppColors.muted,
-                            height: 1.0,
-                            letterSpacing: 0.2,
-                          ),
-                        ),
+                        if (pack.isPopular) ...[
+                          const SizedBox(height: 6),
+                          const _BestValuePill(),
+                        ],
                       ],
                     ),
-                    FittedBox(
-                      fit: BoxFit.scaleDown,
-                      child: Text(
-                        '₹${pack.price}',
-                        textAlign: TextAlign.center,
-                        maxLines: 1,
-                        style: GoogleFonts.inter(
-                          fontSize: 13,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.muted,
-                          height: 1.0,
+                    // Bottom block: hairline divider + price + state.
+                    Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        Container(
+                          height: 1,
+                          color: selected
+                              ? AppColors.amberGold
+                                  .withValues(alpha: 0.25)
+                              : AppColors.borderLight
+                                  .withValues(alpha: 0.7),
+                          margin: const EdgeInsets.only(bottom: 8),
                         ),
-                      ),
+                        Row(
+                          children: [
+                            Text(
+                              '₹${pack.price}',
+                              style: GoogleFonts.inter(
+                                fontSize: 17,
+                                fontWeight: FontWeight.w800,
+                                color: AppColors.deepDarkBrown,
+                                letterSpacing: -0.3,
+                              ),
+                            ),
+                            const Spacer(),
+                            _StateBadge(selected: selected),
+                          ],
+                        ),
+                      ],
                     ),
                   ],
                 ),
@@ -632,40 +890,50 @@ class _PackCardState extends State<_PackCard> {
             ),
           ),
         ),
-        // "Most Popular" hat — original size + position. Sits
-        // above the card edge so it reads as a sticker rather
-        // than a crammed-in badge.
+        // "Most Popular" ribbon — gold pill overhanging the top edge.
         if (pack.isPopular)
           Positioned(
-            top: -8,
-            left: 0,
-            right: 0,
-            child: Center(
-              child: Container(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 7,
-                  vertical: 3,
+            top: -9,
+            left: 10,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 8,
+                vertical: 3,
+              ),
+              decoration: BoxDecoration(
+                gradient: const LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [AppColors.amberGold, Color(0xFFB87C2A)],
                 ),
-                decoration: BoxDecoration(
-                  color: AppColors.amberGold,
-                  borderRadius: BorderRadius.circular(8),
-                  boxShadow: [
-                    BoxShadow(
-                      color:
-                          AppColors.amberGold.withValues(alpha: 0.35),
-                      blurRadius: 6,
-                      offset: const Offset(0, 2),
-                    ),
-                  ],
-                ),
-                child: Text(
-                  'Most Popular',
-                  style: GoogleFonts.inter(
-                    fontSize: 8.5,
-                    fontWeight: FontWeight.w700,
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: AppColors.amberGold.withValues(alpha: 0.4),
+                    blurRadius: 6,
+                    offset: const Offset(0, 2),
+                  ),
+                ],
+              ),
+              child: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  const AppIcon(
+                    AppIcons.starFilled,
+                    size: 10,
                     color: Colors.white,
                   ),
-                ),
+                  const SizedBox(width: 3),
+                  Text(
+                    'Most Popular',
+                    style: GoogleFonts.inter(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      letterSpacing: 0.1,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
@@ -674,12 +942,177 @@ class _PackCardState extends State<_PackCard> {
   }
 }
 
+class _BestValuePill extends StatelessWidget {
+  const _BestValuePill();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(18),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.deepDarkBrown.withValues(alpha: 0.06),
+            blurRadius: 4,
+            offset: const Offset(0, 1),
+          ),
+        ],
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const AppIcon(
+            AppIcons.thumbUp,
+            size: 11,
+            color: AppColors.amberGold,
+          ),
+          const SizedBox(width: 4),
+          Text(
+            'Best value',
+            style: GoogleFonts.inter(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w700,
+              color: AppColors.deepDarkBrown,
+              letterSpacing: 0.1,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _StateBadge extends StatelessWidget {
+  final bool selected;
+  const _StateBadge({required this.selected});
+
+  @override
+  Widget build(BuildContext context) {
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      width: 24,
+      height: 24,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: selected
+            ? AppColors.amberGold
+            : AppColors.warmBeige.withValues(alpha: 0.8),
+        boxShadow: selected
+            ? [
+                BoxShadow(
+                  color: AppColors.amberGold.withValues(alpha: 0.35),
+                  blurRadius: 5,
+                  offset: const Offset(0, 1),
+                ),
+              ]
+            : null,
+      ),
+      child: AppIcon(
+        selected ? AppIcons.check : AppIcons.chevronRight,
+        size: selected ? 14 : 16,
+        color: selected ? Colors.white : AppColors.primaryBrown,
+      ),
+    );
+  }
+}
+
+class _TrustPillsRow extends StatelessWidget {
+  const _TrustPillsRow();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 6, vertical: 8),
+      decoration: BoxDecoration(
+        color: AppColors.warmBeige.withValues(alpha: 0.45),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: AppColors.borderLight.withValues(alpha: 0.7),
+          width: 1,
+        ),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          children: const [
+            Expanded(
+              child: _TrustItem(
+                icon: AppIcons.shield,
+                label: 'Secure',
+              ),
+            ),
+            _TrustDivider(),
+            Expanded(
+              child: _TrustItem(
+                icon: AppIcons.bolt,
+                label: 'Instant credit',
+              ),
+            ),
+            _TrustDivider(),
+            Expanded(
+              child: _TrustItem(
+                icon: AppIcons.refresh,
+                label: 'Cancel anytime',
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TrustItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  const _TrustItem({required this.icon, required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisAlignment: MainAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.center,
+      children: [
+        AppIcon(icon, size: 11, color: AppColors.primaryBrown),
+        const SizedBox(width: 4),
+        Flexible(
+          child: Text(
+            label,
+            maxLines: 1,
+            overflow: TextOverflow.ellipsis,
+            style: GoogleFonts.inter(
+              fontSize: 10,
+              fontWeight: FontWeight.w600,
+              color: AppColors.deepDarkBrown.withValues(alpha: 0.78),
+            ),
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _TrustDivider extends StatelessWidget {
+  const _TrustDivider();
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: 1,
+      margin: const EdgeInsets.symmetric(vertical: 3),
+      color: AppColors.borderLight,
+    );
+  }
+}
+
 class _ProceedButton extends StatefulWidget {
+  final String label;
   final bool loading;
   final bool enabled;
   final VoidCallback onTap;
 
   const _ProceedButton({
+    required this.label,
     required this.loading,
     required this.enabled,
     required this.onTap,
@@ -709,43 +1142,107 @@ class _ProceedButtonState extends State<_ProceedButton> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            height: 50,
+            height: 48,
             decoration: BoxDecoration(
-              color: AppColors.amberGold.withValues(
-                alpha: disabled ? 0.45 : 1.0,
-              ),
               borderRadius: BorderRadius.circular(14),
+              gradient: disabled
+                  ? null
+                  : const LinearGradient(
+                      begin: Alignment.topLeft,
+                      end: Alignment.bottomRight,
+                      colors: [
+                        AppColors.amberGold,
+                        Color(0xFFB87C2A),
+                      ],
+                    ),
+              color: disabled
+                  ? AppColors.amberGold.withValues(alpha: 0.45)
+                  : null,
               boxShadow: disabled
                   ? null
                   : [
+                      // Softer, larger spread = button feels lifted
+                      // off the sheet, not pasted flat.
                       BoxShadow(
-                        color:
-                            AppColors.amberGold.withValues(alpha: 0.3),
-                        blurRadius: 10,
-                        offset: const Offset(0, 4),
+                        color: AppColors.amberGold.withValues(alpha: 0.30),
+                        blurRadius: 16,
+                        offset: const Offset(0, 6),
                       ),
                     ],
             ),
             child: Center(
               child: widget.loading
                   ? const SizedBox(
-                      width: 22,
-                      height: 22,
+                      width: 20,
+                      height: 20,
                       child: CircularProgressIndicator(
                         color: Colors.white,
                         strokeWidth: 2.5,
                       ),
                     )
-                  : Text(
-                      'Proceed',
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
+                  : Row(
+                      mainAxisSize: MainAxisSize.min,
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        Flexible(
+                          child: Text(
+                            widget.label,
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              fontSize: 14.5,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              letterSpacing: 0.1,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        const AppIcon(
+                          AppIcons.arrowRight,
+                          size: 16,
+                          color: Colors.white,
+                        ),
+                      ],
                     ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+class _SeeAllPlansLink extends StatelessWidget {
+  final VoidCallback onTap;
+  const _SeeAllPlansLink({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 6),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Text(
+              'See all plans',
+              style: GoogleFonts.inter(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primaryBrown,
+              ),
+            ),
+            const SizedBox(width: 3),
+            AppIcon(
+              AppIcons.chevronDown,
+              size: 16,
+              color: AppColors.primaryBrown,
+            ),
+          ],
         ),
       ),
     );
@@ -763,29 +1260,29 @@ class _ErrorState extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 24),
       child: Column(
         children: [
-          Icon(
-            Icons.cloud_off_rounded,
-            size: 28,
+          AppIcon(
+            AppIcons.cloudOff,
+            size: 26,
             color: AppColors.muted.withValues(alpha: 0.6),
           ),
-          const SizedBox(height: 10),
+          const SizedBox(height: 8),
           Text(
             message,
             textAlign: TextAlign.center,
             style: GoogleFonts.inter(
-              fontSize: 13,
+              fontSize: 12.5,
               fontWeight: FontWeight.w500,
               color: AppColors.muted,
             ),
           ),
-          const SizedBox(height: 14),
+          const SizedBox(height: 12),
           GestureDetector(
             behavior: HitTestBehavior.opaque,
             onTap: onRetry,
             child: Container(
               padding: const EdgeInsets.symmetric(
-                horizontal: 20,
-                vertical: 9,
+                horizontal: 18,
+                vertical: 8,
               ),
               decoration: BoxDecoration(
                 color: AppColors.primaryBrown.withValues(alpha: 0.08),
@@ -794,7 +1291,7 @@ class _ErrorState extends StatelessWidget {
               child: Text(
                 'Try again',
                 style: GoogleFonts.inter(
-                  fontSize: 13,
+                  fontSize: 12.5,
                   fontWeight: FontWeight.w600,
                   color: AppColors.primaryBrown,
                 ),

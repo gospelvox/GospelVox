@@ -9,6 +9,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ActivationPromptSheet extends StatelessWidget {
   const ActivationPromptSheet({super.key});
@@ -61,8 +62,8 @@ class ActivationPromptSheet extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: AppColors.amberGold.withValues(alpha: 0.2),
                   ),
-                  child: Icon(
-                    Icons.lock_open_rounded,
+                  child: AppIcon(
+                    AppIcons.lockOpen,
                     size: 22,
                     color: AppColors.amberGold,
                   ),

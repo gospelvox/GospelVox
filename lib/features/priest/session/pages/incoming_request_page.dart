@@ -22,6 +22,7 @@ import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.d
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_state.dart';
 import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Pinned locally rather than in AppColors because this is the only
 // surface in the app with a near-black background — elevating these
@@ -205,7 +206,7 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
           child: Row(
             children: [
               _ActionCircle(
-                icon: Icons.close_rounded,
+                icon: AppIcons.close,
                 label: 'Decline',
                 color: _kAccentRed,
                 size: 64,
@@ -224,8 +225,8 @@ class _IncomingRequestPageState extends State<IncomingRequestPage>
               const Spacer(),
               _ActionCircle(
                 icon: session.isChat
-                    ? Icons.chat_rounded
-                    : Icons.mic_rounded,
+                    ? AppIcons.chat
+                    : AppIcons.mic,
                 label: accepting ? 'Accepting…' : 'Accept',
                 color: _kAccentGreen,
                 size: 72,
@@ -401,7 +402,7 @@ class _ActionCircleState extends State<_ActionCircle> {
                         ]
                       : null,
                 ),
-                child: Icon(
+                child: AppIcon(
                   widget.icon,
                   size: 28,
                   color: Colors.white,

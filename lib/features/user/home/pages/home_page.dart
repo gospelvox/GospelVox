@@ -52,6 +52,7 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
+import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
@@ -61,6 +62,8 @@ import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/features/user/home/widgets/priest_card.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // ─── Design tokens for this screen ─────────────────────────
 
@@ -73,21 +76,6 @@ class _C {
   static const muted = Color(0xFF9B7B6E);
   static const surface = Color(0xFFFFFFFF);
   static const surfaceWarm = Color(0xFFFBF7F2);
-  static const onlineGreen = Color(0xFF2E7D4F);
-  static const busyAmber = Color(0xFFD4A060);
-  static const notifRed = Color(0xFFDC2626);
-
-  // Cycled per priest card by `index % n` — keeps a priest's
-  // colour stable across rebuilds so their card reads as a
-  // consistent identity tile.
-  static const priestGradients = <List<Color>>[
-    [Color(0xFF8B6B5A), Color(0xFFC8A882)], // warm brown
-    [Color(0xFF6B7B8B), Color(0xFF9BAAB8)], // cool blue-gray
-    [Color(0xFF8B7B9B), Color(0xFFB8A8C8)], // warm purple
-    [Color(0xFF7B8B6B), Color(0xFFA8B898)], // muted sage
-    [Color(0xFF9B7B6B), Color(0xFFC8B8A8)], // dusty rose
-    [Color(0xFF6B8B7B), Color(0xFF98B8A8)], // teal muted
-  ];
 
   // Bible session carousel used to render flat gradient cards keyed
   // off these tokens. The format flipped to the dark-base banner
@@ -104,6 +92,12 @@ class _C {
 // is going to bounce to the Bible tab anyway.
 const int _kHomeBibleLimit = 5;
 
+// Number of priests rendered on the Home feed before the "See all →"
+// link takes over. 2 = a single row — a teaser of who's available
+// without pushing the Bible Sessions section below the fold. The
+// full list lives on the /user/speakers page.
+const int _kHomeSpeakerLimit = 2;
+
 // Asset paths for the category-keyed banner artwork. Hoisted to
 // top-level so the Home initState can precacheImage all five into
 // the ImageCache before the first carousel frame paints, killing
@@ -116,13 +110,63 @@ const List<String> _kBibleBannerAssets = <String>[
   'assets/bible_banners/scrolls.png',
 ];
 
-const _kFilterChips = <String>[
-  'All',
-  'Online',
-  'Priests',
-  'Pastors',
-  'Counsellors',
-  'Bible Teachers',
+// Filter chip definitions. A record keeps the icon + colour bound to
+// the label inline so we don't drift label/icon indices apart by
+// editing one list and forgetting the other. `iconColor` is reserved
+// for cases (Online → green) where the icon needs to carry its own
+// semantic colour; null = inherit from the chip's foreground.
+typedef _FilterDef = ({
+  String label,
+  IconData? icon,
+  Color? iconColor,
+});
+
+// Muted sage — the "online / active" tint used by the filter chip
+// icon, the trust-stat dot, the explore-banner availability line.
+// Aliased to AppColors.sageOnline so the home-feed shares one
+// canonical online colour with every other screen in the app.
+const Color _kOnlineGreen = AppColors.sageOnline;
+
+// Compact count formatter — keeps marketplace-scale CTA copy
+// single-line at any catalogue size. Uses Indian K/L/Cr suffixes
+// (the speaker catalogue is India-rooted) so a one-lakh-speaker
+// row reads "1L" instead of forcing the banner to ellipsis.
+//
+//   42       → "42"
+//   1234     → "1.2k"
+//   12345    → "12k"
+//   100000   → "1L"
+//   1234567  → "12L"
+//   12345678 → "1.2Cr"
+String _compactCount(int n) {
+  String trim(double v) {
+    final s = v.toStringAsFixed(1);
+    return s.endsWith('.0') ? s.substring(0, s.length - 2) : s;
+  }
+
+  if (n < 1000) return n.toString();
+  if (n < 100000) {
+    final v = n / 1000;
+    return v < 10 ? '${trim(v)}k' : '${v.round()}k';
+  }
+  if (n < 10000000) {
+    final v = n / 100000;
+    return v < 10 ? '${trim(v)}L' : '${v.round()}L';
+  }
+  return '${trim(n / 10000000)}Cr';
+}
+
+const List<_FilterDef> _kFilterChips = <_FilterDef>[
+  (label: 'All', icon: null, iconColor: null),
+  (label: 'Online', icon: AppIcons.wifi, iconColor: _kOnlineGreen),
+  (label: 'Priests', icon: AppIcons.userOutline, iconColor: null),
+  (label: 'Pastors', icon: AppIcons.add, iconColor: null),
+  (
+    label: 'Counsellors',
+    icon: AppIcons.chatOutline,
+    iconColor: null,
+  ),
+  (label: 'Bible Teachers', icon: AppIcons.bible, iconColor: null),
 ];
 
 // ─── Root ─────────────────────────────────────────────────
@@ -156,13 +200,19 @@ class _HomeViewState extends State<_HomeView>
   late final Animation<double> _gridLabelAnim;
 
   final TextEditingController _searchController = TextEditingController();
-  // 0.92 makes the active banner dominate the viewport while still
-  // showing ~8% of the next card as a swipe affordance. The previous
-  // 0.78 was tuned for the old short gradient cards; with the new
-  // 216-tall banner format, a wider slot is required for the title +
-  // CTA to breathe.
-  final PageController _carouselController =
-      PageController(viewportFraction: 0.92);
+  // viewportFraction 1.0 shows one full banner at a time with no
+  // peek of the next card — cleaner premium feel. The horizontal
+  // gutter is moved inside each card (EdgeInsets.symmetric on the
+  // builder) instead of being created by a sub-1.0 fraction.
+  final PageController _carouselController = PageController();
+
+  // Auto-scroll timer for the Bible-Sessions carousel. Advances one
+  // page every 5 seconds, paused while the user is dragging and
+  // resumed when their drag finishes (see NotificationListener in
+  // _buildSessionsSection). Restarted from scratch on every restart
+  // so the user always gets a fresh 5-second dwell on a card they
+  // just settled on.
+  Timer? _autoScrollTimer;
 
   String _activeFilter = 'All';
   int _carouselIndex = 0;
@@ -204,8 +254,10 @@ class _HomeViewState extends State<_HomeView>
     // the gradient doesn't fade in piece-wise and look twitchy.
     _heroAnim = _interval(0.0, 0.45);
     _chipsAnim = _interval(0.15, 0.55);
-    _sessionsAnim = _interval(0.22, 0.62);
-    _gridLabelAnim = _interval(0.32, 0.7);
+    // Available-now label appears before the Bible Sessions section
+    // in the visual stack now, so its fade-in beats the carousel's.
+    _gridLabelAnim = _interval(0.22, 0.62);
+    _sessionsAnim = _interval(0.32, 0.7);
     _animController.forward();
 
     _startBibleStream();
@@ -280,6 +332,12 @@ class _HomeViewState extends State<_HomeView>
       _bibleLoading = false;
     });
 
+    // Kick the auto-scroll loop. Safe to call repeatedly — each call
+    // cancels the previous timer first. We restart whenever the
+    // stream emits so a sessions list that grows from 1 → 2+ items
+    // begins rotating without needing a page rebuild.
+    _startAutoScroll();
+
     // One-shot fallback: if the user opens the app while a session
     // they're registered for is live, surface the call-like overlay
     // even if the FCM never arrived (background-dropped push,
@@ -334,6 +392,35 @@ class _HomeViewState extends State<_HomeView>
     }
   }
 
+  // Starts (or restarts) the carousel's 5-second auto-advance timer.
+  // Called from _onBibleSnap once the first batch lands, and from
+  // the swipe handler after the user lets go. Safe to call when
+  // there's nothing to scroll — the periodic tick early-returns.
+  void _startAutoScroll() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = Timer.periodic(const Duration(seconds: 5), (_) {
+      if (!mounted) return;
+      if (!_carouselController.hasClients) return;
+      final total = _bibleSessions.length;
+      if (total <= 1) return;
+      final current = _carouselController.page?.round() ?? _carouselIndex;
+      final next = (current + 1) % total;
+      _carouselController.animateToPage(
+        next,
+        duration: const Duration(milliseconds: 600),
+        curve: Curves.easeInOutCubic,
+      );
+    });
+  }
+
+  // Cancels the auto-advance timer. Called when the user starts a
+  // manual drag so we don't yank the carousel out from under them
+  // mid-gesture. Resumed via _startAutoScroll once the drag settles.
+  void _pauseAutoScroll() {
+    _autoScrollTimer?.cancel();
+    _autoScrollTimer = null;
+  }
+
   void _switchToBibleTab() {
     final shell = UserShellScope.of(context);
     if (shell != null) {
@@ -359,6 +446,7 @@ class _HomeViewState extends State<_HomeView>
 
   @override
   void dispose() {
+    _autoScrollTimer?.cancel();
     _bibleSub?.cancel();
     _animController.dispose();
     _searchController.dispose();
@@ -373,6 +461,16 @@ class _HomeViewState extends State<_HomeView>
     return 'Good evening';
   }
 
+  String _getGreetingEmoji() {
+    final hour = DateTime.now().hour;
+    if (hour < 17) return '☀️';
+    return '🌙';
+  }
+
+  // First name only — longer "first + middle + last" strings would
+  // crowd the headline, and the ellipsis fallback below also bites
+  // before that case becomes interesting. Empty / null display names
+  // fall back to "there" so the headline still reads as a greeting.
   String _getFirstName() {
     final display = FirebaseAuth.instance.currentUser?.displayName ?? '';
     if (display.trim().isEmpty) return 'there';
@@ -411,17 +509,9 @@ class _HomeViewState extends State<_HomeView>
   // false→true transitions, fans out a push to every subscriber,
   // and atomically clears the priestId from each user's array so
   // they're pinged exactly once per "go online" event.
-  //
-  // Uses update() rather than set(merge:true) for the same reason
-  // the FCM token save does — set(merge:true) on a missing user
-  // doc would be treated as a CREATE by Firestore rules, which
-  // require coinBalance/role and would reject the write. update()
-  // fails fast with not-found instead, which we surface as a
-  // recoverable error instead of a silent permission denial.
   Future<void> _subscribeToNotifyMe(SpeakerModel priest) async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
-
     try {
       await FirebaseFirestore.instance
           .doc('users/$uid')
@@ -446,14 +536,11 @@ class _HomeViewState extends State<_HomeView>
     }
   }
 
-  // Mirror of priest_profile_page._requestSession. The card already
-  // hides this CTA when !priest.isAvailable. Beyond that we run the
-  // same SessionPreflight the profile + chat-history surfaces use —
-  // when balance is short of the 5-minute floor, the preflight
-  // opens the RechargeSheet bottom sheet with contextual copy
-  // ("Add ₹X more to start your chat with Fr. Y") instead of
-  // letting the user reach the waiting page only to bounce off a
-  // generic "insufficient-balance" snackbar from the CF.
+  // Mirror of priest_profile_page._requestSession. SessionPreflight
+  // intercepts insufficient-balance cases with a contextual
+  // RechargeSheet ("Add ₹X more to start your chat with Fr. Y")
+  // instead of letting the user reach the waiting page only to
+  // bounce off a generic snackbar from the CF.
   Future<void> _startSession(SpeakerModel priest, String type) async {
     final canStart = await SessionPreflight.check(
       context,
@@ -495,9 +582,28 @@ class _HomeViewState extends State<_HomeView>
               slivers: [
                 _animatedSliver(_heroAnim, _buildTopHero()),
                 _animatedSliver(_chipsAnim, _buildFilterChips()),
-                _animatedSliver(_sessionsAnim, _buildSessionsSection(state)),
-                _animatedSliver(_gridLabelAnim, _buildAvailableNowLabel()),
+                // Available now first — the hero discovery rail of
+                // the feed. Bible Sessions follows below as a
+                // recurring secondary entry-point.
+                _animatedSliver(
+                  _gridLabelAnim,
+                  _buildAvailableNowLabel(state),
+                ),
                 _buildBody(state),
+                // Eye-magnet CTA — breaks the gestalt-closure of the
+                // 2-card grid above with stacked priest faces +
+                // concrete count + one-shot gold-pulse on first
+                // paint. Hidden by _buildExploreBanner itself when
+                // the total available count is <= the on-screen
+                // preview, so it never lies.
+                _animatedSliver(_gridLabelAnim, _buildExploreBanner(state)),
+                _animatedSliver(_sessionsAnim, _buildSessionsSection(state)),
+                // Trust-signals card — lives at the end of the feed
+                // as a "why-this-app" reassurance pad after the
+                // primary content. Reads `availablePriests.length`
+                // off the existing HomeLoaded state, so no extra
+                // stream / network call is introduced.
+                SliverToBoxAdapter(child: _buildTrustStats(state)),
                 const SliverToBoxAdapter(child: SizedBox(height: 100)),
               ],
             ),
@@ -526,34 +632,19 @@ class _HomeViewState extends State<_HomeView>
     );
   }
 
-  // ─── Top hero (gradient + header + search) ────────────
+  // ─── Top hero (flat bg + headline + search) ───────────
 
   Widget _buildTopHero() {
-    return Container(
-      decoration: const BoxDecoration(
-        // Warm-to-bg gradient runs the full vertical of the hero
-        // so the bell + coin pill + greeting all share the same
-        // tinted band, and the search bar rests at the soft end
-        // where the gradient has nearly finished fading out.
-        gradient: LinearGradient(
-          begin: Alignment.topCenter,
-          end: Alignment.bottomCenter,
-          colors: [_C.goldLight, _C.bgColor],
-          stops: [0.0, 1.0],
-        ),
-      ),
-      child: SafeArea(
-        bottom: false,
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              _buildHeaderRow(),
-              const SizedBox(height: 20),
-              _buildSearchBar(),
-            ],
-          ),
+    return SafeArea(
+      bottom: false,
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(20, 12, 20, 16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _buildHeaderRow(),
+
+          ],
         ),
       ),
     );
@@ -561,69 +652,91 @@ class _HomeViewState extends State<_HomeView>
 
   Widget _buildHeaderRow() {
     return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Expanded(
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
             children: [
-              Text(
-                _getGreeting(),
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w400,
-                  // Bumped from 0.6 → 0.7 so the label stays
-                  // legible against the darker top of the gold
-                  // gradient, where 0.6 was borderline on AA.
-                  color: _C.darkBrown.withValues(alpha: 0.7),
-                ),
-              ),
-              const SizedBox(height: 4),
-              // Name scales down instead of ellipsising so longer
-              // display names remain legible even in a narrow
-              // header with a big coin number on the right.
-              FittedBox(
-                fit: BoxFit.scaleDown,
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Hi, ${_getFirstName()}',
-                  maxLines: 1,
-                  style: GoogleFonts.inter(
-                    fontSize: 26,
-                    fontWeight: FontWeight.w800,
-                    letterSpacing: -0.5,
-                    color: _C.darkBrown,
+              Row(
+                children: [
+                  Flexible(
+                    child: Text(
+                      _getGreeting(),
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.muted,
+                      ),
+                    ),
                   ),
+                  const SizedBox(width: 4),
+                  Text(
+                    _getGreetingEmoji(),
+                    style: const TextStyle(fontSize: 13),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 2),
+              // Single-line "Hi, {firstName}" — ellipsises on long
+              // names so the header never grows past one row of
+              // typography. Smaller font than the previous two-line
+              // tagline so the trust-stats + grid below get more
+              // vertical breathing room.
+              Text(
+                'Hi, ${_getFirstName()}',
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(
+                  fontSize: 20,
+                  fontWeight: FontWeight.w700,
+                  letterSpacing: -0.4,
+                  color: AppColors.deepDarkBrown,
                 ),
               ),
             ],
           ),
         ),
-        const SizedBox(width: 8),
-        _NotificationBell(
-          // hasUnread stays false until we wire a count query — the
-          // dot is strictly for real unread activity, and a
-          // permanent dot trains users to ignore it.
-          hasUnread: false,
-          onTap: () => context.push('/user/notifications'),
+        const SizedBox(width: 12),
+        // Trailing actions sit nudged down 2 px so they centre on the
+        // headline's first line rather than floating above it.
+        Padding(
+          padding: const EdgeInsets.only(top: 2),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              _NotificationBell(
+                // Live unread count is streamed inside the bell from
+                // the `notifications` collection — we pass the uid so
+                // the StreamBuilder can subscribe; if the user is
+                // signed out, the bell falls back to a bare glyph.
+                uid: FirebaseAuth.instance.currentUser?.uid,
+                onTap: () => context.push('/user/notifications'),
+              ),
+              const SizedBox(width: 14),
+              _BalancePill(onTap: _switchToWalletTab),
+            ],
+          ),
         ),
-        const SizedBox(width: 10),
-        _BalancePill(onTap: _switchToWalletTab),
       ],
     );
   }
 
   Widget _buildSearchBar() {
     return Container(
-      height: 50,
+      height: 52,
       decoration: BoxDecoration(
-        color: _C.surface,
-        borderRadius: BorderRadius.circular(14),
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(color: AppColors.borderLight, width: 0.5),
         boxShadow: [
           BoxShadow(
-            color: _C.brandBrown.withValues(alpha: 0.05),
-            blurRadius: 10,
-            offset: const Offset(0, 3),
+            color: Colors.black.withValues(alpha: 0.035),
+            blurRadius: 6,
+            offset: const Offset(0, 2),
           ),
         ],
       ),
@@ -636,21 +749,21 @@ class _HomeViewState extends State<_HomeView>
         style: GoogleFonts.inter(
           fontSize: 14,
           fontWeight: FontWeight.w400,
-          color: _C.darkBrown,
+          color: AppColors.deepDarkBrown,
         ),
         decoration: InputDecoration(
-          hintText: 'Search priests, role, language...',
+          hintText: 'Search priests, language, topic...',
           hintStyle: GoogleFonts.inter(
             fontSize: 14,
             fontWeight: FontWeight.w400,
-            color: _C.muted.withValues(alpha: 0.65),
+            color: _C.muted.withValues(alpha: 0.7),
           ),
           prefixIcon: Padding(
             padding: const EdgeInsets.only(left: 16, right: 8),
-            child: Icon(
-              Icons.search_rounded,
+            child: AppIcon(
+              AppIcons.search,
               size: 22,
-              color: _C.muted.withValues(alpha: 0.7),
+              color: _C.muted.withValues(alpha: 0.75),
             ),
           ),
           prefixIconConstraints: const BoxConstraints(
@@ -668,8 +781,8 @@ class _HomeViewState extends State<_HomeView>
                       setState(() {});
                     },
                     scale: 0.9,
-                    child: Icon(
-                      Icons.close_rounded,
+                    child: AppIcon(
+                      AppIcons.close,
                       size: 18,
                       color: _C.muted,
                     ),
@@ -677,7 +790,7 @@ class _HomeViewState extends State<_HomeView>
                 ),
           border: InputBorder.none,
           isCollapsed: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 14),
+          contentPadding: const EdgeInsets.symmetric(vertical: 15),
         ),
       ),
     );
@@ -687,9 +800,12 @@ class _HomeViewState extends State<_HomeView>
 
   Widget _buildFilterChips() {
     return Padding(
-      padding: const EdgeInsets.only(top: 4),
+      padding: const EdgeInsets.only(top: 2, bottom: 2),
       child: SizedBox(
-        height: 44,
+        // Outer strip trimmed to 38 so the chip's 32 px body has
+        // 3 px breathing room above and below — claws back ~10 px
+        // of vertical space across the page.
+        height: 38,
         child: ListView.separated(
           scrollDirection: Axis.horizontal,
           physics: const BouncingScrollPhysics(),
@@ -697,11 +813,13 @@ class _HomeViewState extends State<_HomeView>
           itemCount: _kFilterChips.length,
           separatorBuilder: (_, _) => const SizedBox(width: 8),
           itemBuilder: (_, i) {
-            final label = _kFilterChips[i];
+            final def = _kFilterChips[i];
             return _FilterChip(
-              label: label,
-              isActive: _activeFilter == label,
-              onTap: () => setState(() => _activeFilter = label),
+              label: def.label,
+              icon: def.icon,
+              iconColor: def.iconColor,
+              isActive: _activeFilter == def.label,
+              onTap: () => setState(() => _activeFilter = def.label),
             );
           },
         ),
@@ -720,7 +838,7 @@ class _HomeViewState extends State<_HomeView>
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _SectionHeader(
-          title: 'UPCOMING SESSIONS',
+          title: 'Bible sessions',
           // Live-count pill sits between the title and the "See all"
           // link. Tapping it pre-selects the Bible tab's "Live" sub-
           // tab via BibleSessionCubit.pendingInitialTab — that
@@ -740,85 +858,250 @@ class _HomeViewState extends State<_HomeView>
           onSeeAll: _switchToBibleTab,
         ),
         SizedBox(
-          // 216 gives the banner format enough room for a 2-line
-          // title + a description line + the date/time row + the
-          // CTA, all without the bottom edge biting into the CTA's
-          // glow on cards with the longest content.
-          height: 216,
+          // 140 — trimmed 20 px versus the previous 160. The
+          // banner's internal top/bottom padding drops from 18 to 14
+          // (see _BibleSessionBanner), so the status row + 2-line
+          // title + date·price row still fit with ~6 px of safety
+          // margin on the longest content.
+          height: 140,
           child: showShimmer
               ? _SessionsCarouselShimmer()
               : sessions.isEmpty
                   ? const _BibleEmptyRail()
-                  // padEnds:true (default) lets the first/last card
-                  // sit centred in the viewport; combined with
-                  // viewportFraction:0.92 and a 6 px symmetric inner
-                  // padding, the first card's left edge lands at
-                  // ~20 px from the screen edge — flush with the
-                  // section header above and the priest grid below.
-                  : PageView.builder(
-                      controller: _carouselController,
-                      physics: const BouncingScrollPhysics(),
-                      itemCount: sessions.length,
-                      onPageChanged: (i) =>
-                          setState(() => _carouselIndex = i),
-                      itemBuilder: (_, i) {
-                        final session = sessions[i];
-                        return Padding(
-                          padding: const EdgeInsets.symmetric(
-                            horizontal: 6,
-                          ),
-                          child: _BibleSessionBanner(
-                            session: session,
-                            onTap: () => context.push(
-                              '/bible/detail/${session.id}',
-                            ),
-                          ),
-                        );
+                  // viewportFraction is 1.0 (default) — one full
+                  // banner per viewport, no peek of the next card.
+                  // The 20-px horizontal gutter is applied inside
+                  // each itemBuilder so it travels with the card.
+                  //
+                  // NotificationListener pauses the auto-scroll
+                  // timer while the user is actively dragging
+                  // (dragDetails != null on ScrollStartNotification)
+                  // and resumes it on ScrollEndNotification. A
+                  // programmatic animateToPage also fires those
+                  // notifications, but with dragDetails == null, so
+                  // it doesn't accidentally trigger the pause path.
+                  : NotificationListener<ScrollNotification>(
+                      onNotification: (n) {
+                        if (n is ScrollStartNotification &&
+                            n.dragDetails != null) {
+                          _pauseAutoScroll();
+                        } else if (n is ScrollEndNotification) {
+                          _startAutoScroll();
+                        }
+                        return false;
                       },
+                      child: PageView.builder(
+                        controller: _carouselController,
+                        physics: const BouncingScrollPhysics(),
+                        itemCount: sessions.length,
+                        // No setState — the indicator subscribes to
+                        // _carouselController directly and morphs in
+                        // lockstep with the actual scroll position.
+                        // Skipping the rebuild keeps the page slide
+                        // frame-rate clean on lower-end devices.
+                        onPageChanged: (i) => _carouselIndex = i,
+                        itemBuilder: (_, i) {
+                          final session = sessions[i];
+                          return Padding(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 20,
+                            ),
+                            child: _BibleSessionBanner(
+                              session: session,
+                              onTap: () => context.push(
+                                '/bible/detail/${session.id}',
+                              ),
+                            ),
+                          );
+                        },
+                      ),
                     ),
         ),
         const SizedBox(height: 14),
         if (!showShimmer && dotCount > 1)
-          Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: List.generate(dotCount, (i) {
-              final active = i == _carouselIndex;
-              return AnimatedContainer(
-                duration: const Duration(milliseconds: 220),
-                curve: Curves.easeOutCubic,
-                margin: const EdgeInsets.symmetric(horizontal: 3),
-                width: active ? 18 : 6,
-                height: 6,
-                decoration: BoxDecoration(
-                  borderRadius: BorderRadius.circular(3),
-                  color: active
-                      ? _C.amberGold
-                      : _C.muted.withValues(alpha: 0.4),
-                ),
+          // AnimatedBuilder ticks once per frame while the PageView
+          // is scrolling (auto-advance or finger drag) and stays
+          // idle otherwise. We read the continuous fractional page
+          // from the controller and interpolate each dot's width
+          // and colour from that — so the pill morph is locked
+          // 1:1 to the actual banner motion, with zero duration
+          // mismatch and no implicit-animation catch-up.
+          AnimatedBuilder(
+            animation: _carouselController,
+            builder: (_, _) {
+              final page = _carouselController.hasClients
+                  ? (_carouselController.page ?? _carouselIndex.toDouble())
+                  : _carouselIndex.toDouble();
+              return Row(
+                mainAxisAlignment: MainAxisAlignment.center,
+                children: List.generate(dotCount, (i) {
+                  // t = 1.0 on the active dot, 0.0 on dots ≥1 page
+                  // away. Fractional during a swipe, which is what
+                  // gives the smooth shrink/grow handoff between
+                  // neighbours.
+                  final t = (1.0 - (page - i).abs()).clamp(0.0, 1.0);
+                  return Container(
+                    margin: const EdgeInsets.symmetric(horizontal: 3),
+                    width: 6.0 + 18.0 * t,
+                    height: 6,
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(100),
+                      color: Color.lerp(
+                        AppColors.muted.withValues(alpha: 0.3),
+                        AppColors.deepDarkBrown,
+                        t,
+                      ),
+                    ),
+                  );
+                }),
               );
-            }),
+            },
           ),
       ],
     );
   }
 
-  Widget _buildAvailableNowLabel() {
-    // Plain label — no "See all" link. The full list is the page the
-    // user is already on, so a "See all" button there reads as a
-    // dead button.
+  // Trust-banner card pinned to the bottom of the home feed. Single
+  // calm composition designed around the "show less, prove more"
+  // principle from the UX audit:
+  //
+  //   • One radius (24), one elevation (subtle drop shadow), no
+  //     internal pill containers, no dividers, no decorative chrome.
+  //   • Background is assets/trusted banner.png — the warm-beige
+  //     plate with the church silhouette on the right. A strong
+  //     warm wash pulls the church back to ambient brightness so
+  //     it stops competing with the content.
+  //   • Content reads in one second: title, social-proof line,
+  //     benefit summary, three plain trust labels.
+  //
+  // Card height is natural (driven by the content) rather than a
+  // forced 3:2 ratio — the previous fixed-ratio approach was the
+  // root cause of the cramped pills + truncated labels in the
+  // earlier draft. The background image fills whatever height the
+  // content demands; BoxFit.cover + centerRight keeps the church
+  // visible across phone widths.
+  //
+  // `state` is no longer read — the card is pure reassurance copy.
+  // Kept in the signature so the call site in `slivers` doesn't
+  // need to change.
+  Widget _buildTrustStats(HomeState state) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 16, 20, 14),
-      child: Text(
-        'AVAILABLE NOW',
-        maxLines: 1,
-        overflow: TextOverflow.ellipsis,
-        style: GoogleFonts.inter(
-          fontSize: 12,
-          fontWeight: FontWeight.w700,
-          letterSpacing: 0.8,
-          color: _C.brandBrown,
+      padding: const EdgeInsets.fromLTRB(20, 24, 20, 8),
+      child: DecoratedBox(
+        decoration: BoxDecoration(
+          borderRadius: BorderRadius.circular(20),
+          boxShadow: [
+            BoxShadow(
+              color: const Color(0xFF6B3F22).withValues(alpha: 0.10),
+              blurRadius: 28,
+              offset: const Offset(0, 12),
+            ),
+            BoxShadow(
+              color: Colors.black.withValues(alpha: 0.04),
+              blurRadius: 6,
+              offset: const Offset(0, 2),
+            ),
+          ],
+        ),
+        child: ClipRRect(
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
+            children: [
+              Positioned.fill(
+                child: Image.asset(
+                  'assets/trusted banner.png',
+                  fit: BoxFit.cover,
+                  alignment: Alignment.centerRight,
+                ),
+              ),
+              // Left-to-right warm wash. Strong on the left where the
+              // copy lives, fading to near-zero on the right so the
+              // church silhouette stays visible as real artwork.
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      stops: const [0.0, 0.55, 1.0],
+                      colors: [
+                        const Color(0xFFFAF1E6).withValues(alpha: 0.92),
+                        const Color(0xFFF6E6D3).withValues(alpha: 0.55),
+                        const Color(0xFFF6E6D3).withValues(alpha: 0.10),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              // Sun-glow radiating from the top-right corner, matching
+              // the actual sunbeam direction baked into the PNG.
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: RadialGradient(
+                      center: const Alignment(0.75, -0.5),
+                      radius: 1.3,
+                      stops: const [0.0, 0.7],
+                      colors: [
+                        const Color(0xFFFFE6B0).withValues(alpha: 0.28),
+                        const Color(0xFFFFE6B0).withValues(alpha: 0.0),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
+              const Padding(
+                padding: EdgeInsets.all(20),
+                child: _TrustBannerContent(),
+              ),
+              // Hairline inner border — keeps the card edge crisp
+              // against the warm home-feed background.
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      borderRadius: BorderRadius.circular(20),
+                      border: Border.all(
+                        color: _kTrustHairlineGold.withValues(alpha: 0.45),
+                        width: 0.6,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
         ),
       ),
+    );
+  }
+
+  Widget _buildAvailableNowLabel(HomeState state) {
+    // Title-only header — the inline count was tested and pulled.
+    // The header carries its own pill-styled "See all" so users who
+    // scan top-of-section have an immediate exit to the full
+    // catalogue. The loud _ExploreBanner below the grid is still
+    // the primary discovery CTA — the header pill is a secondary
+    // shortcut, deliberately smaller in visual weight.
+    return _SectionHeader(
+      title: 'Available now',
+      onSeeAll: () => context.push('/user/speakers'),
+    );
+  }
+
+  // Full-width "explore all priests" CTA shown directly below the
+  // 2-card grid. Self-hides when there's nothing more to discover
+  // (total visible count <= the on-screen preview slot) so the
+  // banner never lies about scale.
+  Widget _buildExploreBanner(HomeState state) {
+    if (state is! HomeLoaded) return const SizedBox.shrink();
+    final visible = _visiblePriests(state);
+    if (visible.length <= _kHomeSpeakerLimit) {
+      return const SizedBox.shrink();
+    }
+    return _ExploreBanner(
+      priests: visible,
+      onTap: () => context.push('/user/speakers'),
     );
   }
 
@@ -849,7 +1132,11 @@ class _HomeViewState extends State<_HomeView>
     }
 
     final loaded = state as HomeLoaded;
-    final visible = _visiblePriests(loaded);
+    // Cap to the home preview slot count. The "See all →" link on
+    // the section header opens /user/speakers which renders the full
+    // filtered list without this cap.
+    final visible =
+        _visiblePriests(loaded).take(_kHomeSpeakerLimit).toList();
 
     if (visible.isEmpty) {
       return SliverToBoxAdapter(child: _buildEmpty(loaded));
@@ -862,18 +1149,23 @@ class _HomeViewState extends State<_HomeView>
           crossAxisCount: 2,
           crossAxisSpacing: 12,
           mainAxisSpacing: 12,
-          childAspectRatio: 0.62,
+          // 0.72 keeps the photo as the hero element while leaving
+          // tight room for: name + expertise tag + 30-px Call/Chat
+          // row. Cards read as compact tiles instead of tall posters,
+          // so the Bible Sessions section below stays visible without
+          // the user needing to scroll twice.
+          childAspectRatio: 0.72,
         ),
         delegate: SliverChildBuilderDelegate(
           (_, i) {
             final priest = visible[i];
-            return _PriestGridCard(
+            return PriestCard(
               priest: priest,
-              gradient: _C
-                  .priestGradients[i % _C.priestGradients.length],
+              gradient:
+                  kPriestGradients[i % kPriestGradients.length],
               onTap: () => _openProfile(priest.uid),
-              onChat: () => _startSession(priest, 'chat'),
               onCall: () => _startSession(priest, 'voice'),
+              onChat: () => _startSession(priest, 'chat'),
               onNotify: () => _subscribeToNotifyMe(priest),
             );
           },
@@ -911,10 +1203,10 @@ class _HomeViewState extends State<_HomeView>
               shape: BoxShape.circle,
               color: _C.brandBrown.withValues(alpha: 0.05),
             ),
-            child: Icon(
+            child: AppIcon(
               hasSearch || hasChip
-                  ? Icons.search_off_rounded
-                  : Icons.people_outline_rounded,
+                  ? AppIcons.search
+                  : AppIcons.users,
               size: 28,
               color: _C.brandBrown.withValues(alpha: 0.4),
             ),
@@ -947,6 +1239,15 @@ class _HomeViewState extends State<_HomeView>
 
 // ─── Reusable press-to-scale wrapper ──────────────────────
 
+// Shared press affordance for every tappable surface on the home stack.
+// Scales + fades opacity in lockstep so the pressed state reads as one
+// consistent tactile gesture — replaces the dozen ad-hoc Listener +
+// AnimatedScale combinations that drifted apart over time.
+//
+// Both effects use the same 150 ms easeOut curve; AnimatedOpacity inside
+// AnimatedScale is harmless (compositor handles both transforms in the
+// same frame) and stays cheap because we only repaint on the actual
+// state transitions, not every frame.
 class _PressScale extends StatefulWidget {
   final Widget child;
   final VoidCallback? onTap;
@@ -955,7 +1256,7 @@ class _PressScale extends StatefulWidget {
   const _PressScale({
     required this.child,
     required this.onTap,
-    this.scale = 0.96,
+    this.scale = 0.97,
   });
 
   @override
@@ -963,26 +1264,34 @@ class _PressScale extends StatefulWidget {
 }
 
 class _PressScaleState extends State<_PressScale> {
-  double _scale = 1.0;
+  bool _pressed = false;
 
   bool get _enabled => widget.onTap != null;
+
+  void _setPressed(bool v) {
+    if (_pressed == v) return;
+    setState(() => _pressed = v);
+  }
 
   @override
   Widget build(BuildContext context) {
     return Listener(
-      onPointerDown:
-          _enabled ? (_) => setState(() => _scale = widget.scale) : null,
-      onPointerUp: _enabled ? (_) => setState(() => _scale = 1.0) : null,
-      onPointerCancel:
-          _enabled ? (_) => setState(() => _scale = 1.0) : null,
+      onPointerDown: _enabled ? (_) => _setPressed(true) : null,
+      onPointerUp: _enabled ? (_) => _setPressed(false) : null,
+      onPointerCancel: _enabled ? (_) => _setPressed(false) : null,
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
         child: AnimatedScale(
-          scale: _scale,
-          duration: const Duration(milliseconds: 120),
+          scale: _pressed ? widget.scale : 1.0,
+          duration: const Duration(milliseconds: 150),
           curve: Curves.easeOut,
-          child: widget.child,
+          child: AnimatedOpacity(
+            opacity: _pressed ? 0.85 : 1.0,
+            duration: const Duration(milliseconds: 150),
+            curve: Curves.easeOut,
+            child: widget.child,
+          ),
         ),
       ),
     );
@@ -993,24 +1302,23 @@ class _PressScaleState extends State<_PressScale> {
 
 class _SectionHeader extends StatelessWidget {
   final String title;
-  final VoidCallback onSeeAll;
-  // Optional pill / chip rendered between the title and the
-  // "See all" link. The bible carousel uses this for the LIVE
-  // indicator when any session is live; other section headers
-  // can omit it. Kept as a generic Widget so future surfaces
-  // don't need a per-feature header subclass.
+  // Nullable so sections that already surface a dedicated CTA (e.g.
+  // the Available-now grid, which has its own full-width Explore
+  // banner below the cards) can render title-only without a
+  // competing tertiary link in the header.
+  final VoidCallback? onSeeAll;
   final Widget? trailing;
 
   const _SectionHeader({
     required this.title,
-    required this.onSeeAll,
+    this.onSeeAll,
     this.trailing,
   });
 
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 24, 20, 14),
+      padding: const EdgeInsets.fromLTRB(20, 20, 0, 14),
       child: Row(
         children: [
           Flexible(
@@ -1019,10 +1327,14 @@ class _SectionHeader extends StatelessWidget {
               maxLines: 1,
               overflow: TextOverflow.ellipsis,
               style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                letterSpacing: 0.8,
-                color: _C.brandBrown,
+                // Weight pulled back from w700 → w600 to fit the
+                // limited-weight palette (400 / 600 / 700) — the
+                // single 700 per screen is reserved for hero copy,
+                // not every section header.
+                fontSize: 17,
+                fontWeight: FontWeight.w600,
+                letterSpacing: -0.2,
+                color: AppColors.deepDarkBrown,
               ),
             ),
           ),
@@ -1031,19 +1343,402 @@ class _SectionHeader extends StatelessWidget {
             trailing!,
           ],
           const Spacer(),
-          _PressScale(
-            onTap: onSeeAll,
-            scale: 0.92,
-            child: Text(
-              'See all →',
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w600,
-                color: _C.amberGold,
+          if (onSeeAll != null)
+            _PressScale(
+              onTap: onSeeAll!,
+              scale: 0.94,
+              // Solid brown pill with gold text + arrow — a
+              // "mini version" of the _ExploreBanner that mirrors
+              // its colour story (brown shell, gold content). A
+              // single filled surface beats an outlined chip here:
+              // no border to read as a loose rectangle, no
+              // free-floating circle to compete with the banner's
+              // larger gold disc.
+              //
+              // Subtle gold-tinted drop shadow gives the pill a
+              // touch of depth so it lifts cleanly off the warm
+              // parchment background.
+              child: Container(
+                padding: const EdgeInsets.fromLTRB(12, 7, 10, 7),
+                decoration: BoxDecoration(
+                  color: _C.brandBrown,
+                  borderRadius: BorderRadius.circular(20),
+                  boxShadow: [
+                    BoxShadow(
+                      color: _C.brandBrown.withValues(alpha: 0.22),
+                      blurRadius: 10,
+                      offset: const Offset(0, 4),
+                    ),
+                  ],
+                ),
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'See all',
+                      style: GoogleFonts.inter(
+                        fontSize: 12,
+                        fontWeight: FontWeight.w700,
+                        letterSpacing: -0.1,
+                        color: _C.goldLight,
+                      ),
+                    ),
+                    const SizedBox(width: 5),
+                    const AppIcon(
+                      AppIcons.arrowRight,
+                      size: 14,
+                      color: _C.goldLight,
+                    ),
+                  ],
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+// ─── Explore-all CTA banner ───────────────────────────────
+//
+// Full-width hero CTA injected directly below the 2-card grid.
+// The grid above is a gestalt-closed unit; without a strong
+// signal below, the brain reads "2 priests = total". This
+// banner breaks the closure with three independent attention
+// triggers stacked at the eye's natural F-pattern landing
+// zone:
+//
+//   1. Stacked priest faces — the fusiform face area
+//      pre-attentively processes faces ~170ms before text.
+//   2. Concrete count — specificity heuristic / anchoring
+//      converts an abstract "more" into a tangible quantity.
+//   3. One-shot scale + gold-halo pulse on first paint —
+//      pre-attentive motion cue without loop fatigue.
+//
+// Background is brandBrown on the parchment surface, giving
+// it the highest contrast of any band on the page so it owns
+// the eye on landing without needing chrome or shouting copy.
+class _ExploreBanner extends StatefulWidget {
+  final List<SpeakerModel> priests;
+  final VoidCallback onTap;
+
+  const _ExploreBanner({
+    required this.priests,
+    required this.onTap,
+  });
+
+  @override
+  State<_ExploreBanner> createState() => _ExploreBannerState();
+}
+
+class _ExploreBannerState extends State<_ExploreBanner>
+    with SingleTickerProviderStateMixin {
+  late final AnimationController _pulse;
+
+  @override
+  void initState() {
+    super.initState();
+    _pulse = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1400),
+    );
+    // Fire once on first paint so the eye registers the CTA on
+    // landing. No reverse, no loop — pre-attentive cue, not
+    // ongoing visual noise.
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (mounted) _pulse.forward();
+    });
+  }
+
+  @override
+  void dispose() {
+    _pulse.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final total = widget.priests.length;
+    final onlineCount =
+        widget.priests.where((p) => p.isAvailable).length;
+    final avatarPriests = widget.priests.take(4).toList();
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(20, 18, 20, 4),
+      child: AnimatedBuilder(
+        animation: _pulse,
+        builder: (_, child) {
+          final t = _pulse.value;
+          // Scale settles inside the first 30% of the timeline,
+          // then holds at 1.0 for the rest of the run.
+          final scaleT =
+              Curves.easeOutBack.transform((t / 0.3).clamp(0.0, 1.0));
+          final scale = 0.96 + (1.0 - 0.96) * scaleT;
+          // Triangle halo opacity — ramps up over the first half,
+          // ramps back to 0 over the second half. Peak ~0.55 is
+          // enough to read as a glow without overpowering the
+          // surrounding parchment surface.
+          final haloOpacity = t < 0.5 ? t * 2 * 0.55 : (1.0 - t) * 2 * 0.55;
+          return Transform.scale(
+            scale: scale,
+            child: Container(
+              decoration: BoxDecoration(
+                borderRadius: BorderRadius.circular(20),
+                boxShadow: [
+                  BoxShadow(
+                    color: _C.brandBrown.withValues(alpha: 0.18),
+                    blurRadius: 14,
+                    offset: const Offset(0, 6),
+                  ),
+                  BoxShadow(
+                    color: _C.goldLight.withValues(alpha: haloOpacity),
+                    blurRadius: 22,
+                    spreadRadius: 1,
+                  ),
+                ],
+              ),
+              child: child,
+            ),
+          );
+        },
+        child: Material(
+          color: _C.brandBrown,
+          borderRadius: BorderRadius.circular(20),
+          clipBehavior: Clip.antiAlias,
+          child: InkWell(
+            onTap: widget.onTap,
+            splashColor: _C.goldLight.withValues(alpha: 0.18),
+            highlightColor: _C.goldLight.withValues(alpha: 0.06),
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(14, 14, 12, 14),
+              child: Row(
+                children: [
+                  _AvatarStack(priests: avatarPriests),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      mainAxisSize: MainAxisSize.min,
+                      children: [
+                        // FittedBox.scaleDown auto-shrinks the
+                        // headline when the count widens the
+                        // string past the available width. The
+                        // combo that actually works in a Column-
+                        // in-Expanded layout:
+                        //   • SizedBox gives FittedBox a hard
+                        //     max width = available column width
+                        //     (without it FittedBox can inherit
+                        //     an unbounded constraint from the
+                        //     Column's intrinsic-sizing pass).
+                        //   • softWrap: false stops Text from
+                        //     wrapping at the column's natural
+                        //     width before FittedBox sees it.
+                        //   • no `overflow` set, so even if some
+                        //     edge case bypasses FittedBox the
+                        //     fallback is clip, never "...".
+                        SizedBox(
+                          width: double.infinity,
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              'Meet all ${_compactCount(total)} speakers',
+                              softWrap: false,
+                              style: GoogleFonts.inter(
+                                fontSize: 16,
+                                fontWeight: FontWeight.w700,
+                                letterSpacing: -0.2,
+                                color: const Color(0xFFFBF7F2),
+                              ),
+                            ),
+                          ),
+                        ),
+                        const SizedBox(height: 3),
+                        if (onlineCount > 0)
+                          Row(
+                            children: [
+                              Container(
+                                width: 6,
+                                height: 6,
+                                decoration: const BoxDecoration(
+                                  color: _kOnlineGreen,
+                                  shape: BoxShape.circle,
+                                ),
+                              ),
+                              const SizedBox(width: 6),
+                              Expanded(
+                                child: FittedBox(
+                                  fit: BoxFit.scaleDown,
+                                  alignment: Alignment.centerLeft,
+                                  child: Text(
+                                    '${_compactCount(onlineCount)} online right now',
+                                    softWrap: false,
+                                    style: GoogleFonts.inter(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w500,
+                                      color: _C.goldLight,
+                                    ),
+                                  ),
+                                ),
+                              ),
+                            ],
+                          )
+                        else
+                          SizedBox(
+                            width: double.infinity,
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerLeft,
+                              child: Text(
+                                'Tap to browse profiles',
+                                softWrap: false,
+                                style: GoogleFonts.inter(
+                                  fontSize: 12,
+                                  fontWeight: FontWeight.w500,
+                                  color: _C.goldLight,
+                                ),
+                              ),
+                            ),
+                          ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 10),
+                  Container(
+                    width: 44,
+                    height: 44,
+                    decoration: const BoxDecoration(
+                      shape: BoxShape.circle,
+                      gradient: LinearGradient(
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                        colors: [_C.goldLight, _C.amberGold],
+                      ),
+                    ),
+                    child: const AppIcon(
+                      AppIcons.arrowRight,
+                      size: 22,
+                      color: _C.brandBrown,
+                    ),
+                  ),
+                ],
               ),
             ),
           ),
+        ),
+      ),
+    );
+  }
+}
+
+// Overlapping circular avatars used inside _ExploreBanner. Borders
+// are painted in the banner's background colour so adjacent avatars
+// get a clean visual gap where they overlap.
+class _AvatarStack extends StatelessWidget {
+  final List<SpeakerModel> priests;
+  const _AvatarStack({required this.priests});
+
+  @override
+  Widget build(BuildContext context) {
+    const size = 28.0;
+    const overlap = 10.0;
+    final count = priests.length;
+    if (count == 0) return const SizedBox.shrink();
+    final width = size + (count - 1) * (size - overlap);
+    return SizedBox(
+      width: width,
+      height: size,
+      child: Stack(
+        children: [
+          for (var i = 0; i < count; i++)
+            Positioned(
+              left: i * (size - overlap),
+              child: _Avatar(
+                priest: priests[i],
+                gradient: kPriestGradients[i % kPriestGradients.length],
+                size: size,
+              ),
+            ),
         ],
+      ),
+    );
+  }
+}
+
+class _Avatar extends StatelessWidget {
+  final SpeakerModel priest;
+  final List<Color> gradient;
+  final double size;
+  const _Avatar({
+    required this.priest,
+    required this.gradient,
+    required this.size,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final fallback = Container(
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          colors: gradient,
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Text(
+        priest.initial,
+        style: GoogleFonts.inter(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: Colors.white,
+        ),
+      ),
+    );
+    // Three-layer ring: gold outer band + cream inner gap + image.
+    // The gold band signals "platform-vetted speaker" without
+    // overloading any single brand colour, and the cream gap separates
+    // the gold from the photo so the ring reads cleanly even when the
+    // avatar image is light-toned.
+    //
+    // Sizes are deliberately conservative (1.5 px ring + 1 px gap) for
+    // these compact 28 px stack avatars — at this scale, anything
+    // thicker would eat too much of the face area. The same treatment
+    // can be applied at a larger scale on detail pages.
+    //
+    // ClipOval guarantees a perfect circular clip on the image — the
+    // `Container(shape: circle) + clipBehavior` combo sometimes
+    // renders a polygonal silhouette on certain pixel ratios.
+    const goldRing = 1.5;
+    const creamGap = 1.0;
+    return Container(
+      width: size,
+      height: size,
+      // Outer gold band.
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        color: AppColors.amberGold,
+      ),
+      child: Padding(
+        padding: const EdgeInsets.all(goldRing),
+        // Cream gap layer.
+        child: Container(
+          decoration: const BoxDecoration(
+            shape: BoxShape.circle,
+            color: AppColors.surfaceCream,
+          ),
+          padding: const EdgeInsets.all(creamGap),
+          child: ClipOval(
+            child: priest.hasPhoto
+                ? CachedNetworkImage(
+                    imageUrl: priest.photoUrl,
+                    fit: BoxFit.cover,
+                    placeholder: (_, _) => fallback,
+                    errorWidget: (_, _, _) => fallback,
+                  )
+                : fallback,
+          ),
+        ),
       ),
     );
   }
@@ -1094,93 +1789,132 @@ class _LivePill extends StatelessWidget {
 
 // ─── Notification bell ────────────────────────────────────
 
+// Bell + live unread badge for the user home header.
+//
+// Streams `notifications` filtered by uid + isRead==false so the badge
+// reflects the same data the notifications page reads. The badge is a
+// stadium-shaped (pill) container — fixed height, expanding horizontally
+// for 1 → 9 → 99+ — with a 1.5 px cream cutout border that lets it
+// "punch" out of the bell silhouette behind it.
+//
+// Stream is mounted lazily inside the build only when `uid` is non-null,
+// so signed-out states (rare on this page, but defensible) never hold a
+// Firestore subscription open.
 class _NotificationBell extends StatelessWidget {
   final VoidCallback onTap;
-  // Only true when there's real unread activity. Wire this to a
-  // notifications-collection query when that schema ships; right
-  // now no data source exists, so callers pass `false` and the dot
-  // stays hidden. A permanently-lit dot is badge-noise that trains
-  // users to ignore it.
-  final bool hasUnread;
+  final String? uid;
 
   const _NotificationBell({
     required this.onTap,
-    this.hasUnread = false,
+    this.uid,
   });
 
   @override
   Widget build(BuildContext context) {
+    if (uid == null) {
+      return _PressScale(
+        onTap: onTap,
+        scale: 0.92,
+        child: const _BellGlyph(count: 0),
+      );
+    }
     return _PressScale(
       onTap: onTap,
       scale: 0.92,
-      // Outer SizedBox is slightly larger than the circle so the
-      // unread dot has room to sit HALF OUTSIDE the circle without
-      // being clipped. 48×48 outer, 42×42 circle centered inside,
-      // Stack overflow allowed via clipBehavior: Clip.none.
-      child: SizedBox(
-        width: 48,
-        height: 48,
-        child: Stack(
-          clipBehavior: Clip.none,
-          alignment: Alignment.center,
-          children: [
-            // The circle itself — explicit size + Center on the
-            // Icon. Without both, the 22px icon defaults to the
-            // container's top-start corner instead of centering.
-            Container(
-              width: 42,
-              height: 42,
-              decoration: BoxDecoration(
-                color: _C.surface,
-                shape: BoxShape.circle,
-                boxShadow: [
-                  BoxShadow(
-                    color: _C.brandBrown.withValues(alpha: 0.08),
-                    blurRadius: 10,
-                    offset: const Offset(0, 3),
+      child: StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+        // Snapshot identical in shape to the priest dashboard bell — the
+        // home and priest sides share the `notifications` collection
+        // contract so the same query reads correctly for both roles.
+        stream: FirebaseFirestore.instance
+            .collection('notifications')
+            .where('userId', isEqualTo: uid)
+            .where('isRead', isEqualTo: false)
+            .snapshots(),
+        builder: (_, snap) {
+          final count = snap.data?.docs.length ?? 0;
+          return _BellGlyph(count: count);
+        },
+      ),
+    );
+  }
+}
+
+// Pure-paint widget — no state, no controllers — that draws the bell
+// glyph and (when count > 0) the pill badge over its top-right corner.
+// Stack uses Clip.none so the badge spills outside the 30×28 bounding
+// box without being chopped by the surrounding header row layout.
+class _BellGlyph extends StatelessWidget {
+  final int count;
+  const _BellGlyph({required this.count});
+
+  @override
+  Widget build(BuildContext context) {
+    final show = count > 0;
+    return SizedBox(
+      width: 30,
+      height: 28,
+      child: Stack(
+        clipBehavior: Clip.none,
+        alignment: Alignment.center,
+        children: [
+          const AppIcon(
+            AppIcons.bellOutline,
+            size: 26,
+            color: AppColors.deepDarkBrown,
+          ),
+          if (show)
+            Positioned(
+              top: -3,
+              right: -4,
+              // Growing-stadium badge — the recipe that gives both
+              // shapes from one widget:
+              //   • minWidth == minHeight == 18 → a single-digit
+              //     count ("1", "9") renders as a perfect 18×18
+              //     circle because the symmetric constraint and the
+              //     borderRadius (height/2 = 9) make the ends fully
+              //     round.
+              //   • As digits are added, horizontal padding lets the
+              //     container widen past 18; the borderRadius stays
+              //     at 9, so the ends stay perfectly rounded — the
+              //     badge morphs from circle → pill without ever
+              //     letting the text overflow the surface.
+              //   • Counts ≥100 collapse to "99+" so the badge never
+              //     widens past ~3 glyphs (~30 px) and keeps a clean
+              //     stadium look even at marketplace scale.
+              child: Container(
+                constraints: const BoxConstraints(
+                  minWidth: 18,
+                  minHeight: 18,
+                ),
+                padding: const EdgeInsets.symmetric(horizontal: 5),
+                decoration: BoxDecoration(
+                  // Warm terra-cotta sits in the parchment palette
+                  // instead of fighting it the way a bright #CC0000
+                  // would. Same colour the priest dashboard uses for
+                  // its bell badge so the two surfaces feel like one
+                  // system.
+                  color: AppColors.terraCotta,
+                  borderRadius: BorderRadius.circular(9),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  count > 99 ? '99+' : '$count',
+                  maxLines: 1,
+                  softWrap: false,
+                  style: GoogleFonts.inter(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
+                    height: 1.05,
+                    // Tabular figures keep digit widths constant so
+                    // the morph from circle → pill happens cleanly
+                    // and reads consistently as counts roll over.
+                    fontFeatures: const [FontFeature.tabularFigures()],
                   ),
-                ],
-              ),
-              child: const Center(
-                child: Icon(
-                  Icons.notifications_none_rounded,
-                  size: 22,
-                  color: _C.brandBrown,
                 ),
               ),
             ),
-            // Unread dot — conditional. Positioned so its centre
-            // lands on the circle's upper-right perimeter (≈ 45°
-            // from top): half pops outside the circle, half still
-            // overlaps it. Standard iOS badge placement.
-            //
-            // Geometry: circle radius 21, centre at (24,24) inside
-            // the 48×48 stack. Perimeter point at 45° upper-right is
-            // (24 + 21·cos45°, 24 − 21·sin45°) ≈ (38.85, 9.15). A
-            // 10×10 dot centred there sits at top ≈ 4, right ≈ 4
-            // measured from the 48×48 stack edges.
-            if (hasUnread)
-              Positioned(
-                top: 4,
-                right: 4,
-                child: Container(
-                  width: 10,
-                  height: 10,
-                  decoration: BoxDecoration(
-                    shape: BoxShape.circle,
-                    color: _C.notifRed,
-                    border: Border.all(
-                      // White halo so the dot reads against both
-                      // the gold gradient band at the top of the
-                      // page and the plain bg as the page scrolls.
-                      color: _C.surface,
-                      width: 2,
-                    ),
-                  ),
-                ),
-              ),
-          ],
-        ),
+        ],
       ),
     );
   }
@@ -1201,39 +1935,61 @@ class _BalancePill extends StatelessWidget {
 
     return _PressScale(
       onTap: onTap,
-      scale: 0.94,
+      scale: 0.95,
       child: Container(
-        padding: const EdgeInsets.fromLTRB(12, 6, 4, 6),
+        height: 40,
+        padding: const EdgeInsets.fromLTRB(6, 0, 6, 0),
         decoration: BoxDecoration(
           color: _C.surface,
-          borderRadius: BorderRadius.circular(24),
-          boxShadow: [
-            BoxShadow(
-              color: _C.brandBrown.withValues(alpha: 0.08),
-              blurRadius: 10,
-              offset: const Offset(0, 3),
-            ),
-          ],
+          // Unified 20-radius family — coin pill, search, chips,
+          // speaker cards, Bible banners, trust card all share
+          // this radius so the home feed reads as one design
+          // system instead of a patchwork.
+          borderRadius: BorderRadius.circular(AppRadius.large),
+          // Warm two-layer shadow — matches the rest of the cards on
+          // the home feed instead of the previous flat black drop.
+          boxShadow: kWarmCardShadow,
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Text(
-              'COINS',
-              style: GoogleFonts.inter(
-                fontSize: 10,
-                fontWeight: FontWeight.w600,
-                letterSpacing: 0.8,
-                color: _C.muted,
+            // Gold coin glyph — 24px disc with a 2-stop gold gradient
+            // (lighter top-left → deeper bottom-right) instead of the
+            // previous flat amber. Gradient gives the disc subtle
+            // dimensionality so it reads as a minted token, not a
+            // sticker.
+            Container(
+              width: 24,
+              height: 24,
+              decoration: const BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: LinearGradient(
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                  colors: [
+                    AppColors.coinGoldLight,
+                    AppColors.coinGoldDeep,
+                  ],
+                ),
+              ),
+              alignment: Alignment.center,
+              child: Text(
+                r'$',
+                style: GoogleFonts.inter(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: Colors.white,
+                  height: 1.0,
+                ),
               ),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 8),
             // Cap the numeric width and scale down when bigger —
             // "10440" shouldn't push the pill so wide that it
             // crushes the greeting. Upper bound keeps the pill
             // visually stable.
             ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 70),
+              constraints: const BoxConstraints(maxWidth: 60),
               child: FittedBox(
                 fit: BoxFit.scaleDown,
                 alignment: Alignment.centerLeft,
@@ -1253,18 +2009,28 @@ class _BalancePill extends StatelessWidget {
                       ),
               ),
             ),
-            const SizedBox(width: 6),
+            const SizedBox(width: 8),
+            // Explicit "+ add" affordance — replaces the prior
+            // chevron-right with a thin outlined circle holding a
+            // small plus glyph. The outlined treatment stays lighter
+            // than the previous filled brown circle the chevron was
+            // brought in to escape, while still reading clearly as
+            // "add money" rather than "drill in to wallet".
             Container(
-              width: 28,
-              height: 28,
-              decoration: const BoxDecoration(
+              width: 22,
+              height: 22,
+              decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: _C.brandBrown,
+                border: Border.all(
+                  color: AppColors.deepDarkBrown.withValues(alpha: 0.25),
+                  width: 1,
+                ),
               ),
-              child: const Icon(
-                Icons.add_rounded,
-                size: 16,
-                color: Colors.white,
+              alignment: Alignment.center,
+              child: const AppIcon(
+                AppIcons.add,
+                size: 13,
+                color: AppColors.deepDarkBrown,
               ),
             ),
           ],
@@ -1279,8 +2045,11 @@ class _BalancePill extends StatelessWidget {
         softWrap: false,
         style: GoogleFonts.inter(
           fontSize: 16,
-          fontWeight: FontWeight.w800,
+          fontWeight: FontWeight.w700,
           color: _C.darkBrown,
+          // Tabular figures so the pill width doesn't twitch as the
+          // balance changes between e.g. "199" → "200" mid-transaction.
+          fontFeatures: const [FontFeature.tabularFigures()],
         ),
       );
 }
@@ -1289,52 +2058,98 @@ class _BalancePill extends StatelessWidget {
 
 class _FilterChip extends StatelessWidget {
   final String label;
+  final IconData? icon;
+  // Optional semantic colour for the icon (e.g., green for "Online")
+  // that's preserved on the inactive chip but overridden to white
+  // when the chip is active — colour is reserved for state on the
+  // active chip, so we mute the green there to avoid a fight.
+  final Color? iconColor;
   final bool isActive;
   final VoidCallback onTap;
 
   const _FilterChip({
     required this.label,
+    required this.icon,
+    required this.iconColor,
     required this.isActive,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
+    final fg = isActive ? Colors.white : AppColors.deepDarkBrown;
+    // On the active chip we want the icon to read as part of the
+    // chip, not as its own semantic accent — so the colour collapses
+    // to plain white.
+    final resolvedIconColor =
+        isActive ? Colors.white : (iconColor ?? fg);
+
     return _PressScale(
       onTap: onTap,
-      scale: 0.94,
+      scale: 0.95,
       child: AnimatedContainer(
         duration: const Duration(milliseconds: 200),
-        padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 10),
+        height: 32,
+        padding: EdgeInsets.symmetric(
+          horizontal: icon == null ? 16 : 12,
+        ),
         decoration: BoxDecoration(
-          color: isActive ? _C.brandBrown : _C.surface,
-          borderRadius: BorderRadius.circular(100),
+          // Active chip uses a top-down gradient — slight white sheen
+          // at the very top edge fades into the base brown by 50% of
+          // the height. Reads as a subtle embossed / tactile surface
+          // rather than the previous flat fill. Inactive chips stay
+          // on a solid surface so they don't compete for attention.
+          gradient: isActive
+              ? const LinearGradient(
+                  begin: Alignment.topCenter,
+                  end: Alignment.bottomCenter,
+                  stops: [0.0, 0.5],
+                  colors: [
+                    // 10% white over the brown gives the embossed
+                    // top edge effect without lightening the body.
+                    Color(0xFF4A2D1C),
+                    AppColors.deepDarkBrown,
+                  ],
+                )
+              : null,
+          color: isActive ? null : AppColors.surfaceWhite,
+          // Stadium shape — height/2 = 16 so the chip ends are fully
+          // rounded. Matches the locked radius scale's "full rounded
+          // → filter chips" rule.
+          borderRadius: BorderRadius.circular(16),
           border: isActive
               ? null
-              : Border.all(
-                  color: _C.muted.withValues(alpha: 0.12),
-                ),
+              : Border.all(color: AppColors.borderLight, width: 0.5),
           boxShadow: isActive
               ? [
                   BoxShadow(
-                    color: _C.brandBrown.withValues(alpha: 0.15),
-                    blurRadius: 8,
-                    offset: const Offset(0, 2),
+                    color: AppColors.deepDarkBrown.withValues(alpha: 0.18),
+                    blurRadius: 10,
+                    offset: const Offset(0, 3),
                   ),
                 ]
               : null,
         ),
         alignment: Alignment.center,
-        child: Text(
-          label,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            // Both states at w600 — colour does the active/inactive
-            // work. Mixing w500/w600 made the active chip feel
-            // disproportionately heavier than its neighbours.
-            fontWeight: FontWeight.w600,
-            color: isActive ? Colors.white : _C.brandBrown,
-          ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            if (icon != null) ...[
+              AppIcon(icon, size: 15, color: resolvedIconColor),
+              const SizedBox(width: 6),
+            ],
+            Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                // Both states at w600 — colour does the active/inactive
+                // work. Mixing w500/w600 made the active chip feel
+                // disproportionately heavier than its neighbours.
+                fontWeight: FontWeight.w600,
+                color: fg,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1369,14 +2184,6 @@ class _BibleSessionBanner extends StatelessWidget {
     required this.onTap,
   });
 
-  // Near-black base; the artwork overlays this and the left-edge of
-  // the gradient sits on it solid, so no priest photo shines through
-  // and harms text contrast.
-  static const _darkBase = Color(0xFF1A0E08);
-  // Pre-built mid-stop of the veil. (`_darkBase.withValues` isn't a
-  // compile-time constant, so the hex form is required for the
-  // `const LinearGradient` below.)
-  static const _veilMid = Color(0x8C1A0E08); // ~55% alpha over _darkBase
   static const _liveRed = Color(0xFFE53E3E);
 
   String _bannerImage(String category) {
@@ -1400,298 +2207,231 @@ class _BibleSessionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isLive = session.isLive;
-    // Price is always positive in V1 (min ₹49 — confirmed during
-    // spec sign-off); free sessions don't exist on this surface.
-    final ctaText = isLive ? 'Join Now' : 'Register Now';
-    final labelText = isLive ? 'LIVE NOW' : 'UPCOMING SESSION';
+    final labelText = isLive ? 'LIVE NOW' : 'UPCOMING';
+    final dotColor = isLive ? _liveRed : _C.amberGold;
     final labelColor = isLive ? _liveRed : _C.amberGold;
     final timeLabel = session.formattedTime.isEmpty
-        ? ''
-        : '${session.formattedTime} IST';
-
-    final titleStyle = GoogleFonts.inter(
-      fontSize: 22,
-      fontWeight: FontWeight.w900,
-      color: Colors.white,
-      height: 1.1,
-      letterSpacing: -0.5,
-    );
+        ? session.formattedDate
+        : '${session.formattedDate} · ${session.formattedTime}';
+    final ctaLabel = _ctaLabel(session);
+    final displayTitle =
+        session.title.isEmpty ? 'Bible Session' : session.title;
 
     return _PressScale(
       onTap: onTap,
       scale: 0.97,
       child: DecoratedBox(
-        // Outer decoration carries the shadow — putting the shadow
-        // on the inner clipped container would clip it away too.
         decoration: BoxDecoration(
-          borderRadius: BorderRadius.circular(16),
+          borderRadius: BorderRadius.circular(20),
           boxShadow: [
             BoxShadow(
-              color: Colors.black.withValues(alpha: 0.30),
-              blurRadius: 20,
-              offset: const Offset(0, 8),
+              color: Colors.black.withValues(alpha: 0.08),
+              blurRadius: 18,
+              offset: const Offset(0, 6),
             ),
           ],
         ),
         child: ClipRRect(
-          borderRadius: BorderRadius.circular(16),
-          child: ColoredBox(
-            color: _darkBase,
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final cardWidth = constraints.maxWidth;
-                // Text column owns the left 55%. Subtract the 18 px
-                // left inset so TextPainter measures against the
-                // real wrap width, not the column's bounding box.
-                final textColWidth = cardWidth * 0.55;
-                final textMeasureWidth = textColWidth - 18;
+          borderRadius: BorderRadius.circular(20),
+          child: Stack(
+            fit: StackFit.expand,
+            children: [
+              // ─── Layer 1: full-bleed category artwork ───────────
+              // BoxFit.cover fills the whole banner with the image
+              // — no painted gradient base; the artwork itself is
+              // the background. gaplessPlayback + initState precache
+              // keep the first paint flash-free.
+              Image.asset(
+                _bannerImage(session.category),
+                fit: BoxFit.cover,
+                gaplessPlayback: true,
+                frameBuilder: (context, child, frame, wasSyncLoaded) {
+                  if (wasSyncLoaded || frame != null) return child;
+                  // Show a near-black fill while the asset decodes
+                  // so the white scaffold never flashes through.
+                  return const ColoredBox(color: Color(0xFF1A0E08));
+                },
+              ),
 
-                // Decide description line count based on whether the
-                // title wraps. The reverse (short title) gives the
-                // description more room, so the card never wastes
-                // vertical real-estate.
-                final titlePainter = TextPainter(
-                  text: TextSpan(text: session.title, style: titleStyle),
-                  maxLines: 2,
-                  textDirection: TextDirection.ltr,
-                  ellipsis: '…',
-                )..layout(maxWidth: textMeasureWidth);
-                final titleIsTwoLines =
-                    titlePainter.computeLineMetrics().length > 1;
-                final descMaxLines = titleIsTwoLines ? 1 : 2;
+              // ─── Layer 2: left-heavy dark veil ──────────────────
+              // Black → translucent gradient from left to right.
+              // Anchors text legibility on the left while leaving
+              // the artwork breathing room on the right where the
+              // visual focus of the image typically sits.
+              Positioned.fill(
+                child: DecoratedBox(
+                  decoration: BoxDecoration(
+                    gradient: LinearGradient(
+                      begin: Alignment.centerLeft,
+                      end: Alignment.centerRight,
+                      stops: const [0.0, 0.55, 1.0],
+                      colors: [
+                        Colors.black.withValues(alpha: 0.78),
+                        Colors.black.withValues(alpha: 0.45),
+                        Colors.black.withValues(alpha: 0.10),
+                      ],
+                    ),
+                  ),
+                ),
+              ),
 
-                return Stack(
+              // ─── Layer 3: content (left ~60% column) ────────────
+              Padding(
+                padding: const EdgeInsets.fromLTRB(16, 12, 16, 12),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    // ─── Layer 1: category artwork (right side) ───
-                    Positioned(
-                      right: -10,
-                      top: 0,
-                      bottom: 0,
-                      width: cardWidth * 0.58,
-                      child: Image.asset(
-                        _bannerImage(session.category),
-                        fit: BoxFit.cover,
-                        // gaplessPlayback holds the previous frame
-                        // through asset swaps so a category change
-                        // doesn't flash white. Combined with the
-                        // initState precache, first paint is also
-                        // flash-free.
-                        gaplessPlayback: true,
-                        // Soft fade-in if the precache somehow
-                        // missed (e.g., low-memory eviction).
-                        frameBuilder:
-                            (context, child, frame, wasSyncLoaded) {
-                          if (wasSyncLoaded || frame != null) return child;
-                          return const SizedBox.shrink();
-                        },
-                      ),
-                    ),
-
-                    // ─── Layer 2: left-to-right dark veil ─────────
-                    const Positioned.fill(
-                      child: DecoratedBox(
-                        decoration: BoxDecoration(
-                          gradient: LinearGradient(
-                            begin: Alignment.centerLeft,
-                            end: Alignment.centerRight,
-                            stops: [0.0, 0.55, 1.0],
-                            colors: [
-                              _darkBase,
-                              _veilMid,
-                              Colors.transparent,
-                            ],
-                          ),
-                        ),
-                      ),
-                    ),
-
-                    // ─── Layer 3: text + CTA (left side) ──────────
-                    Positioned(
-                      left: 18,
-                      right: cardWidth * 0.45,
-                      top: 16,
-                      bottom: 16,
+                    // Text column owns the left 3/5 of the banner.
+                    // The Spacer on the right keeps the artwork's
+                    // focal point unobscured.
+                    Expanded(
+                      flex: 3,
                       child: Column(
                         crossAxisAlignment: CrossAxisAlignment.start,
+                        mainAxisAlignment: MainAxisAlignment.spaceBetween,
                         children: [
-                          // Top row: status label + price pill.
-                          Row(
+                          // Top block: label + title sit together.
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Container(
-                                width: 7,
-                                height: 7,
-                                decoration: BoxDecoration(
-                                  shape: BoxShape.circle,
-                                  color: labelColor,
-                                ),
+                              Row(
+                                children: [
+                                  Container(
+                                    width: 7,
+                                    height: 7,
+                                    decoration: BoxDecoration(
+                                      shape: BoxShape.circle,
+                                      color: dotColor,
+                                    ),
+                                  ),
+                                  const SizedBox(width: 6),
+                                  Flexible(
+                                    child: Text(
+                                      labelText,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.inter(
+                                        fontSize: 9.5,
+                                        fontWeight: FontWeight.w700,
+                                        color: labelColor,
+                                        letterSpacing: 1.0,
+                                      ),
+                                    ),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(width: 5),
-                              Flexible(
-                                child: Text(
-                                  labelText,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: GoogleFonts.inter(
-                                    fontSize: 8.5,
-                                    fontWeight: FontWeight.w700,
-                                    color: labelColor,
-                                    letterSpacing: 0.6,
-                                  ),
-                                ),
-                              ),
-                              const SizedBox(width: 6),
-                              Container(
-                                padding: const EdgeInsets.symmetric(
-                                  horizontal: 8,
-                                  vertical: 3,
-                                ),
-                                decoration: BoxDecoration(
-                                  color: _C.amberGold
-                                      .withValues(alpha: 0.35),
-                                  borderRadius: BorderRadius.circular(6),
-                                  border: Border.all(
-                                    color: _C.amberGold
-                                        .withValues(alpha: 0.5),
-                                    width: 1,
-                                  ),
-                                ),
-                                child: Text(
-                                  '₹${session.price}',
-                                  style: GoogleFonts.inter(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: _C.goldLight,
-                                  ),
+                              const SizedBox(height: 5),
+                              Text(
+                                displayTitle,
+                                maxLines: 2,
+                                overflow: TextOverflow.ellipsis,
+                                style: GoogleFonts.inter(
+                                  fontSize: 17,
+                                  fontWeight: FontWeight.w800,
+                                  color: Colors.white,
+                                  height: 1.12,
+                                  letterSpacing: -0.3,
                                 ),
                               ),
                             ],
                           ),
-                          const SizedBox(height: 8),
-                          // Title — max 2 lines, ellipsis on overflow.
-                          Text(
-                            session.title.isEmpty
-                                ? 'Bible Session'
-                                : session.title,
-                            maxLines: 2,
-                            overflow: TextOverflow.ellipsis,
-                            style: titleStyle,
-                          ),
-                          const SizedBox(height: 5),
-                          // Description — line count flips based on
-                          // the title's measured wrap.
-                          if (session.description.isNotEmpty)
-                            Flexible(
-                              child: Text(
-                                session.description,
-                                maxLines: descMaxLines,
-                                overflow: TextOverflow.ellipsis,
-                                style: GoogleFonts.inter(
-                                  fontSize: 10.5,
-                                  fontWeight: FontWeight.w400,
-                                  color: Colors.white
-                                      .withValues(alpha: 0.55),
-                                  height: 1.35,
-                                ),
-                              ),
-                            )
-                          else
-                            const Spacer(),
-                          const SizedBox(height: 6),
-                          // Date + time row.
-                          Row(
+                          // Bottom block: date·time line + CTA pill.
+                          Column(
+                            crossAxisAlignment: CrossAxisAlignment.start,
+                            mainAxisSize: MainAxisSize.min,
                             children: [
-                              Icon(
-                                Icons.calendar_today_rounded,
-                                size: 11,
-                                color: _C.amberGold
-                                    .withValues(alpha: 0.7),
-                              ),
-                              const SizedBox(width: 4),
-                              Flexible(
-                                child: Text(
-                                  session.formattedDate,
-                                  maxLines: 1,
-                                  overflow: TextOverflow.ellipsis,
-                                  style: GoogleFonts.inter(
-                                    fontSize: 10,
-                                    fontWeight: FontWeight.w500,
+                              Row(
+                                children: [
+                                  AppIcon(
+                                    AppIcons.calendar,
+                                    size: 10,
                                     color: Colors.white
                                         .withValues(alpha: 0.7),
                                   ),
-                                ),
-                              ),
-                              if (timeLabel.isNotEmpty) ...[
-                                const SizedBox(width: 10),
-                                Icon(
-                                  Icons.schedule_rounded,
-                                  size: 11,
-                                  color: _C.amberGold
-                                      .withValues(alpha: 0.7),
-                                ),
-                                const SizedBox(width: 4),
-                                Flexible(
-                                  child: Text(
-                                    timeLabel,
-                                    maxLines: 1,
-                                    overflow: TextOverflow.ellipsis,
-                                    style: GoogleFonts.inter(
-                                      fontSize: 10,
-                                      fontWeight: FontWeight.w500,
-                                      color: Colors.white
-                                          .withValues(alpha: 0.7),
+                                  const SizedBox(width: 5),
+                                  Flexible(
+                                    child: Text(
+                                      timeLabel,
+                                      maxLines: 1,
+                                      overflow: TextOverflow.ellipsis,
+                                      style: GoogleFonts.inter(
+                                        fontSize: 10,
+                                        fontWeight: FontWeight.w500,
+                                        color: Colors.white
+                                            .withValues(alpha: 0.75),
+                                      ),
                                     ),
                                   ),
-                                ),
-                              ],
+                                ],
+                              ),
+                              const SizedBox(height: 8),
+                              _RegisterPill(label: ctaLabel),
                             ],
-                          ),
-                          const SizedBox(height: 8),
-                          // CTA — Join Now / Register Now.
-                          Container(
-                            padding: const EdgeInsets.symmetric(
-                              horizontal: 12,
-                              vertical: 6,
-                            ),
-                            decoration: BoxDecoration(
-                              color: _C.amberGold,
-                              borderRadius: BorderRadius.circular(7),
-                              boxShadow: [
-                                BoxShadow(
-                                  color: _C.amberGold
-                                      .withValues(alpha: 0.45),
-                                  blurRadius: 10,
-                                  offset: const Offset(0, 3),
-                                ),
-                              ],
-                            ),
-                            child: Row(
-                              mainAxisSize: MainAxisSize.min,
-                              children: [
-                                Text(
-                                  ctaText,
-                                  style: GoogleFonts.inter(
-                                    fontSize: 11,
-                                    fontWeight: FontWeight.w700,
-                                    color: Colors.white,
-                                  ),
-                                ),
-                                const SizedBox(width: 4),
-                                const Icon(
-                                  Icons.arrow_forward_rounded,
-                                  size: 13,
-                                  color: Colors.white,
-                                ),
-                              ],
-                            ),
                           ),
                         ],
                       ),
                     ),
+                    // Spacer reserves the right 2/5 of the banner for
+                    // the artwork's focal point. No widget here —
+                    // just dead space so the text column never runs
+                    // into the visual centre of the image.
+                    const Spacer(flex: 2),
                   ],
-                );
-              },
-            ),
+                ),
+              ),
+            ],
           ),
+        ),
+      ),
+    );
+  }
+
+  // CTA label resolves to one of two states:
+  //   • live session   → "Join Now"
+  //   • upcoming       → "Register for Free"
+  // Price is intentionally NOT surfaced on the banner — the price
+  // belongs on the detail page, where the user actually commits.
+  // Showing price here turned the CTA into a value-judgement
+  // ("₹50? worth it?") before the user had any context.
+  String _ctaLabel(BibleSessionModel s) {
+    if (s.isLive) return 'Join Now';
+    return 'Register for Free';
+  }
+
+}
+
+// Small gold pill used as the banner's CTA. Gold fill, dark text,
+// no trailing arrow — the whole banner is tappable, so a chrome
+// arrow on the pill was redundant. Tap routing stays on the parent
+// banner's onTap; this widget is purely visual.
+class _RegisterPill extends StatelessWidget {
+  final String label;
+  const _RegisterPill({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+      decoration: BoxDecoration(
+        color: _C.amberGold,
+        borderRadius: BorderRadius.circular(8),
+        boxShadow: [
+          BoxShadow(
+            color: _C.amberGold.withValues(alpha: 0.4),
+            blurRadius: 10,
+            offset: const Offset(0, 3),
+          ),
+        ],
+      ),
+      child: Text(
+        label,
+        maxLines: 1,
+        overflow: TextOverflow.ellipsis,
+        style: GoogleFonts.inter(
+          fontSize: 11,
+          fontWeight: FontWeight.w700,
+          color: AppColors.deepDarkBrown,
         ),
       ),
     );
@@ -1769,11 +2509,11 @@ class _BibleEmptyRail extends StatelessWidget {
                 ),
               ),
             ),
-            // Top-anchored text column. 18-dp top inset gives the
-            // pill clear breathing room from the card edge; 14-dp
-            // bottom padding keeps the CTA glow from clipping.
+            // Top-anchored text column. Tightened to 14/12 to fit
+            // the carousel's reduced 140-px parent height — leaves
+            // ~6 px of safety margin below the CTA before clipping.
             Padding(
-              padding: const EdgeInsets.fromLTRB(14, 18, 14, 14),
+              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
               child: Align(
                 alignment: Alignment.topLeft,
                 child: ConstrainedBox(
@@ -1796,8 +2536,8 @@ class _BibleEmptyRail extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            const Icon(
-                              Icons.card_giftcard_rounded,
+                            const AppIcon(
+                              AppIcons.gift,
                               color: _C.goldLight,
                               size: 10,
                             ),
@@ -1907,8 +2647,8 @@ class _ClaimNowLabel extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 5),
-        const Icon(
-          Icons.arrow_forward_rounded,
+        const AppIcon(
+          AppIcons.arrowRight,
           size: 11,
           color: _C.darkBrown,
         ),
@@ -1919,390 +2659,460 @@ class _ClaimNowLabel extends StatelessWidget {
 
 // ─── Priest grid card ─────────────────────────────────────
 
-// Top half: the priest's photo fills a gradient-backed rectangle
-// (BoxFit.cover). If there's no photo, the gradient shows through
-// with a large white initial. A subtle bottom-up gradient sits
-// under the photo so the status + rating pills read against any
-// photo. Bottom half is a fixed 112px so long denom/language
-// strings can't push the card into overflow on a 320-wide phone.
-class _PriestGridCard extends StatelessWidget {
-  final SpeakerModel priest;
-  final List<Color> gradient;
-  final VoidCallback onTap;
-  final VoidCallback onChat;
-  final VoidCallback onCall;
-  final VoidCallback onNotify;
+// ─── Trust banner ─────────────────────────────────────────
+//
+// Premium reassurance card. Four-band layout:
+//   1. Header  — gold medal + title + sub
+//   2. Rating  — 4.9 ★ + slim divider + social proof
+//   3. Service — Prayer · Healing · Spiritual support (gold bullets)
+//   4. Tags    — inline icon-labels (Verified / Private / Biblical)
+//
+// Colour palette (intentionally tight — three brown shades + gold):
+//   • _kTrustInkDeep  — primary headline ink, warmest deep brown
+//   • _kTrustInkSoft  — softer brown for service trio
+//   • _kTrustInkMuted — warm gray-brown for secondary copy
+//   • _kTrustGold     — accent gold (star + bullet dots)
+//   • _kTrustBrown    — solid brown used by tag icons / cross glyph
+//   • _kTrustGoldLight — radial-highlight pole of the medal gradient
+const Color _kTrustBrown = Color(0xFF6B3F22);
+const Color _kTrustGold = Color(0xFFD8A246);
+const Color _kTrustGoldLight = Color(0xFFEFC25C);
+const Color _kTrustInkDeep = Color(0xFF2B1810);
+const Color _kTrustInkMuted = Color(0xFF8A6B5C);
+const Color _kTrustHairlineGold = Color(0xFFD8B98A);
 
-  const _PriestGridCard({
-    required this.priest,
-    required this.gradient,
-    required this.onTap,
-    required this.onChat,
-    required this.onCall,
-    required this.onNotify,
-  });
+class _TrustBannerContent extends StatelessWidget {
+  const _TrustBannerContent();
 
   @override
   Widget build(BuildContext context) {
-    return _PressScale(
-      onTap: onTap,
-      scale: 0.97,
-      child: Container(
-        decoration: BoxDecoration(
-          color: _C.surface,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: _C.brandBrown.withValues(alpha: 0.08),
-              blurRadius: 16,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        clipBehavior: Clip.antiAlias,
-        child: Column(
-          children: [
-            Expanded(child: _buildTop()),
-            SizedBox(height: 112, child: _buildBottom()),
-          ],
-        ),
-      ),
-    );
-  }
-
-  Widget _buildTop() {
-    return Stack(
-      fit: StackFit.expand,
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
-        // Base gradient — the visual identity of the card; visible
-        // on edges and fully when there's no photo.
-        DecoratedBox(
-          decoration: BoxDecoration(
-            gradient: LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: gradient,
-            ),
-          ),
-        ),
-        // Photo on top, covering the full rectangle.
-        if (priest.hasPhoto)
-          Positioned.fill(
-            child: CachedNetworkImage(
-              imageUrl: priest.photoUrl,
-              fit: BoxFit.cover,
-              placeholder: (_, _) => const SizedBox.shrink(),
-              errorWidget: (_, _, _) => _BigInitial(priest: priest),
-            ),
-          )
-        else
-          _BigInitial(priest: priest),
-        // Feathered bottom — the lower ~45% of the photo fades into
-        // the card's white info panel instead of showing a hard
-        // horizontal cut. The upper half is fully transparent so
-        // face/subject stays crisp; from 55% downward it ramps into
-        // solid surface-white, which meets the white bottom section
-        // seamlessly. Matches the reference mock's blended edge.
-        Positioned.fill(
-          child: IgnorePointer(
-            child: DecoratedBox(
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: [
-                    Colors.transparent,
-                    Colors.transparent,
-                    _C.surface.withValues(alpha: 0.55),
-                    _C.surface,
+        // ── Band 1: header (medal | divider | title block) ──
+        // IntrinsicHeight lets the vertical divider match the
+        // tallest sibling's height. Title is allowed to wrap to
+        // two lines like the reference ("Trusted spiritual /
+        // guidance"); subtitle stays one line.
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              const Center(child: _TrustMedal(size: 42)),
+              const SizedBox(width: 14),
+              Container(
+                width: 1,
+                margin: const EdgeInsets.symmetric(vertical: 2),
+                color: _kTrustHairlineGold.withValues(alpha: 0.5),
+              ),
+              const SizedBox(width: 14),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Trusted spiritual guidance',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 17,
+                        fontWeight: FontWeight.w800,
+                        height: 1.15,
+                        letterSpacing: -0.3,
+                        color: _kTrustInkDeep,
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      'Verified priests & pastors',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w500,
+                        color: _kTrustInkMuted,
+                      ),
+                    ),
                   ],
-                  stops: const [0.0, 0.55, 0.85, 1.0],
                 ),
               ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 14),
+        // Horizontal hairline directly under the header.
+        Container(
+          height: 0.7,
+          color: _kTrustHairlineGold.withValues(alpha: 0.55),
+        ),
+        const SizedBox(height: 14),
+        // ── Band 2: two-column body ──
+        // Left: praying-hands glyph + short benefit copy.
+        // Right: 4.9 ★ rating block.
+        // Vertical hairline between them mirrors the reference.
+        IntrinsicHeight(
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.center,
+            children: [
+              Expanded(
+                flex: 6,
+                // Typographic tagline replaces the gospelvox SVG —
+                // the symbol read as visual noise at 48 px and pushed
+                // the paragraph into a narrow gutter. Three-line
+                // statement with a gold accent on the closing word
+                // ("anywhere.") that mirrors the ★ on the right
+                // column. Each line is a single word, so wrapping is
+                // deterministic at every phone width — no ellipsis.
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      'Spiritual',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        height: 1.15,
+                        letterSpacing: -0.4,
+                        color: _kTrustInkDeep,
+                      ),
+                    ),
+                    Text(
+                      'guidance,',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        height: 1.15,
+                        letterSpacing: -0.4,
+                        color: _kTrustInkDeep,
+                      ),
+                    ),
+                    Text(
+                      'anywhere.',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 18,
+                        fontWeight: FontWeight.w800,
+                        height: 1.15,
+                        letterSpacing: -0.4,
+                        color: _kTrustGold,
+                      ),
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'Prayer  ·  Healing  ·  Care',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w500,
+                        color: _kTrustInkMuted,
+                        letterSpacing: 0.3,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(width: 12),
+              Container(
+                width: 0.7,
+                margin: const EdgeInsets.symmetric(vertical: 4),
+                color: _kTrustHairlineGold.withValues(alpha: 0.55),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                flex: 5,
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    FittedBox(
+                      fit: BoxFit.scaleDown,
+                      alignment: Alignment.centerLeft,
+                      child: Row(
+                        crossAxisAlignment: CrossAxisAlignment.center,
+                        children: [
+                          Text(
+                            '4.9',
+                            style: GoogleFonts.inter(
+                              fontSize: 26,
+                              fontWeight: FontWeight.w800,
+                              height: 1.0,
+                              letterSpacing: -0.8,
+                              color: _kTrustInkDeep,
+                            ),
+                          ),
+                          const SizedBox(width: 5),
+                          const AppIcon(
+                            AppIcons.starFilled,
+                            color: _kTrustGold,
+                            size: 24,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(height: 6),
+                    Text(
+                      'Average rating',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 11.5,
+                        fontWeight: FontWeight.w700,
+                        color: _kTrustInkDeep,
+                      ),
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      'Trusted by believers worldwide',
+                      maxLines: 2,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 10.5,
+                        fontWeight: FontWeight.w500,
+                        height: 1.3,
+                        color: _kTrustInkMuted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        const SizedBox(height: 16),
+        // ── Band 3: pill row ──
+        // Three equal pills. Labels split across two lines (primary
+        // bold, secondary smaller) — same structure as the reference.
+        // Primary words are short (Verified / Private / Faith) so
+        // they fit on a single line at phone widths without ellipsis.
+        Row(
+          children: const [
+            Expanded(
+              child: _TrustPill(
+                icon: AppIcons.verified,
+                primary: 'Verified',
+                secondary: 'advisors',
+              ),
             ),
-          ),
+            SizedBox(width: 6),
+            Expanded(
+              child: _TrustPill(
+                icon: AppIcons.lock,
+                primary: 'Private',
+                secondary: 'sessions',
+              ),
+            ),
+            SizedBox(width: 6),
+            Expanded(
+              child: _TrustPill(
+                iconWidget: _CrossGlyph(size: 13, color: _kTrustBrown),
+                primary: 'Faith',
+                secondary: 'centered',
+              ),
+            ),
+          ],
         ),
-        Positioned(
-          top: 10,
-          left: 10,
-          child: _StatusBadge(priest: priest),
-        ),
-        if (priest.rating > 0)
-          Positioned(
-            top: 10,
-            right: 10,
-            child: _RatingBadge(rating: priest.rating),
-          ),
       ],
     );
   }
-
-  Widget _buildBottom() {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(12, 10, 12, 10),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          // Full names scale-down rather than ellipsis. Cards are
-          // narrow; a shrunk "Dr. James Philip" reads better than
-          // "Dr. James P…" with a clipped tail.
-          FittedBox(
-            fit: BoxFit.scaleDown,
-            alignment: Alignment.centerLeft,
-            child: Text(
-              priest.fullName,
-              maxLines: 1,
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.w700,
-                color: _C.darkBrown,
-              ),
-            ),
-          ),
-          const SizedBox(height: 3),
-          Text(
-            _roleLine(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w400,
-              color: _C.muted,
-            ),
-          ),
-          const SizedBox(height: 2),
-          Text(
-            _experienceLine(),
-            maxLines: 1,
-            overflow: TextOverflow.ellipsis,
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w400,
-              color: _C.muted.withValues(alpha: 0.75),
-            ),
-          ),
-          const Spacer(),
-          _buildActions(),
-        ],
-      ),
-    );
-  }
-
-  Widget _buildActions() {
-    if (priest.isAvailable) {
-      return Row(
-        children: [
-          Expanded(
-            child: _PressScale(
-              onTap: onChat,
-              scale: 0.95,
-              child: Container(
-                height: 34,
-                decoration: BoxDecoration(
-                  color: Colors.transparent,
-                  borderRadius: BorderRadius.circular(10),
-                  border: Border.all(color: _C.brandBrown, width: 1.5),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  'Chat',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: _C.brandBrown,
-                  ),
-                ),
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-          Expanded(
-            child: _PressScale(
-              onTap: onCall,
-              scale: 0.95,
-              child: Container(
-                height: 34,
-                decoration: BoxDecoration(
-                  color: _C.brandBrown,
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                alignment: Alignment.center,
-                child: Text(
-                  'Call',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: Colors.white,
-                  ),
-                ),
-              ),
-            ),
-          ),
-        ],
-      );
-    }
-    return _PressScale(
-      onTap: onNotify,
-      scale: 0.95,
-      child: Container(
-        width: double.infinity,
-        height: 34,
-        decoration: BoxDecoration(
-          // Slightly stronger tint + border so the button reads as
-          // tappable against the card's bottom white section. Text
-          // uses darkBrown (not muted) for higher contrast — muted
-          // on muted-tint was borderline under WCAG AA.
-          color: _C.muted.withValues(alpha: 0.1),
-          borderRadius: BorderRadius.circular(10),
-          border: Border.all(
-            color: _C.muted.withValues(alpha: 0.22),
-          ),
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          'Notify me',
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: _C.darkBrown.withValues(alpha: 0.7),
-          ),
-        ),
-      ),
-    );
-  }
-
-  String _roleLine() {
-    if (priest.specializations.isNotEmpty) {
-      return priest.specializations.first;
-    }
-    if (priest.denomination.isNotEmpty) return priest.denomination;
-    return 'Speaker';
-  }
-
-  String _experienceLine() {
-    final parts = <String>[];
-    if (priest.yearsOfExperience > 0) {
-      parts.add('${priest.yearsOfExperience} yrs');
-    }
-    if (priest.languages.isNotEmpty) {
-      parts.add(priest.languages.take(2).join(', '));
-    }
-    return parts.isEmpty ? '—' : parts.join(' · ');
-  }
 }
 
-class _BigInitial extends StatelessWidget {
-  final SpeakerModel priest;
-  const _BigInitial({required this.priest});
+// Gold medal — radial gradient + thin inner-highlight ring + check
+// glyph. The inner ring is what stops the badge from reading as a
+// flat coin.
+class _TrustMedal extends StatelessWidget {
+  final double size;
+  const _TrustMedal({required this.size});
 
   @override
   Widget build(BuildContext context) {
-    return Center(
-      child: Text(
-        priest.initial,
-        style: GoogleFonts.inter(
-          fontSize: 56,
-          fontWeight: FontWeight.w800,
-          color: Colors.white.withValues(alpha: 0.9),
-        ),
-      ),
-    );
-  }
-}
-
-// Soft translucent pill — cream-on-image instead of the dark blob.
-// Reads cleanly on any of the 6 priest gradients without the
-// heavy-ink feeling of black-at-25%-alpha.
-class _StatusBadge extends StatelessWidget {
-  final SpeakerModel priest;
-  const _StatusBadge({required this.priest});
-
-  @override
-  Widget build(BuildContext context) {
-    final (label, dotColor, textColor) = _spec(priest);
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 6,
-            offset: const Offset(0, 1),
+      width: size,
+      height: size,
+      decoration: const BoxDecoration(
+        shape: BoxShape.circle,
+        gradient: RadialGradient(
+          center: Alignment(-0.35, -0.4),
+          radius: 1.0,
+          colors: [_kTrustGoldLight, _kTrustGold],
+        ),
+      ),
+      alignment: Alignment.center,
+      child: Container(
+        width: size - 5,
+        height: size - 5,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          border: Border.all(
+            color: Colors.white.withValues(alpha: 0.32),
+            width: 0.8,
           ),
-        ],
+        ),
+        child: AppIcon(
+          AppIcons.verified,
+          color: Colors.white,
+          size: size * 0.58,
+        ),
+      ),
+    );
+  }
+}
+
+// Premium pill chip. Capsule with a soft vertical cream gradient,
+// 0.7-px warm-gold hairline border, and a circular tinted backdrop
+// behind the icon so the glyph reads as a proper feature mark and
+// not a lone icon floating in space. Two-line label: bold primary
+// + muted secondary.
+class _TrustPill extends StatelessWidget {
+  final IconData? icon;
+  final Widget? iconWidget;
+  final String primary;
+  final String secondary;
+
+  const _TrustPill({
+    this.icon,
+    this.iconWidget,
+    required this.primary,
+    required this.secondary,
+  }) : assert(icon != null || iconWidget != null);
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 7),
+      decoration: BoxDecoration(
+        // Subtle vertical gradient: lighter cream at the top, warmer
+        // cream at the bottom. Adds depth so the pill reads as a
+        // physical chip rather than a flat sticker.
+        gradient: LinearGradient(
+          begin: Alignment.topCenter,
+          end: Alignment.bottomCenter,
+          colors: [
+            const Color(0xFFFFF7E8).withValues(alpha: 0.78),
+            const Color(0xFFF4E2C8).withValues(alpha: 0.62),
+          ],
+        ),
+        borderRadius: BorderRadius.circular(100),
+        border: Border.all(
+          color: _kTrustHairlineGold.withValues(alpha: 0.6),
+          width: 0.7,
+        ),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
+          // Tinted circular backdrop behind the glyph — warm brown
+          // radial gradient (lighter at top-left for a touch of
+          // dimension).
           Container(
-            width: 6,
-            height: 6,
+            width: 24,
+            height: 24,
+            alignment: Alignment.center,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: dotColor,
+              gradient: RadialGradient(
+                center: const Alignment(-0.3, -0.3),
+                radius: 0.95,
+                colors: [
+                  _kTrustBrown.withValues(alpha: 0.20),
+                  _kTrustBrown.withValues(alpha: 0.10),
+                ],
+              ),
             ),
+            child: iconWidget ??
+                AppIcon(icon, color: _kTrustBrown, size: 14),
           ),
-          const SizedBox(width: 5),
-          Text(
-            label,
-            style: GoogleFonts.inter(
-              fontSize: 10,
-              fontWeight: FontWeight.w600,
-              color: textColor,
+          const SizedBox(width: 6),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Text(
+                  primary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 10.5,
+                    fontWeight: FontWeight.w700,
+                    height: 1.15,
+                    letterSpacing: -0.1,
+                    color: _kTrustInkDeep,
+                  ),
+                ),
+                Text(
+                  secondary,
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 8.5,
+                    fontWeight: FontWeight.w500,
+                    height: 1.2,
+                    color: _kTrustInkMuted,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
       ),
     );
   }
-
-  (String, Color, Color) _spec(SpeakerModel p) {
-    if (p.isAvailable) {
-      return ('Online', _C.onlineGreen, _C.darkBrown);
-    }
-    if (p.isOnline && p.isBusy) {
-      return ('Busy', _C.busyAmber, _C.darkBrown);
-    }
-    return ('Offline', _C.muted, _C.muted);
-  }
 }
 
-class _RatingBadge extends StatelessWidget {
-  final double rating;
-  const _RatingBadge({required this.rating});
+// Small Latin cross built from two rounded rects. Material Icons
+// doesn't ship a clean Christian cross — AppIcons.add reads as "plus",
+// not a cross — so we draw one with the same warm-brown weight as
+// the other pill glyphs.
+class _CrossGlyph extends StatelessWidget {
+  final double size;
+  final Color color;
+
+  const _CrossGlyph({required this.size, required this.color});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
-      decoration: BoxDecoration(
-        color: Colors.white.withValues(alpha: 0.92),
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.08),
-            blurRadius: 6,
-            offset: const Offset(0, 1),
-          ),
-        ],
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
+    final stem = size * 0.22;
+    final crossbarH = size * 0.22;
+    final crossbarW = size * 0.65;
+    return SizedBox(
+      width: size,
+      height: size,
+      child: Stack(
         children: [
-          const Icon(
-            Icons.star_rounded,
-            size: 12,
-            color: _C.amberGold,
+          Center(
+            child: Container(
+              width: stem,
+              height: size * 0.92,
+              decoration: BoxDecoration(
+                color: color,
+                borderRadius: BorderRadius.circular(stem / 2),
+              ),
+            ),
           ),
-          const SizedBox(width: 3),
-          Text(
-            rating.toStringAsFixed(1),
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w700,
-              color: _C.darkBrown,
+          Positioned(
+            left: 0,
+            right: 0,
+            top: size * 0.22,
+            child: Center(
+              child: Container(
+                width: crossbarW,
+                height: crossbarH,
+                decoration: BoxDecoration(
+                  color: color,
+                  borderRadius: BorderRadius.circular(crossbarH / 2),
+                ),
+              ),
             ),
           ),
         ],
@@ -2316,33 +3126,20 @@ class _RatingBadge extends StatelessWidget {
 class _SessionsCarouselShimmer extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    // Match the real carousel geometry exactly so the shimmer →
-    // data transition doesn't visibly shift the layout:
-    //   • first card left edge = 20 (matches page gutter)
-    //   • card width = viewportWidth × 0.78 (matches
-    //     PageController(viewportFraction: 0.78))
-    //   • right gutter 12 between cards
-    final viewport = MediaQuery.of(context).size.width;
-    final cardWidth = viewport * 0.78;
-
-    return Shimmer.fromColors(
-      baseColor: _C.muted.withValues(alpha: 0.14),
-      highlightColor: _C.surfaceWarm,
-      child: ListView.separated(
-        scrollDirection: Axis.horizontal,
-        physics: const NeverScrollableScrollPhysics(),
-        padding: const EdgeInsets.only(left: 20),
-        itemCount: 3,
-        separatorBuilder: (_, _) => const SizedBox(width: 12),
-        itemBuilder: (_, _) {
-          return Container(
-            width: cardWidth,
-            decoration: BoxDecoration(
-              color: _C.muted.withValues(alpha: 0.22),
-              borderRadius: BorderRadius.circular(20),
-            ),
-          );
-        },
+    // Single full-viewport placeholder — matches the real carousel
+    // (viewportFraction 1.0 with 20-px inset on each card), so the
+    // shimmer → data transition doesn't shift the layout.
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 20),
+      child: Shimmer.fromColors(
+        baseColor: _C.muted.withValues(alpha: 0.14),
+        highlightColor: _C.surfaceWarm,
+        child: Container(
+          decoration: BoxDecoration(
+            color: _C.muted.withValues(alpha: 0.22),
+            borderRadius: BorderRadius.circular(12),
+          ),
+        ),
       ),
     );
   }
@@ -2360,7 +3157,7 @@ class _PriestGridShimmer extends StatelessWidget {
           crossAxisCount: 2,
           crossAxisSpacing: 12,
           mainAxisSpacing: 12,
-          childAspectRatio: 0.62,
+          childAspectRatio: 0.72,
         ),
         delegate: SliverChildBuilderDelegate(
           (_, _) {
@@ -2370,7 +3167,7 @@ class _PriestGridShimmer extends StatelessWidget {
               child: Container(
                 decoration: BoxDecoration(
                   color: _C.muted.withValues(alpha: 0.22),
-                  borderRadius: BorderRadius.circular(20),
+                  borderRadius: BorderRadius.circular(12),
                 ),
               ),
             );

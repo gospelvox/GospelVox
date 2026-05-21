@@ -42,6 +42,7 @@ import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_state.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/widgets/recharge_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green used only for the "In session" status pill here.
 const Color _kSessionGreen = Color(0xFF2E7D4F);
@@ -690,8 +691,8 @@ class _OfflineStrip extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.cloud_off_rounded,
+          AppIcon(
+            AppIcons.cloudOff,
             size: 14,
             color: AppColors.amberGold,
           ),
@@ -773,8 +774,8 @@ class _TimerPill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.access_time_rounded,
+          AppIcon(
+            AppIcons.clock,
             size: 14,
             color: AppColors.primaryBrown,
           ),
@@ -1259,8 +1260,8 @@ class _BubbleBody extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.auto_awesome_rounded,
+                  AppIcon(
+                    AppIcons.magic,
                     size: 10,
                     color: AppColors.amberGold.withValues(alpha: 0.85),
                   ),
@@ -1389,8 +1390,8 @@ class _BubbleFooter extends StatelessWidget {
           // We don't track delivered/read receipts yet, so a single
           // tick means "in Firestore", which is enough to reassure
           // the user the message landed.
-          Icon(
-            message.isPending ? Icons.schedule : Icons.check,
+          AppIcon(
+            message.isPending ? AppIcons.clock : AppIcons.check,
             size: 11,
             color: AppColors.muted.withValues(alpha: 0.55),
           ),
@@ -1489,10 +1490,10 @@ class CallEntryBubble extends StatelessWidget {
                     color:
                         AppColors.primaryBrown.withValues(alpha: 0.1),
                   ),
-                  child: Icon(
+                  child: AppIcon(
                     isMe
-                        ? Icons.call_made_rounded
-                        : Icons.call_received_rounded,
+                        ? AppIcons.phone
+                        : AppIcons.phoneIncoming,
                     size: 16,
                     color: AppColors.primaryBrown,
                   ),
@@ -1526,8 +1527,8 @@ class CallEntryBubble extends StatelessWidget {
                 ),
                 if (tappable) ...[
                   const SizedBox(width: 14),
-                  Icon(
-                    Icons.call_rounded,
+                  AppIcon(
+                    AppIcons.phone,
                     size: 20,
                     color: AppColors.primaryBrown,
                   ),
@@ -1710,8 +1711,8 @@ class _IdleWarningMessage extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.info_outline_rounded,
+            AppIcon(
+              AppIcons.info,
               size: 14,
               color: AppColors.amberGold,
             ),
@@ -1782,8 +1783,8 @@ class _LowBalanceMessage extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.amberGold.withValues(alpha: 0.25),
               ),
-              child: Icon(
-                Icons.bolt_rounded,
+              child: AppIcon(
+                AppIcons.bolt,
                 size: 20,
                 color: AppColors.amberGold,
               ),
@@ -2032,8 +2033,8 @@ class _EmptyChat extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.chat_bubble_outline_rounded,
+          AppIcon(
+            AppIcons.chatOutline,
             size: 48,
             color: AppColors.muted.withValues(alpha: 0.2),
           ),
@@ -2198,8 +2199,8 @@ class _MessageInputBarState extends State<_MessageInputBar> {
                                 ),
                               ),
                             )
-                          : const Icon(
-                              Icons.send_rounded,
+                          : const AppIcon(
+                              AppIcons.send,
                               size: 20,
                               color: Colors.white,
                             ),
@@ -2258,8 +2259,8 @@ class _EndSessionSheet extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.errorRed.withValues(alpha: 0.08),
               ),
-              child: Icon(
-                Icons.call_end_rounded,
+              child: AppIcon(
+                AppIcons.phoneEnd,
                 size: 28,
                 color: AppColors.errorRed,
               ),
@@ -2485,8 +2486,8 @@ class _NewMessagePill extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.arrow_downward_rounded,
+            const AppIcon(
+              AppIcons.arrowDown,
               size: 14,
               color: Colors.white,
             ),
@@ -2634,8 +2635,8 @@ class _SwipeToReplyState extends State<_SwipeToReply>
                       color: AppColors.primaryBrown
                           .withValues(alpha: 0.12),
                     ),
-                    child: Icon(
-                      Icons.reply_rounded,
+                    child: AppIcon(
+                      AppIcons.reply,
                       size: 16,
                       color: AppColors.primaryBrown
                           .withValues(alpha: 0.85),
@@ -2734,8 +2735,8 @@ class _ReplyComposeChip extends StatelessWidget {
               HapticFeedback.selectionClick();
               onDismiss();
             },
-            icon: Icon(
-              Icons.close_rounded,
+            icon: AppIcon(
+              AppIcons.close,
               size: 18,
               color: AppColors.muted.withValues(alpha: 0.7),
             ),

@@ -16,6 +16,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/reports/bloc/admin_reports_cubit.dart';
 import 'package:gospel_vox/features/admin/reports/bloc/admin_reports_state.dart';
 import 'package:gospel_vox/features/admin/reports/data/report_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const _kFilters = ['pending', 'resolved', 'all'];
 
@@ -120,8 +121,8 @@ class _AdminReportsViewState extends State<_AdminReportsView>
             context.go('/admin');
           }
         },
-        child: const Icon(
-          Icons.arrow_back,
+        child: const AppIcon(
+          AppIcons.back,
           color: AdminColors.textPrimary,
           size: 22,
         ),
@@ -939,17 +940,17 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, body) = switch (filter) {
       'pending' => (
-          Icons.inbox_outlined,
+          AppIcons.inbox,
           'No pending reports',
           'New reports will appear here',
         ),
       'resolved' => (
-          Icons.task_alt,
+          AppIcons.taskDone,
           'No resolved reports',
           'Resolved reports will appear here',
         ),
       _ => (
-          Icons.report_outlined,
+          AppIcons.report,
           'No reports yet',
           'User-submitted reports will appear here',
         ),
@@ -961,7 +962,7 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               icon,
               size: 48,
               color: AdminColors.textLight.withValues(alpha: 0.4),
@@ -1006,8 +1007,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

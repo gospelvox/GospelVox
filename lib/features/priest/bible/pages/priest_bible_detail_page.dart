@@ -18,10 +18,12 @@ import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kCompletedGreen = Color(0xFF2E7D4F);
 const Color _kLiveRed = Color(0xFFE53E3E);
@@ -333,9 +335,14 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
           scrolledUnderElevation: 0,
           surfaceTintColor: Colors.transparent,
           foregroundColor: AppColors.deepDarkBrown,
-          leading: IconButton(
-            icon: const Icon(Icons.arrow_back),
-            onPressed: () => Navigator.of(context).pop(_changed),
+          leading: Padding(
+            padding: const EdgeInsets.only(left: 8),
+            child: Align(
+              alignment: Alignment.center,
+              child: AppBackButton(
+                onTap: () => Navigator.of(context).pop(_changed),
+              ),
+            ),
           ),
           title: Text(
             "Manage Session",
@@ -411,8 +418,8 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
       ),
       padding: const EdgeInsets.fromLTRB(32, 80, 32, 32),
       children: [
-        Icon(
-          Icons.error_outline_rounded,
+        AppIcon(
+          AppIcons.error,
           size: 44,
           color: AppColors.errorRed,
         ),
@@ -556,20 +563,20 @@ class _SessionInfoCard extends StatelessWidget {
             runSpacing: 8,
             children: [
               _InfoChip(
-                icon: Icons.calendar_today_outlined,
+                icon: AppIcons.calendar,
                 text: session.formattedDate,
               ),
               _InfoChip(
-                icon: Icons.access_time_rounded,
+                icon: AppIcons.clock,
                 text: '${session.formattedTime} IST',
               ),
               _InfoChip(
-                icon: Icons.timer_outlined,
+                icon: AppIcons.stopwatch,
                 text: session.formattedDuration,
               ),
               if (session.category.isNotEmpty)
                 _InfoChip(
-                  icon: Icons.local_offer_outlined,
+                  icon: AppIcons.tag,
                   text: session.category,
                 ),
             ],
@@ -657,7 +664,7 @@ class _InfoChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: AppColors.primaryBrown),
+          AppIcon(icon, size: 13, color: AppColors.primaryBrown),
           const SizedBox(width: 6),
           Text(
             text,
@@ -942,7 +949,7 @@ class _LiveStateViewState extends State<_LiveStateView> {
                   value: widget.registrationsLoaded
                       ? "${widget.paidCount} / ${session.registrationCount}"
                       : "—",
-                  icon: Icons.people_alt_rounded,
+                  icon: AppIcons.users,
                 ),
               ),
               Container(
@@ -954,7 +961,7 @@ class _LiveStateViewState extends State<_LiveStateView> {
                 child: _StatTile(
                   label: "Earned so far",
                   value: "₹$revenue",
-                  icon: Icons.currency_rupee_rounded,
+                  icon: AppIcons.rupee,
                 ),
               ),
             ],
@@ -985,8 +992,8 @@ class _LiveStateViewState extends State<_LiveStateView> {
             ),
             child: Row(
               children: [
-                Icon(
-                  Icons.lock_clock_outlined,
+                AppIcon(
+                  AppIcons.lockClock,
                   size: 16,
                   color: AppColors.muted,
                 ),
@@ -1022,8 +1029,8 @@ class _LiveStateViewState extends State<_LiveStateView> {
           child: Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Icon(
-                Icons.info_outline_rounded,
+              AppIcon(
+                AppIcons.info,
                 size: 14,
                 color: AppColors.amberGold,
               ),
@@ -1068,7 +1075,7 @@ class _StatTile extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(icon, size: 13, color: AppColors.primaryBrown),
+              AppIcon(icon, size: 13, color: AppColors.primaryBrown),
               const SizedBox(width: 5),
               Text(
                 label,
@@ -1140,8 +1147,8 @@ class _CompletedStateView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.check_circle_rounded,
+                  AppIcon(
+                    AppIcons.checkCircle,
                     size: 18,
                     color: _kCompletedGreen,
                   ),
@@ -1164,21 +1171,21 @@ class _CompletedStateView extends StatelessWidget {
                     child: _StatTile(
                       label: "Duration",
                       value: session.formattedDuration,
-                      icon: Icons.timer_outlined,
+                      icon: AppIcons.stopwatch,
                     ),
                   ),
                   Expanded(
                     child: _StatTile(
                       label: "Attendees",
                       value: "${paid.length}",
-                      icon: Icons.people_alt_rounded,
+                      icon: AppIcons.users,
                     ),
                   ),
                   Expanded(
                     child: _StatTile(
                       label: "Revenue",
                       value: "₹$revenue",
-                      icon: Icons.currency_rupee_rounded,
+                      icon: AppIcons.rupee,
                     ),
                   ),
                 ],
@@ -1196,8 +1203,8 @@ class _CompletedStateView extends StatelessWidget {
                   ),
                   child: Row(
                     children: [
-                      Icon(
-                        Icons.star_rounded,
+                      AppIcon(
+                        AppIcons.starFilled,
                         size: 16,
                         color: AppColors.amberGold,
                       ),
@@ -1299,8 +1306,8 @@ class _CancelledStateView extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.cancel_outlined,
+              AppIcon(
+                AppIcons.cancel,
                 size: 18,
                 color: AppColors.errorRed,
               ),
@@ -1384,8 +1391,8 @@ class _MeetingGuidelinesCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.info_outline_rounded,
+              AppIcon(
+                AppIcons.info,
                 size: 14,
                 color: AppColors.amberGold,
               ),
@@ -1448,8 +1455,8 @@ class _MeetLinkSection extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.videocam_outlined,
+              AppIcon(
+                AppIcons.video,
                 size: 18,
                 color: AppColors.muted,
               ),
@@ -1471,8 +1478,8 @@ class _MeetLinkSection extends StatelessWidget {
                   width: 28,
                   height: 28,
                   alignment: Alignment.center,
-                  child: const Icon(
-                    Icons.info_outline_rounded,
+                  child: const AppIcon(
+                    AppIcons.info,
                     size: 18,
                     color: Color(0xFF3B82F6),
                   ),
@@ -1528,8 +1535,8 @@ class _MeetLinkSection extends StatelessWidget {
             ),
           ] else ...[
             Center(
-              child: Icon(
-                Icons.videocam_off_outlined,
+              child: AppIcon(
+                AppIcons.video,
                 size: 36,
                 color: AppColors.muted.withValues(alpha: 0.2),
               ),
@@ -1639,8 +1646,8 @@ class _AttendeesSection extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.people_outline_rounded,
+              AppIcon(
+                AppIcons.users,
                 size: 18,
                 color: AppColors.muted,
               ),
@@ -1784,8 +1791,8 @@ class _AttendeeTile extends StatelessWidget {
                 ),
               ),
               if (showRating && registration.hasRated) ...[
-                Icon(
-                  Icons.star_rounded,
+                AppIcon(
+                  AppIcons.starFilled,
                   size: 14,
                   color: AppColors.amberGold,
                 ),
@@ -1799,8 +1806,8 @@ class _AttendeeTile extends StatelessWidget {
                   ),
                 ),
               ] else if (isPaid) ...[
-                const Icon(
-                  Icons.check_circle_rounded,
+                const AppIcon(
+                  AppIcons.checkCircle,
                   size: 14,
                   color: _kCompletedGreen,
                 ),
@@ -1939,8 +1946,8 @@ class _StartMeetingConfirmationSheetState
               const SizedBox(height: 16),
               Row(
                 children: [
-                  Icon(
-                    Icons.warning_amber_rounded,
+                  AppIcon(
+                    AppIcons.warning,
                     size: 22,
                     color: AppColors.amberGold,
                   ),
@@ -2091,8 +2098,8 @@ class _CheckRow extends StatelessWidget {
               ),
             ),
             child: checked
-                ? const Icon(
-                    Icons.check_rounded,
+                ? const AppIcon(
+                    AppIcons.check,
                     size: 15,
                     color: Colors.white,
                   )
@@ -2181,8 +2188,8 @@ class _PrimaryActionButton extends StatelessWidget {
           const SizedBox(height: 8),
           Row(
             children: [
-              Icon(
-                Icons.info_outline_rounded,
+              AppIcon(
+                AppIcons.info,
                 size: 13,
                 color: AppColors.muted.withValues(alpha: 0.7),
               ),
@@ -2520,8 +2527,8 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
                     ? null
                     : IconButton(
                         tooltip: "Clear",
-                        icon: Icon(
-                          Icons.cancel,
+                        icon: AppIcon(
+                          AppIcons.cancel,
                           size: 18,
                           color:
                               AppColors.muted.withValues(alpha: 0.7),
@@ -2624,7 +2631,7 @@ class _PasteChip extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(Icons.content_paste_rounded, size: 14, color: fg),
+            AppIcon(AppIcons.paste, size: 14, color: fg),
             const SizedBox(width: 6),
             Text(
               "Paste",
@@ -2658,16 +2665,16 @@ class _LinkStatusRow extends StatelessWidget {
 
     if (result.isEmpty) {
       color = AppColors.muted;
-      icon = Icons.lightbulb_outline_rounded;
+      icon = AppIcons.lightbulb;
       text =
           "Tip: paste `meet.google.com/...` — we'll handle the rest.";
     } else if (result.isValid) {
       color = const Color(0xFF2E7D4F);
-      icon = Icons.check_circle_rounded;
+      icon = AppIcons.checkCircle;
       text = "Will be saved as: ${result.url!}";
     } else {
       color = AppColors.errorRed;
-      icon = Icons.error_outline_rounded;
+      icon = AppIcons.error;
       text = result.error ?? "Invalid link.";
     }
 
@@ -2683,7 +2690,7 @@ class _LinkStatusRow extends StatelessWidget {
         key: ValueKey(text),
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 14, color: color),
+          AppIcon(icon, size: 14, color: color),
           const SizedBox(width: 6),
           Expanded(
             child: Text(
@@ -2781,8 +2788,8 @@ class _CancelSessionSheet extends StatelessWidget {
                 child: Row(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Icon(
-                      Icons.warning_amber_rounded,
+                    AppIcon(
+                      AppIcons.warning,
                       size: 16,
                       color: AppColors.amberGold,
                     ),
@@ -3006,8 +3013,8 @@ class _MeetLinkGuideSheet extends StatelessWidget {
                     color:
                         const Color(0xFF3B82F6).withValues(alpha: 0.08),
                   ),
-                  child: const Icon(
-                    Icons.videocam_rounded,
+                  child: const AppIcon(
+                    AppIcons.video,
                     size: 22,
                     color: Color(0xFF3B82F6),
                   ),

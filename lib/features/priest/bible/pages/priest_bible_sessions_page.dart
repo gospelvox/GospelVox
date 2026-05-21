@@ -21,6 +21,7 @@ import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for "completed" status pills — AppColors has no
 // proper "success-green" token, so we use the same value the rest
@@ -238,8 +239,8 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
       ),
       padding: const EdgeInsets.fromLTRB(32, 80, 32, 32),
       children: [
-        Icon(
-          Icons.error_outline_rounded,
+        AppIcon(
+          AppIcons.error,
           size: 44,
           color: AppColors.errorRed,
         ),
@@ -269,8 +270,8 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
             padding: const EdgeInsets.symmetric(horizontal: 40),
             child: Column(
               children: [
-                Icon(
-                  Icons.menu_book_outlined,
+                AppIcon(
+                  AppIcons.bible,
                   size: 56,
                   color: AppColors.muted.withValues(alpha: 0.25),
                 ),
@@ -414,7 +415,7 @@ class _CreatePillButtonState extends State<_CreatePillButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(Icons.add_rounded, size: 16, color: Colors.white),
+              const AppIcon(AppIcons.add, size: 16, color: Colors.white),
               const SizedBox(width: 4),
               Text(
                 "Create",
@@ -1128,7 +1129,7 @@ class _CreateBibleSessionSheetState
                         const _FormLabel("DATE", required: true),
                         const SizedBox(height: 8),
                         _DateTimeField(
-                          icon: Icons.calendar_today_outlined,
+                          icon: AppIcons.calendar,
                           value:
                               _date != null ? _formatFullDate(_date!) : null,
                           hint: "Select date",
@@ -1145,7 +1146,7 @@ class _CreateBibleSessionSheetState
                         const _FormLabel("TIME (IST)", required: true),
                         const SizedBox(height: 8),
                         _DateTimeField(
-                          icon: Icons.access_time_rounded,
+                          icon: AppIcons.clock,
                           value: _time != null
                               ? '${_formatTime(_time!)} IST'
                               : null,
@@ -1191,8 +1192,8 @@ class _CreateBibleSessionSheetState
                         color: const Color(0xFF3B82F6)
                             .withValues(alpha: 0.1),
                       ),
-                      child: const Icon(
-                        Icons.info_outline_rounded,
+                      child: const AppIcon(
+                        AppIcons.info,
                         size: 12,
                         color: Color(0xFF3B82F6),
                       ),
@@ -1452,8 +1453,8 @@ class _ReviewSheet extends StatelessWidget {
               child: Row(
                 crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
-                  Icon(
-                    Icons.warning_amber_rounded,
+                  AppIcon(
+                    AppIcons.warning,
                     size: 14,
                     color: AppColors.amberGold,
                   ),
@@ -1495,8 +1496,8 @@ class _ReviewSheet extends StatelessWidget {
                         child: Row(
                           mainAxisSize: MainAxisSize.min,
                           children: [
-                            Icon(
-                              Icons.arrow_back_rounded,
+                            AppIcon(
+                              AppIcons.back,
                               size: 16,
                               color: AppColors.deepDarkBrown,
                             ),
@@ -1629,8 +1630,8 @@ class _AlmostThereCard extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.info_outline_rounded,
+              AppIcon(
+                AppIcons.info,
                 size: 14,
                 color: AppColors.amberGold,
               ),
@@ -1695,8 +1696,8 @@ class _FieldHelper extends StatelessWidget {
     };
     final icon = switch (mood) {
       _HelperMood.neutral => null,
-      _HelperMood.error => Icons.error_outline_rounded,
-      _HelperMood.success => Icons.check_circle_rounded,
+      _HelperMood.error => AppIcons.error,
+      _HelperMood.success => AppIcons.checkCircle,
     };
     return Padding(
       padding: const EdgeInsets.only(top: 6, left: 2),
@@ -1704,7 +1705,7 @@ class _FieldHelper extends StatelessWidget {
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
           if (icon != null) ...[
-            Icon(icon, size: 12, color: color),
+            AppIcon(icon, size: 12, color: color),
             const SizedBox(width: 5),
           ],
           Flexible(
@@ -1864,7 +1865,7 @@ class _DateTimeField extends StatelessWidget {
         ),
         child: Row(
           children: [
-            Icon(icon, size: 16, color: AppColors.muted),
+            AppIcon(icon, size: 16, color: AppColors.muted),
             const SizedBox(width: 10),
             Expanded(
               child: Text(
@@ -1952,8 +1953,8 @@ class _InfoTip extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.info_outline_rounded,
+          AppIcon(
+            AppIcons.info,
             size: 14,
             color: AppColors.amberGold,
           ),
@@ -2048,8 +2049,8 @@ class _MeetLinkGuideSheet extends StatelessWidget {
                     color:
                         const Color(0xFF3B82F6).withValues(alpha: 0.08),
                   ),
-                  child: const Icon(
-                    Icons.videocam_rounded,
+                  child: const AppIcon(
+                    AppIcons.video,
                     size: 22,
                     color: Color(0xFF3B82F6),
                   ),

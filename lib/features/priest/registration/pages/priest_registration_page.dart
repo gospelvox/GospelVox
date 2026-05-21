@@ -29,6 +29,7 @@ import 'package:gospel_vox/features/priest/registration/widgets/registration_ste
 import 'package:gospel_vox/features/priest/registration/widgets/registration_step3.dart';
 import 'package:gospel_vox/features/priest/registration/widgets/registration_step4_review.dart';
 import 'package:gospel_vox/features/priest/registration/widgets/submit_confirmation_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Total steps drives the progress bar segments and the PageView.
 // Centralised so adding/removing a step touches only this constant.
@@ -306,8 +307,8 @@ class _PriestRegistrationViewState extends State<_PriestRegistrationView> {
                           children: [
                             _CircleIconButton(
                               icon: currentStep == 0
-                                  ? Icons.close
-                                  : Icons.arrow_back_ios_new,
+                                  ? AppIcons.close
+                                  : AppIcons.back,
                               onTap: currentStep == 0
                                   ? _showExitConfirmation
                                   : _goBack,
@@ -466,7 +467,7 @@ class _CircleIconButtonState extends State<_CircleIconButton> {
               ),
             ],
           ),
-          child: Icon(
+          child: AppIcon(
             widget.icon,
             size: 16,
             color: AppColors.deepDarkBrown,

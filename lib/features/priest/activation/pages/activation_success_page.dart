@@ -14,6 +14,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
 const Color _kSuccessGreenLight = Color(0xFF3A9D63);
@@ -97,8 +98,8 @@ class _ActivationSuccessPageState extends State<ActivationSuccessPage>
                         ),
                       ],
                     ),
-                    child: const Icon(
-                      Icons.check_rounded,
+                    child: const AppIcon(
+                      AppIcons.check,
                       size: 48,
                       color: Colors.white,
                     ),
@@ -172,17 +173,17 @@ class _HighlightsCard extends StatelessWidget {
       child: const Column(
         children: [
           _HighlightRow(
-            icon: Icons.wifi_tethering_rounded,
+            icon: AppIcons.wifi,
             text: "You'll appear online when the app is open",
           ),
           SizedBox(height: 14),
           _HighlightRow(
-            icon: Icons.notifications_none_rounded,
+            icon: AppIcons.bellOutline,
             text: "You'll receive notifications for new requests",
           ),
           SizedBox(height: 14),
           _HighlightRow(
-            icon: Icons.account_balance_wallet_outlined,
+            icon: AppIcons.wallet,
             text: 'Earnings are added to your wallet after each session',
           ),
         ],
@@ -201,7 +202,7 @@ class _HighlightRow extends StatelessWidget {
     return Row(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Icon(
+        AppIcon(
           icon,
           size: 18,
           color: AppColors.primaryBrown.withValues(alpha: 0.6),

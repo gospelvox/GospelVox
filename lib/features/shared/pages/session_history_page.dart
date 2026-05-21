@@ -31,10 +31,12 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_state.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kCompletedGreen = Color(0xFF059669);
 const Color _kDeclinedRed = Color(0xFFDC2626);
@@ -98,32 +100,9 @@ class SessionHistoryPage extends StatelessWidget {
       scrolledUnderElevation: 0,
       centerTitle: false,
       leadingWidth: 60,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 16),
-        child: GestureDetector(
-          onTap: () => context.pop(),
-          behavior: HitTestBehavior.opaque,
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.surfaceWhite,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              Icons.arrow_back_ios_new,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 16),
+        child: AppBackButton(),
       ),
       title: Text(
         'Session History',
@@ -384,21 +363,21 @@ class _SummaryCard extends StatelessWidget {
           _SummaryStat(
             label: 'Total',
             value: '${state.totalSessions}',
-            icon: Icons.history_rounded,
+            icon: AppIcons.history,
           ),
           const _SummaryDivider(),
           _SummaryStat(
             label: primaryLabel,
             value: primaryValue,
             icon: isUserSide
-                ? Icons.toll_rounded
-                : Icons.account_balance_wallet_outlined,
+                ? AppIcons.coins
+                : AppIcons.wallet,
           ),
           const _SummaryDivider(),
           _SummaryStat(
             label: 'Avg Rating',
             value: _avgRating(state.allEntries),
-            icon: Icons.star_outline_rounded,
+            icon: AppIcons.starOutline,
           ),
         ],
       ),
@@ -443,7 +422,7 @@ class _SummaryStat extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 18,
             color: AppColors.primaryBrown.withValues(alpha: 0.5),
@@ -636,10 +615,10 @@ class _RegularCardContent extends StatelessWidget {
                     ? AppColors.primaryBrown.withValues(alpha: 0.06)
                     : AppColors.amberGold.withValues(alpha: 0.08),
               ),
-              child: Icon(
+              child: AppIcon(
                 isChat
-                    ? Icons.chat_bubble_outline_rounded
-                    : Icons.mic_none_rounded,
+                    ? AppIcons.chatOutline
+                    : AppIcons.mic,
                 size: 16,
                 color: isChat
                     ? AppColors.primaryBrown
@@ -685,7 +664,7 @@ class _RegularCardContent extends StatelessWidget {
           children: [
             if ((s.durationMinutes as int) > 0) ...[
               _DetailChip(
-                icon: Icons.access_time_rounded,
+                icon: AppIcons.clock,
                 text: '${s.durationMinutes} min',
               ),
               const SizedBox(width: 10),
@@ -693,8 +672,8 @@ class _RegularCardContent extends StatelessWidget {
             if (s.status == 'completed') ...[
               _DetailChip(
                 icon: isUserSide
-                    ? Icons.toll_rounded
-                    : Icons.account_balance_wallet_outlined,
+                    ? AppIcons.coins
+                    : AppIcons.wallet,
                 text: isUserSide
                     ? '${s.totalCharged} coins'
                     : '₹${s.priestEarnings}',
@@ -708,8 +687,8 @@ class _RegularCardContent extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.star_rounded,
+                  AppIcon(
+                    AppIcons.starFilled,
                     size: 14,
                     color: AppColors.amberGold,
                   ),
@@ -768,8 +747,8 @@ class _BibleCardContent extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: _kBibleAmber.withValues(alpha: 0.1),
               ),
-              child: const Icon(
-                Icons.menu_book_rounded,
+              child: const AppIcon(
+                AppIcons.bible,
                 size: 16,
                 color: _kBibleAmber,
               ),
@@ -843,7 +822,7 @@ class _BibleCardContent extends StatelessWidget {
           children: [
             if ((s.durationMinutes as int) > 0) ...[
               _DetailChip(
-                icon: Icons.access_time_rounded,
+                icon: AppIcons.clock,
                 text: s.formattedDuration as String,
               ),
               const SizedBox(width: 10),
@@ -853,13 +832,13 @@ class _BibleCardContent extends StatelessWidget {
             // computed from paid registrations × price.
             if (isUserSide && (reg?.isPaid == true)) ...[
               _DetailChip(
-                icon: Icons.currency_rupee_rounded,
+                icon: AppIcons.rupee,
                 text: '₹${s.price}',
               ),
               const SizedBox(width: 10),
             ] else if (!isUserSide && priestRevenueInr > 0) ...[
               _DetailChip(
-                icon: Icons.account_balance_wallet_outlined,
+                icon: AppIcons.wallet,
                 text: '₹$priestRevenueInr',
                 valueColor: const Color(0xFF2E7D4F),
               ),
@@ -870,8 +849,8 @@ class _BibleCardContent extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.star_rounded,
+                  AppIcon(
+                    AppIcons.starFilled,
                     size: 14,
                     color: AppColors.amberGold,
                   ),
@@ -1019,7 +998,7 @@ class _DetailChip extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
+        AppIcon(
           icon,
           size: 13,
           color: AppColors.muted.withValues(alpha: 0.5),
@@ -1079,8 +1058,8 @@ class _ConfirmActionSheet extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.errorRed.withValues(alpha: 0.08),
               ),
-              child: const Icon(
-                Icons.delete_sweep_outlined,
+              child: const AppIcon(
+                AppIcons.deleteSweep,
                 size: 28,
                 color: AppColors.errorRed,
               ),
@@ -1180,8 +1159,8 @@ class _EmptyHistory extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.history_rounded,
+          AppIcon(
+            AppIcons.history,
             size: 48,
             color: AppColors.muted.withValues(alpha: 0.2),
           ),
@@ -1226,8 +1205,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
-              Icons.error_outline,
+            AppIcon(
+              AppIcons.error,
               size: 48,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),

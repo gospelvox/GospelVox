@@ -32,6 +32,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class MissedRequestForegroundBanner extends StatefulWidget {
   final Widget child;
@@ -207,8 +208,8 @@ class _BannerCardState extends State<_BannerCard> {
                         color: AppColors.amberGold.withValues(alpha: 0.18),
                         shape: BoxShape.circle,
                       ),
-                      child: const Icon(
-                        Icons.phone_missed_rounded,
+                      child: const AppIcon(
+                        AppIcons.phoneMissed,
                         size: 18,
                         color: AppColors.amberGold,
                       ),
@@ -247,8 +248,8 @@ class _BannerCardState extends State<_BannerCard> {
                       onTap: widget.onDismiss,
                       child: Padding(
                         padding: const EdgeInsets.all(4),
-                        child: Icon(
-                          Icons.close_rounded,
+                        child: AppIcon(
+                          AppIcons.close,
                           size: 18,
                           color: Colors.white.withValues(alpha: 0.7),
                         ),

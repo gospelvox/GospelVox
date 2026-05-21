@@ -22,6 +22,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/sessions/bloc/admin_sessions_cubit.dart';
 import 'package:gospel_vox/features/admin/sessions/bloc/admin_sessions_state.dart';
 import 'package:gospel_vox/features/admin/sessions/data/admin_session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const _kFilters = ['active', 'completed', 'all'];
 
@@ -151,8 +152,8 @@ class _AdminSessionsViewState extends State<_AdminSessionsView>
             context.go('/admin');
           }
         },
-        child: const Icon(
-          Icons.arrow_back,
+        child: const AppIcon(
+          AppIcons.back,
           color: AdminColors.textPrimary,
           size: 22,
         ),
@@ -478,8 +479,8 @@ class _SessionCardState extends State<_SessionCard> {
                     Row(
                       mainAxisSize: MainAxisSize.min,
                       children: [
-                        const Icon(
-                          Icons.star_rounded,
+                        const AppIcon(
+                          AppIcons.starFilled,
                           size: 14,
                           color: AdminColors.warning,
                         ),
@@ -826,17 +827,17 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, body) = switch (filter) {
       'active' => (
-          Icons.bolt_outlined,
+          AppIcons.bolt,
           'No live sessions',
           'Active sessions will appear here in real time',
         ),
       'completed' => (
-          Icons.history,
+          AppIcons.history,
           'No completed sessions',
           'Finished sessions will appear here',
         ),
       _ => (
-          Icons.chat_bubble_outline,
+          AppIcons.chatOutline,
           'No sessions yet',
           'Sessions across every status will appear here',
         ),
@@ -848,7 +849,7 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               icon,
               size: 48,
               color: AdminColors.textLight.withValues(alpha: 0.4),
@@ -893,8 +894,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

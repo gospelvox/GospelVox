@@ -16,9 +16,11 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class BankDetailsPage extends StatefulWidget {
   // Pre-fills the form when the priest is editing existing details.
@@ -183,10 +185,10 @@ class _BankDetailsPageState extends State<BankDetailsPage> {
                   ),
                   child: Padding(
                     padding: const EdgeInsets.all(8),
-                    child: Icon(
+                    child: AppIcon(
                       _obscureAccount
-                          ? Icons.visibility_off_outlined
-                          : Icons.visibility_outlined,
+                          ? AppIcons.eyeOff
+                          : AppIcons.eye,
                       size: 20,
                       color: AppColors.muted,
                     ),
@@ -277,32 +279,9 @@ class _BankDetailsPageState extends State<BankDetailsPage> {
       scrolledUnderElevation: 0,
       automaticallyImplyLeading: false,
       titleSpacing: 16,
-      leading: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.pop(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.surfaceWhite,
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                  color: Colors.black.withValues(alpha: 0.04),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.arrow_back_ios_new_rounded,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: AppBackButton(),
       ),
       title: Text(
         "Bank Details",
@@ -449,8 +428,8 @@ class _BankDetailsInfoTip extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.lock_outline_rounded,
+          AppIcon(
+            AppIcons.lock,
             size: 16,
             color: AppColors.primaryBrown.withValues(alpha: 0.7),
           ),

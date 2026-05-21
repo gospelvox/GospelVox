@@ -26,8 +26,10 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Public legal + support endpoints. Hosted pages may not exist yet
 // at the time of writing; the URL is what we ship to users / the
@@ -48,14 +50,12 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
   String _priestName = '';
   String _denomination = '';
   String _photoUrl = '';
-  int _unreadNotifCount = 0;
   bool _signingOut = false;
 
   @override
   void initState() {
     super.initState();
     _loadPriestInfo();
-    _loadUnreadCount();
   }
 
   Future<void> _loadPriestInfo() async {
@@ -79,31 +79,10 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
     }
   }
 
-  Future<void> _loadUnreadCount() async {
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-    try {
-      final agg = await FirebaseFirestore.instance
-          .collection('notifications')
-          .where('userId', isEqualTo: uid)
-          .where('isRead', isEqualTo: false)
-          .count()
-          .get()
-          .timeout(const Duration(seconds: 8));
-      if (!mounted) return;
-      setState(() => _unreadNotifCount = agg.count ?? 0);
-    } catch (_) {
-      // Silent — badge just stays at its previous value.
-    }
-  }
-
   Future<void> _openNotifications() async {
     await context.push('/priest/notifications');
-    if (!mounted) return;
-    // Refresh the badge when we come back — the notifications page
-    // marks reads against Firestore directly, so re-aggregating is
-    // the simplest way to stay in sync.
-    _loadUnreadCount();
+    // No manual refresh needed — the badge listens to a live stream
+    // and updates the moment the notifications page marks reads.
   }
 
   // Opens an external URL in the system browser. Surfaces a snackbar
@@ -209,8 +188,8 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                   shape: BoxShape.circle,
                   color: AppColors.errorRed.withValues(alpha: 0.08),
                 ),
-                child: Icon(
-                  Icons.logout_rounded,
+                child: AppIcon(
+                  AppIcons.logout,
                   size: 28,
                   color: AppColors.errorRed,
                 ),
@@ -318,26 +297,26 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               _SettingsGroup(
                 children: [
                   _SettingsTile(
-                    icon: Icons.person_outline_rounded,
+                    icon: AppIcons.userOutline,
                     title: 'My Profile',
                     subtitle: 'Edit your profile details',
                     onTap: () => context.push('/priest/profile'),
                   ),
                   _SettingsTile(
-                    icon: Icons.schedule_rounded,
+                    icon: AppIcons.clock,
                     title: 'Availability',
                     subtitle: 'Pause requests, set schedule',
                     onTap: () =>
                         context.push('/priest/settings/availability'),
                   ),
                   _SettingsTile(
-                    icon: Icons.account_balance_wallet_outlined,
+                    icon: AppIcons.wallet,
                     title: 'My Wallet',
                     subtitle: 'Balance, withdrawals, earnings',
                     onTap: () => context.push('/priest/wallet'),
                   ),
                   _SettingsTile(
-                    icon: Icons.account_balance_outlined,
+                    icon: AppIcons.bank,
                     title: 'Bank Details',
                     subtitle: 'Manage payout account',
                     onTap: () => context.push('/priest/bank-details'),
@@ -349,16 +328,11 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               const SizedBox(height: 8),
               _SettingsGroup(
                 children: [
-                  _SettingsTile(
-                    icon: Icons.notifications_none_rounded,
-                    title: 'Notifications',
-                    trailing: _unreadNotifCount > 0
-                        ? _NotifBadge(count: _unreadNotifCount)
-                        : null,
+                  _UnreadNotificationsTile(
                     onTap: _openNotifications,
                   ),
                   _SettingsTile(
-                    icon: Icons.history_rounded,
+                    icon: AppIcons.history,
                     title: 'Session History',
                     subtitle: 'Past sessions & earnings',
                     onTap: () => context.push('/priest/session-history'),
@@ -371,18 +345,18 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               _SettingsGroup(
                 children: [
                   _SettingsTile(
-                    icon: Icons.help_outline_rounded,
+                    icon: AppIcons.help,
                     title: 'Help & FAQ',
                     onTap: () => _launchExternalUrl(_kHelpCenterUrl),
                   ),
                   _SettingsTile(
-                    icon: Icons.mail_outline_rounded,
+                    icon: AppIcons.mail,
                     title: 'Contact Support',
                     subtitle: 'Get help with your account',
                     onTap: _openSupportEmail,
                   ),
                   _SettingsTile(
-                    icon: Icons.description_outlined,
+                    icon: AppIcons.document,
                     title: 'Terms & Privacy Policy',
                     onTap: () => _launchExternalUrl(_kPrivacyPolicyUrl),
                   ),
@@ -392,7 +366,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               _SettingsGroup(
                 children: [
                   _SettingsTile(
-                    icon: Icons.logout_rounded,
+                    icon: AppIcons.logout,
                     title: 'Sign Out',
                     titleColor: AppColors.errorRed,
                     iconColor: AppColors.errorRed,
@@ -420,7 +394,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               _SettingsGroup(
                 children: [
                   _SettingsTile(
-                    icon: Icons.delete_forever_rounded,
+                    icon: AppIcons.delete,
                     title: 'Delete Account',
                     subtitle: 'Permanently remove your account & data',
                     titleColor: AppColors.errorRed,
@@ -467,31 +441,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               ),
             ),
           ),
-          if (Navigator.of(context).canPop())
-            GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => context.pop(),
-              child: Container(
-                width: 40,
-                height: 40,
-                decoration: BoxDecoration(
-                  shape: BoxShape.circle,
-                  color: AppColors.surfaceWhite,
-                  boxShadow: [
-                    BoxShadow(
-                      blurRadius: 8,
-                      offset: const Offset(0, 2),
-                      color: Colors.black.withValues(alpha: 0.04),
-                    ),
-                  ],
-                ),
-                child: Icon(
-                  Icons.arrow_back_ios_new,
-                  size: 16,
-                  color: AppColors.deepDarkBrown,
-                ),
-              ),
-            ),
+          if (Navigator.of(context).canPop()) const AppBackButton(),
         ],
       ),
     );
@@ -568,8 +518,8 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                 ),
               ),
               const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right_rounded,
+              AppIcon(
+                AppIcons.chevronRight,
                 size: 22,
                 color: AppColors.muted.withValues(alpha: 0.45),
               ),
@@ -702,7 +652,7 @@ class _SettingsTile extends StatelessWidget {
                 color: iconCol.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(
+              child: AppIcon(
                 icon,
                 size: 18,
                 color: iconColor ?? iconCol.withValues(alpha: 0.7),
@@ -745,8 +695,8 @@ class _SettingsTile extends StatelessWidget {
             ],
             if (showChevron) ...[
               const SizedBox(width: 8),
-              Icon(
-                Icons.chevron_right_rounded,
+              AppIcon(
+                AppIcons.chevronRight,
                 size: 20,
                 color: AppColors.muted.withValues(alpha: 0.35),
               ),
@@ -758,7 +708,47 @@ class _SettingsTile extends StatelessWidget {
   }
 }
 
-// ─── Notification unread badge ─────────────────────
+// ─── Notification tile (live unread count) ─────────
+//
+// Streams notifications/{userId,isRead==false} so the badge reflects
+// reality in real time. Older revision used a one-shot `.count()`
+// aggregation, which stayed stale until the priest re-opened the
+// settings page — a freshly-cleared inbox kept showing the previous
+// count, and a freshly-arrived notification didn't bump the badge.
+// The dashboard's bell already uses this exact stream pattern; this
+// tile mirrors it so both surfaces never disagree.
+class _UnreadNotificationsTile extends StatelessWidget {
+  final VoidCallback onTap;
+  const _UnreadNotificationsTile({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      return _SettingsTile(
+        icon: AppIcons.bellOutline,
+        title: 'Notifications',
+        onTap: onTap,
+      );
+    }
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('notifications')
+          .where('userId', isEqualTo: uid)
+          .where('isRead', isEqualTo: false)
+          .snapshots(),
+      builder: (context, snap) {
+        final count = snap.data?.docs.length ?? 0;
+        return _SettingsTile(
+          icon: AppIcons.bellOutline,
+          title: 'Notifications',
+          trailing: count > 0 ? _NotifBadge(count: count) : null,
+          onTap: onTap,
+        );
+      },
+    );
+  }
+}
 
 class _NotifBadge extends StatelessWidget {
   final int count;
@@ -1012,8 +1002,8 @@ class _PriestDeleteAccountSheetState
                   shape: BoxShape.circle,
                   color: AppColors.errorRed.withValues(alpha: 0.08),
                 ),
-                child: const Icon(
-                  Icons.warning_amber_rounded,
+                child: const AppIcon(
+                  AppIcons.warning,
                   size: 28,
                   color: AppColors.errorRed,
                 ),
@@ -1059,10 +1049,6 @@ class _PriestDeleteAccountSheetState
                   _ConsequenceRow('Remove your speaker profile from the feed'),
                   SizedBox(height: 8),
                   _ConsequenceRow('Delete your personal data'),
-                  SizedBox(height: 8),
-                  _ConsequenceRow(
-                    'Forfeit any pending wallet balance & withdrawals',
-                  ),
                   SizedBox(height: 8),
                   _ConsequenceRow('Revoke access to all services'),
                 ],

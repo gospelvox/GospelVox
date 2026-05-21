@@ -17,6 +17,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/info_hint.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Moved out of the State class so the pure functions can be unit-tested
 // later without needing a widget tree.
@@ -210,7 +211,7 @@ class _RegistrationStep1State extends State<RegistrationStep1> {
                 ),
                 const SizedBox(height: 24),
                 _PickerOption(
-                  icon: Icons.photo_library_outlined,
+                  icon: AppIcons.gallery,
                   title: 'Choose from Gallery',
                   subtitle: 'Select an existing photo',
                   onTap: () =>
@@ -218,7 +219,7 @@ class _RegistrationStep1State extends State<RegistrationStep1> {
                 ),
                 const SizedBox(height: 12),
                 _PickerOption(
-                  icon: Icons.camera_alt_outlined,
+                  icon: AppIcons.camera,
                   title: 'Take a Photo',
                   subtitle: 'Use your camera',
                   onTap: () =>
@@ -556,8 +557,8 @@ class _PhotoCircleState extends State<_PhotoCircle> {
                   : Column(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
-                        Icon(
-                          Icons.camera_alt_outlined,
+                        AppIcon(
+                          AppIcons.camera,
                           size: 28,
                           color: AppColors.muted.withValues(alpha: 0.4),
                         ),
@@ -588,8 +589,8 @@ class _PhotoCircleState extends State<_PhotoCircle> {
                     width: 2.5,
                   ),
                 ),
-                child: Icon(
-                  hasPhoto ? Icons.edit : Icons.add,
+                child: AppIcon(
+                  hasPhoto ? AppIcons.edit : AppIcons.add,
                   size: 13,
                   color: Colors.white,
                 ),
@@ -767,7 +768,7 @@ class _PickerOptionState extends State<_PickerOption> {
                   color:
                       AppColors.primaryBrown.withValues(alpha: 0.08),
                 ),
-                child: Icon(
+                child: AppIcon(
                   widget.icon,
                   size: 22,
                   color: AppColors.primaryBrown,

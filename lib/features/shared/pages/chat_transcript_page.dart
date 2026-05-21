@@ -13,13 +13,14 @@
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ChatTranscriptPage extends StatefulWidget {
   final String sessionId;
@@ -96,25 +97,9 @@ class _ChatTranscriptPageState extends State<ChatTranscriptPage> {
       scrolledUnderElevation: 0,
       centerTitle: false,
       leadingWidth: 60,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 16),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.pop(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
-            ),
-            child: Icon(
-              Icons.arrow_back_ios_new,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 16),
+        child: AppBackButton(),
       ),
       title: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -172,8 +157,8 @@ class _ChatTranscriptPageState extends State<ChatTranscriptPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.error_outline,
+              AppIcon(
+                AppIcons.error,
                 size: 48,
                 color: AppColors.muted.withValues(alpha: 0.3),
               ),
@@ -223,8 +208,8 @@ class _ChatTranscriptPageState extends State<ChatTranscriptPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.chat_bubble_outline_rounded,
+              AppIcon(
+                AppIcons.chatOutline,
                 size: 48,
                 color: AppColors.muted.withValues(alpha: 0.2),
               ),

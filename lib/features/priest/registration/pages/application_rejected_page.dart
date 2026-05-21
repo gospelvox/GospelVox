@@ -16,6 +16,7 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ApplicationRejectedPage extends StatelessWidget {
   const ApplicationRejectedPage({super.key});
@@ -45,8 +46,8 @@ class ApplicationRejectedPage extends StatelessWidget {
                           color:
                               AppColors.errorRed.withValues(alpha: 0.08),
                         ),
-                        child: const Icon(
-                          Icons.close_rounded,
+                        child: const AppIcon(
+                          AppIcons.close,
                           size: 40,
                           color: AppColors.errorRed,
                         ),

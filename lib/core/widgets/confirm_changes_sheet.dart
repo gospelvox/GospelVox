@@ -4,6 +4,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/admin_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ChangeItem {
   final String field;
@@ -85,10 +86,10 @@ class _Sheet extends StatelessWidget {
             const SizedBox(height: 20),
             Row(
               children: [
-                Icon(
+                AppIcon(
                   isDangerous
-                      ? Icons.warning_amber_rounded
-                      : Icons.checklist_rounded,
+                      ? AppIcons.warning
+                      : AppIcons.checklist,
                   size: 24,
                   color: accent,
                 ),

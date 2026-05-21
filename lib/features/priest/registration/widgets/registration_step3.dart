@@ -17,6 +17,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/info_hint.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
 
@@ -262,8 +263,8 @@ class _DocumentCard extends StatelessWidget {
           shape: BoxShape.circle,
           color: AppColors.primaryBrown.withValues(alpha: 0.06),
         ),
-        child: Icon(
-          Icons.cloud_upload_outlined,
+        child: AppIcon(
+          AppIcons.upload,
           size: 24,
           color: AppColors.primaryBrown.withValues(alpha: 0.5),
         ),
@@ -333,8 +334,8 @@ class _DocumentCard extends StatelessWidget {
                 width: 52,
                 height: 52,
                 color: AppColors.primaryBrown.withValues(alpha: 0.06),
-                child: const Icon(
-                  Icons.insert_drive_file_outlined,
+                child: const AppIcon(
+                  AppIcons.document,
                   color: AppColors.primaryBrown,
                 ),
               ),
@@ -382,8 +383,8 @@ class _DocumentCard extends StatelessWidget {
         ),
         child: Row(
           children: [
-            const Icon(
-              Icons.check_circle_rounded,
+            const AppIcon(
+              AppIcons.checkCircle,
               size: 16,
               color: _kSuccessGreen,
             ),
@@ -451,8 +452,8 @@ class _ChooseFileButtonState extends State<_ChooseFileButton> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.add,
+              const AppIcon(
+                AppIcons.add,
                 size: 16,
                 color: AppColors.primaryBrown,
               ),

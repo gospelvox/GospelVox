@@ -35,10 +35,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
     show CallEntryBubble;
 
@@ -442,32 +444,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       scrolledUnderElevation: 0,
       centerTitle: false,
       leadingWidth: 60,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 16),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.pop(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.surfaceWhite,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              Icons.arrow_back_ios_new,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 16),
+        child: AppBackButton(),
       ),
       title: GestureDetector(
         // Tapping the title row opens the priest profile — keeps
@@ -534,8 +513,8 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
         // viewing the speaker profile. Keeps the AppBar clean for
         // the common chat-reading case.
         PopupMenuButton<String>(
-          icon: Icon(
-            Icons.more_vert_rounded,
+          icon: AppIcon(
+            AppIcons.more,
             color: AppColors.deepDarkBrown,
           ),
           onSelected: (value) {
@@ -553,10 +532,10 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
               value: 'mute',
               child: Row(
                 children: [
-                  Icon(
+                  AppIcon(
                     _isMuted
-                        ? Icons.notifications_active_outlined
-                        : Icons.notifications_off_outlined,
+                        ? AppIcons.bell
+                        : AppIcons.bellOff,
                     size: 18,
                     color: AppColors.deepDarkBrown,
                   ),
@@ -569,8 +548,8 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
               value: 'profile',
               child: Row(
                 children: [
-                  Icon(
-                    Icons.person_outline_rounded,
+                  AppIcon(
+                    AppIcons.userOutline,
                     size: 18,
                     color: AppColors.deepDarkBrown,
                   ),
@@ -685,8 +664,8 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
                 shape: BoxShape.circle,
                 color: AppColors.muted.withValues(alpha: 0.06),
               ),
-              child: Icon(
-                Icons.chat_bubble_outline_rounded,
+              child: AppIcon(
+                AppIcons.chatOutline,
                 size: 40,
                 color: AppColors.muted.withValues(alpha: 0.3),
               ),
@@ -836,8 +815,8 @@ class _MessageBubble extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.auto_awesome_rounded,
+                  AppIcon(
+                    AppIcons.magic,
                     size: 10,
                     color: AppColors.amberGold.withValues(alpha: 0.85),
                   ),
@@ -956,8 +935,8 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
           ? 'Reply · Start Session · ${widget.ratePerMinute} coins/min'
           : 'Start New Session · ${widget.ratePerMinute} coins/min';
       icon = widget.isReplyMode
-          ? Icons.reply_rounded
-          : Icons.chat_bubble_outline_rounded;
+          ? AppIcons.reply
+          : AppIcons.chatOutline;
       bgColor = AppColors.primaryBrown;
       fgColor = Colors.white;
     } else if (widget.isBusy) {
@@ -965,7 +944,7 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
       // with what actually happens. We don't have a notify-me
       // backend yet, so don't promise one.
       label = 'Speaker is busy · View Profile';
-      icon = Icons.access_time_rounded;
+      icon = AppIcons.clock;
       bgColor = AppColors.amberGold;
       fgColor = Colors.white;
     } else {
@@ -973,7 +952,7 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
       // Bell icon dropped because it implied a notification we
       // never set up. Person icon matches "View Profile" honestly.
       label = 'Speaker is offline · View Profile';
-      icon = Icons.person_outline_rounded;
+      icon = AppIcons.userOutline;
       bgColor = AppColors.muted.withValues(alpha: 0.18);
       fgColor = AppColors.deepDarkBrown.withValues(alpha: 0.7);
     }
@@ -1010,7 +989,7 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
               mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(icon, size: 16, color: fgColor),
+                AppIcon(icon, size: 16, color: fgColor),
                 const SizedBox(width: 8),
                 Flexible(
                   child: Text(

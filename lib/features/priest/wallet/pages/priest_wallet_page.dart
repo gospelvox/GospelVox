@@ -23,10 +23,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_state.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
 
@@ -90,32 +92,9 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
       scrolledUnderElevation: 0,
       automaticallyImplyLeading: false,
       titleSpacing: 16,
-      leading: Padding(
-        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.pop(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.surfaceWhite,
-              boxShadow: [
-                BoxShadow(
-                  blurRadius: 8,
-                  offset: const Offset(0, 2),
-                  color: Colors.black.withValues(alpha: 0.04),
-                ),
-              ],
-            ),
-            child: const Icon(
-              Icons.arrow_back_ios_new_rounded,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+        child: AppBackButton(),
       ),
       title: Text(
         "My Wallet",
@@ -337,7 +316,7 @@ class _LoadedBody extends StatelessWidget {
                     // window — the latter would silently break
                     // once a priest crosses that history depth.
                     value: "₹${state.totalEarnings.toStringAsFixed(0)}",
-                    icon: Icons.trending_up_rounded,
+                    icon: AppIcons.trendingUp,
                   ),
                 ),
                 const SizedBox(width: 12),
@@ -346,7 +325,7 @@ class _LoadedBody extends StatelessWidget {
                     label: "Withdrawn",
                     value:
                         "₹${state.totalWithdrawn.toStringAsFixed(0)}",
-                    icon: Icons.account_balance_outlined,
+                    icon: AppIcons.bank,
                   ),
                 ),
               ],
@@ -549,7 +528,7 @@ class _QuickStat extends StatelessWidget {
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 20,
             color: AppColors.primaryBrown.withValues(alpha: 0.5),
@@ -612,7 +591,7 @@ class _TransactionCard extends StatelessWidget {
                   ? _kSuccessGreen.withValues(alpha: 0.08)
                   : AppColors.muted.withValues(alpha: 0.06),
             ),
-            child: Icon(
+            child: AppIcon(
               tx.icon,
               size: 18,
               color: earning ? _kSuccessGreen : AppColors.muted,
@@ -691,8 +670,8 @@ class _EmptyTransactions extends StatelessWidget {
       child: Column(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Icon(
-            Icons.receipt_long_outlined,
+          AppIcon(
+            AppIcons.receipt,
             size: 48,
             color: AppColors.muted.withValues(alpha: 0.2),
           ),
@@ -740,8 +719,8 @@ class _InfoTip extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.info_outline_rounded,
+          AppIcon(
+            AppIcons.info,
             size: 16,
             color: AppColors.primaryBrown.withValues(alpha: 0.7),
           ),
@@ -857,8 +836,8 @@ class _ErrorBody extends StatelessWidget {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const Icon(
-              Icons.error_outline_rounded,
+            const AppIcon(
+              AppIcons.error,
               size: 44,
               color: AppColors.errorRed,
             ),
@@ -1128,8 +1107,8 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
               ),
               child: Row(
                 children: [
-                  const Icon(
-                    Icons.account_balance_outlined,
+                  const AppIcon(
+                    AppIcons.bank,
                     size: 18,
                     color: AppColors.muted,
                   ),
@@ -1341,8 +1320,8 @@ class _ConfirmWithdrawalSheet extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.amberGold.withValues(alpha: 0.12),
               ),
-              child: Icon(
-                Icons.account_balance_outlined,
+              child: AppIcon(
+                AppIcons.bank,
                 size: 28,
                 color: AppColors.amberGold,
               ),
@@ -1489,8 +1468,8 @@ class _SuccessSheetState extends State<_SuccessSheet> {
               shape: BoxShape.circle,
               color: _kSuccessGreen.withValues(alpha: 0.1),
             ),
-            child: const Icon(
-              Icons.check_rounded,
+            child: const AppIcon(
+              AppIcons.check,
               size: 32,
               color: _kSuccessGreen,
             ),

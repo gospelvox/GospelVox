@@ -15,6 +15,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
 import 'package:gospel_vox/features/auth/widgets/role_mismatch_bottom_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const double _kCardWidth = 280;
 const double _kCardHeight = 320;
@@ -476,7 +477,7 @@ List<_SlideData> _buildSlides(String role) {
     _SlideData(
       bgColor: AppColors.warmBeige,
       cardGradient: const [Color(0xFFE8D5C4), Color(0xFFF4EDE3)],
-      mainIcon: Icons.add,
+      mainIcon: AppIcons.add,
       mainIconColor: const Color(0xFF6B3A2A),
       heading: isPriest
           ? 'Share your calling,\nguide seeking hearts'
@@ -515,7 +516,7 @@ List<_SlideData> _buildSlides(String role) {
     _SlideData(
       bgColor: AppColors.amberGold,
       cardGradient: const [Color(0xFFD4A060), Color(0xFFE8C88A)],
-      mainIcon: Icons.mic_none,
+      mainIcon: AppIcons.mic,
       mainIconColor: const Color(0xFF6B3A2A),
       heading: isPriest
           ? 'Consult through\nvoice or chat'
@@ -562,7 +563,7 @@ List<_SlideData> _buildSlides(String role) {
     _SlideData(
       bgColor: const Color(0xFFB8C8A0),
       cardGradient: const [Color(0xFF8BA070), Color(0xFFB8C98A)],
-      mainIcon: Icons.menu_book,
+      mainIcon: AppIcons.bible,
       mainIconColor: AppColors.surfaceWhite,
       heading: isPriest
           ? 'Host Bible\nstudy sessions'
@@ -601,7 +602,7 @@ List<_SlideData> _buildSlides(String role) {
     _SlideData(
       bgColor: const Color(0xFFF9F0E3),
       cardGradient: const [Color(0xFFF0D5D5), Color(0xFFF9E8E0)],
-      mainIcon: Icons.church,
+      mainIcon: AppIcons.church,
       mainIconColor: const Color(0xFF6B3A2A),
       heading: isPriest
           ? 'Build lasting\nspiritual bonds'
@@ -648,7 +649,7 @@ List<_SlideData> _buildSlides(String role) {
     _SlideData(
       bgColor: AppColors.primaryBrown,
       cardGradient: const [Color(0xFF6B3A2A), Color(0xFF8B5A3A)],
-      mainIcon: Icons.favorite_border,
+      mainIcon: AppIcons.starOutline,
       mainIconColor: AppColors.surfaceWhite,
       heading: isPriest
           ? 'Grow your ministry\non Gospel Vox'
@@ -707,7 +708,7 @@ class _SlideCard extends StatelessWidget {
       child: Stack(
         children: [
           Center(
-            child: Icon(
+            child: AppIcon(
               slide.mainIcon,
               size: 100,
               color: slide.mainIconColor,
@@ -898,7 +899,7 @@ class _SignInButtons extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(
+                const AppIcon(
                   Icons.g_mobiledata,
                   size: 28,
                   color: AppColors.deepDarkBrown,
@@ -923,7 +924,7 @@ class _SignInButtons extends StatelessWidget {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                const Icon(Icons.apple, size: 22, color: AppColors.surfaceWhite),
+                const AppIcon(AppIcons.apple, size: 22, color: AppColors.surfaceWhite),
                 const SizedBox(width: 12),
                 Text(
                   'Continue with Apple',

@@ -17,6 +17,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class RegistrationStep4Review extends StatefulWidget {
   final PriestRegistrationModel data;
@@ -240,8 +241,8 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
                 children: [
                   Row(
                     children: [
-                      const Icon(
-                        Icons.error_outline,
+                      const AppIcon(
+                        AppIcons.error,
                         size: 18,
                         color: AppColors.errorRed,
                       ),
@@ -301,8 +302,8 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
                     ),
                   ),
                   child: _termsAccepted
-                      ? const Icon(
-                          Icons.check,
+                      ? const AppIcon(
+                          AppIcons.check,
                           size: 14,
                           color: Colors.white,
                         )
@@ -472,8 +473,8 @@ class _EditPillState extends State<_EditPill> {
           child: Row(
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.edit_outlined,
+              const AppIcon(
+                AppIcons.edit,
                 size: 12,
                 color: AppColors.primaryBrown,
               ),
@@ -603,15 +604,15 @@ class _PhotoThumb extends StatelessWidget {
                 width: 60,
                 height: 60,
                 fit: BoxFit.cover,
-                errorBuilder: (_, _, _) => Icon(
-                  Icons.person_outline,
+                errorBuilder: (_, _, _) => AppIcon(
+                  AppIcons.userOutline,
                   size: 24,
                   color: AppColors.muted.withValues(alpha: 0.5),
                 ),
               ),
             )
-          : Icon(
-              Icons.person_outline,
+          : AppIcon(
+              AppIcons.userOutline,
               size: 24,
               color: AppColors.muted.withValues(alpha: 0.5),
             ),
@@ -680,8 +681,8 @@ class _DocumentRow extends StatelessWidget {
           ),
         ),
         if (has)
-          const Icon(
-            Icons.check_circle_rounded,
+          const AppIcon(
+            AppIcons.checkCircle,
             size: 18,
             color: Color(0xFF2E7D4F),
           ),
@@ -694,8 +695,8 @@ class _DocumentRow extends StatelessWidget {
       width: 44,
       height: 44,
       color: AppColors.muted.withValues(alpha: 0.08),
-      child: Icon(
-        Icons.description_outlined,
+      child: AppIcon(
+        AppIcons.document,
         size: 18,
         color: AppColors.muted.withValues(alpha: 0.5),
       ),

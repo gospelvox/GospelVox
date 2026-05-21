@@ -35,6 +35,7 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kLiveRed = Color(0xFFE53E3E);
 // Forest green for the Join CTA — distinct from primaryBrown and
@@ -443,8 +444,8 @@ class _JoinButtonState extends State<_JoinButton> {
             mainAxisAlignment: MainAxisAlignment.center,
             mainAxisSize: MainAxisSize.min,
             children: [
-              const Icon(
-                Icons.videocam_rounded,
+              const AppIcon(
+                AppIcons.video,
                 size: 22,
                 color: Colors.white,
               ),

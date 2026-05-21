@@ -14,6 +14,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class AdminLoginBottomSheet extends StatefulWidget {
   const AdminLoginBottomSheet({super.key});
@@ -176,8 +177,8 @@ class _AdminLoginBottomSheetState extends State<AdminLoginBottomSheet> {
                   const SizedBox(height: 20),
                   Row(
                     children: [
-                      const Icon(
-                        Icons.admin_panel_settings_outlined,
+                      const AppIcon(
+                        AppIcons.adminPanel,
                         color: AppColors.primaryBrown,
                         size: 24,
                       ),
@@ -217,7 +218,7 @@ class _AdminLoginBottomSheetState extends State<AdminLoginBottomSheet> {
                     decoration: InputDecoration(
                       labelText: 'Email',
                       hintText: 'admin@gospelvox.com',
-                      prefixIcon: const Icon(Icons.mail_outline),
+                      prefixIcon: const AppIcon(AppIcons.mail),
                       errorText: _emailError,
                     ),
                     onSubmitted: (_) => _passwordFocusNode.requestFocus(),
@@ -237,12 +238,12 @@ class _AdminLoginBottomSheetState extends State<AdminLoginBottomSheet> {
                     ),
                     decoration: InputDecoration(
                       labelText: 'Password',
-                      prefixIcon: const Icon(Icons.lock_outline),
+                      prefixIcon: const AppIcon(AppIcons.lock),
                       suffixIcon: IconButton(
-                        icon: Icon(
+                        icon: AppIcon(
                           _obscurePassword
-                              ? Icons.visibility_off_outlined
-                              : Icons.visibility_outlined,
+                              ? AppIcons.eyeOff
+                              : AppIcons.eye,
                         ),
                         onPressed: () => setState(
                             () => _obscurePassword = !_obscurePassword),

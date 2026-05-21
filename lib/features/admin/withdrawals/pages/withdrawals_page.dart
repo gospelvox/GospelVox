@@ -22,6 +22,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/withdrawals/bloc/admin_withdrawals_cubit.dart';
 import 'package:gospel_vox/features/admin/withdrawals/bloc/admin_withdrawals_state.dart';
 import 'package:gospel_vox/features/admin/withdrawals/data/admin_withdrawal_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const _kFilters = ['pending', 'paid', 'blocked', 'all'];
 
@@ -130,8 +131,8 @@ class _AdminWithdrawalsViewState extends State<_AdminWithdrawalsView>
             context.go('/admin');
           }
         },
-        child: const Icon(
-          Icons.arrow_back,
+        child: const AppIcon(
+          AppIcons.back,
           color: AdminColors.textPrimary,
           size: 22,
         ),
@@ -455,27 +456,27 @@ class _WithdrawalCard extends StatelessWidget {
           ),
           const SizedBox(height: 8),
           _IconRow(
-            icon: Icons.account_balance_outlined,
+            icon: AppIcons.bank,
             text: w.bankName.isEmpty
                 ? 'A/c ••••${w.lastFourAccount}'
                 : '${w.bankName} · A/c ••••${w.lastFourAccount}',
           ),
           const SizedBox(height: 4),
           _IconRow(
-            icon: Icons.person_outline,
+            icon: AppIcons.userOutline,
             text: w.bankAccountName.isEmpty
                 ? 'No account holder'
                 : w.bankAccountName,
           ),
           const SizedBox(height: 4),
           _IconRow(
-            icon: Icons.tag,
+            icon: AppIcons.tag,
             text: 'IFSC: ${w.bankIfscCode.isEmpty ? '—' : w.bankIfscCode}',
           ),
           if ((w.upiId ?? '').isNotEmpty) ...[
             const SizedBox(height: 4),
             _IconRow(
-              icon: Icons.qr_code,
+              icon: AppIcons.qrCode,
               text: 'UPI: ${w.upiId!}',
             ),
           ],
@@ -536,7 +537,7 @@ class _IconRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, size: 16, color: AdminColors.textLight),
+        AppIcon(icon, size: 16, color: AdminColors.textLight),
         const SizedBox(width: 8),
         Expanded(
           child: Text(
@@ -947,10 +948,10 @@ class _PayoutRowState extends State<_PayoutRow> {
                 child: Row(
                   mainAxisSize: MainAxisSize.min,
                   children: [
-                    Icon(
+                    AppIcon(
                       _justCopied
-                          ? Icons.check_rounded
-                          : Icons.copy_rounded,
+                          ? AppIcons.check
+                          : AppIcons.copy,
                       size: 13,
                       color: _justCopied
                           ? AdminColors.success
@@ -1173,22 +1174,22 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, body) = switch (filter) {
       'pending' => (
-          Icons.inbox_outlined,
+          AppIcons.inbox,
           'No pending withdrawals',
           'New withdrawal requests will appear here',
         ),
       'paid' => (
-          Icons.task_alt,
+          AppIcons.taskDone,
           'No paid withdrawals yet',
           'Payouts you mark as paid will appear here',
         ),
       'blocked' => (
-          Icons.block_outlined,
+          AppIcons.block,
           'No blocked withdrawals',
           'Blocked payouts will appear here',
         ),
       _ => (
-          Icons.payments_outlined,
+          AppIcons.payments,
           'No withdrawals yet',
           'Withdrawals across every status will appear here',
         ),
@@ -1200,7 +1201,7 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               icon,
               size: 48,
               color: AdminColors.textLight.withValues(alpha: 0.4),
@@ -1245,8 +1246,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

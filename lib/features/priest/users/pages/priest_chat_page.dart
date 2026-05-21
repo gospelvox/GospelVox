@@ -27,15 +27,16 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
     show CallEntryBubble;
 
@@ -338,32 +339,9 @@ class _PriestChatPageState extends State<PriestChatPage> {
       scrolledUnderElevation: 0,
       centerTitle: false,
       leadingWidth: 60,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 16),
-        child: GestureDetector(
-          behavior: HitTestBehavior.opaque,
-          onTap: () => context.pop(),
-          child: Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.surfaceWhite,
-              boxShadow: [
-                BoxShadow(
-                  color: Colors.black.withValues(alpha: 0.04),
-                  blurRadius: 6,
-                  offset: const Offset(0, 2),
-                ),
-              ],
-            ),
-            child: Icon(
-              Icons.arrow_back_ios_new,
-              size: 16,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-        ),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 16),
+        child: AppBackButton(),
       ),
       title: Row(
         children: [
@@ -428,8 +406,8 @@ class _PriestChatPageState extends State<PriestChatPage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.chat_bubble_outline_rounded,
+              AppIcon(
+                AppIcons.chatOutline,
                 size: 48,
                 color: AppColors.muted.withValues(alpha: 0.2),
               ),
@@ -580,8 +558,8 @@ class _PriestChatPageState extends State<PriestChatPage> {
                                 ),
                               ),
                             )
-                          : const Icon(
-                              Icons.send_rounded,
+                          : const AppIcon(
+                              AppIcons.send,
                               size: 20,
                               color: Colors.white,
                             ),
@@ -712,8 +690,8 @@ class _MessageBubble extends StatelessWidget {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.auto_awesome_rounded,
+                  AppIcon(
+                    AppIcons.magic,
                     size: 10,
                     color: AppColors.amberGold.withValues(alpha: 0.85),
                   ),

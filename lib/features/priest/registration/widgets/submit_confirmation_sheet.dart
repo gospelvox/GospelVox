@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Resolves to true when the priest confirms, false when they back
 // out. A null return (sheet dismissed via swipe/back) is treated as
@@ -78,8 +79,8 @@ class _SubmitConfirmationSheetState
                     color:
                         AppColors.amberGold.withValues(alpha: 0.15),
                   ),
-                  child: const Icon(
-                    Icons.gpp_maybe_outlined,
+                  child: const AppIcon(
+                    AppIcons.privacy,
                     size: 32,
                     color: AppColors.amberGold,
                   ),
@@ -113,7 +114,7 @@ class _SubmitConfirmationSheetState
               // The three consequences, framed as real-world facts
               // rather than legal boilerplate.
               const _ConsequenceRow(
-                icon: Icons.schedule_rounded,
+                icon: AppIcons.clock,
                 title: 'Admin review takes 24–48 hours',
                 body:
                     'A member of our team will verify your details and '
@@ -121,7 +122,7 @@ class _SubmitConfirmationSheetState
               ),
               const SizedBox(height: 14),
               const _ConsequenceRow(
-                icon: Icons.block_rounded,
+                icon: AppIcons.block,
                 title: 'False information will be rejected',
                 body:
                     'Applications with inaccurate data are declined '
@@ -129,7 +130,7 @@ class _SubmitConfirmationSheetState
               ),
               const SizedBox(height: 14),
               const _ConsequenceRow(
-                icon: Icons.account_balance_wallet_outlined,
+                icon: AppIcons.wallet,
                 title: 'Earnings can be frozen later',
                 body:
                     'If inaccuracies surface after approval, your '
@@ -182,7 +183,7 @@ class _ConsequenceRow extends StatelessWidget {
             shape: BoxShape.circle,
             color: AppColors.primaryBrown.withValues(alpha: 0.06),
           ),
-          child: Icon(
+          child: AppIcon(
             icon,
             size: 18,
             color: AppColors.primaryBrown,

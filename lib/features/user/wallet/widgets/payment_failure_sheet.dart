@@ -11,6 +11,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PaymentFailureSheet {
   PaymentFailureSheet._();
@@ -85,8 +86,8 @@ class _PaymentFailureBody extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: AppColors.errorRed.withValues(alpha: 0.12),
                   ),
-                  child: const Icon(
-                    Icons.close_rounded,
+                  child: const AppIcon(
+                    AppIcons.close,
                     size: 28,
                     color: AppColors.errorRed,
                   ),

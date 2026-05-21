@@ -20,10 +20,12 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PriestProfilePage extends StatefulWidget {
   final String priestId;
@@ -140,35 +142,10 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
       backgroundColor: AppColors.background,
       elevation: 0,
       surfaceTintColor: Colors.transparent,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 12),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 12),
         child: Align(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (context.canPop()) context.pop();
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                    color: Colors.black.withValues(alpha: 0.05),
-                  ),
-                ],
-              ),
-              child: Icon(
-                Icons.arrow_back_rounded,
-                size: 20,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+          child: AppBackButton(),
         ),
       ),
       title: Text(
@@ -200,8 +177,8 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
           child: Column(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.error_outline_rounded,
+              AppIcon(
+                AppIcons.error,
                 size: 40,
                 color: AppColors.muted.withValues(alpha: 0.5),
               ),
@@ -437,8 +414,8 @@ class _ProfileHeader extends StatelessWidget {
           Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              Icon(
-                Icons.location_on_outlined,
+              AppIcon(
+                AppIcons.location,
                 size: 14,
                 color: AppColors.muted,
               ),
@@ -463,8 +440,8 @@ class _ProfileHeader extends StatelessWidget {
               Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.star_rounded,
+                  AppIcon(
+                    AppIcons.starFilled,
                     size: 16,
                     color: AppColors.amberGold,
                   ),
@@ -741,21 +718,21 @@ class _StickyActions extends StatelessWidget {
         children: [
           if (showBusy)
             _ReasonBanner(
-              icon: Icons.pause_circle_outline_rounded,
+              icon: AppIcons.pause,
               text: 'This speaker is online but has paused new requests. '
                   'Come back in a little while.',
               color: AppColors.amberGold,
             )
           else if (showOffline)
             _ReasonBanner(
-              icon: Icons.cloud_off_rounded,
+              icon: AppIcons.cloudOff,
               text: 'This speaker is offline right now. Check back once '
                   "they're available.",
               color: AppColors.muted,
             )
           else if (showLowBalance)
             _ReasonBanner(
-              icon: Icons.info_outline_rounded,
+              icon: AppIcons.info,
               text: 'You need at least $minCost coins for a session. '
                   'Add coins to your wallet first.',
               color: AppColors.errorRed,
@@ -765,7 +742,7 @@ class _StickyActions extends StatelessWidget {
               Expanded(
                 child: _ActionButton(
                   label: 'Chat',
-                  icon: Icons.chat_bubble_outline_rounded,
+                  icon: AppIcons.chatOutline,
                   filled: true,
                   enabled: canStart,
                   onTap: canStart ? onChat : null,
@@ -775,7 +752,7 @@ class _StickyActions extends StatelessWidget {
               Expanded(
                 child: _ActionButton(
                   label: 'Voice Call',
-                  icon: Icons.mic_none_rounded,
+                  icon: AppIcons.mic,
                   filled: false,
                   enabled: canStart,
                   onTap: canStart ? onVoice : null,
@@ -829,7 +806,7 @@ class _ReasonBanner extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 16, color: color),
+          AppIcon(icon, size: 16, color: color),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -931,7 +908,7 @@ class _ActionButtonState extends State<_ActionButton> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                Icon(widget.icon, size: 18, color: fg),
+                AppIcon(widget.icon, size: 18, color: fg),
                 const SizedBox(width: 8),
                 Text(
                   widget.label,

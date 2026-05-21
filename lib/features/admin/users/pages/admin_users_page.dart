@@ -17,6 +17,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/users/bloc/admin_users_cubit.dart';
 import 'package:gospel_vox/features/admin/users/bloc/admin_users_state.dart';
 import 'package:gospel_vox/features/admin/users/data/admin_user_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class AdminUsersPage extends StatelessWidget {
   const AdminUsersPage({super.key});
@@ -70,8 +71,8 @@ class _AdminUsersViewState extends State<_AdminUsersView> {
               context.go('/admin');
             }
           },
-          child: const Icon(
-            Icons.arrow_back,
+          child: const AppIcon(
+            AppIcons.back,
             color: AdminColors.textPrimary,
             size: 22,
           ),
@@ -175,8 +176,8 @@ class _SearchBarState extends State<_SearchBar> {
         ),
         child: Row(
           children: [
-            const Icon(
-              Icons.search,
+            const AppIcon(
+              AppIcons.search,
               size: 18,
               color: AdminColors.textMuted,
             ),
@@ -212,8 +213,8 @@ class _SearchBarState extends State<_SearchBar> {
                 },
                 child: const Padding(
                   padding: EdgeInsets.all(4),
-                  child: Icon(
-                    Icons.close,
+                  child: AppIcon(
+                    AppIcons.close,
                     size: 16,
                     color: AdminColors.textMuted,
                   ),
@@ -480,12 +481,12 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, body) = hasQuery
         ? (
-            Icons.search_off,
+            AppIcons.search,
             'No matches',
             'No users match your search',
           )
         : (
-            Icons.people_outline,
+            AppIcons.users,
             'No users registered yet',
             'New sign-ups will appear here',
           );
@@ -496,7 +497,7 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               icon,
               size: 48,
               color: AdminColors.textLight.withValues(alpha: 0.4),
@@ -544,8 +545,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

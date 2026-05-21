@@ -53,6 +53,12 @@ dependencies:
   google_fonts: any
   cached_network_image: any
   shimmer: any
+  flutter_svg: any
+  # Premium icon set — pinned major to avoid breaking changes on
+  # future upgrades. Centralised mapping lives in
+  # lib/core/widgets/app_icons.dart so swapping packs later means
+  # editing one file, not 35.
+  font_awesome_flutter: ^11.0.0
 
   # Utilities
   connectivity_plus: any
@@ -98,6 +104,7 @@ flutter:
     - assets/
     - assets/audio/
     - assets/bible_banners/
+    - assets/coins_images/
 
 # Launcher icon config. Source is the 512x512 Play Store graphic —
 # flutter_launcher_icons rescales it for every Android mipmap

@@ -34,6 +34,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class SessionRatingDialog extends StatefulWidget {
   final SessionModel session;
@@ -178,8 +179,8 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                       onPressed: _saving ? null : _skip,
                       padding: EdgeInsets.zero,
                       iconSize: 16,
-                      icon: Icon(
-                        Icons.close_rounded,
+                      icon: AppIcon(
+                        AppIcons.close,
                         color: AppColors.muted.withValues(alpha: 0.35),
                       ),
                       splashRadius: 16,
@@ -304,10 +305,10 @@ class _StarRow extends StatelessWidget {
               scale: filled ? 1.05 : 1.0,
               duration: const Duration(milliseconds: 140),
               curve: Curves.easeOut,
-              child: Icon(
+              child: AppIcon(
                 filled
-                    ? Icons.star_rounded
-                    : Icons.star_outline_rounded,
+                    ? AppIcons.starFilled
+                    : AppIcons.starOutline,
                 size: 36,
                 color: filled
                     ? AppColors.amberGold

@@ -29,9 +29,11 @@ import 'package:url_launcher/url_launcher.dart';
 
 import 'package:gospel_vox/core/services/razorpay_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for "joined / paid / registered ✓" — warmer than
 // AppColors.success against the beige scaffold.
@@ -412,9 +414,14 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
         // bible tab. The default back button calls Navigator.maybePop
         // without a result, which would force the tab to refresh on
         // every back-tap or skip refresh entirely.
-        leading: IconButton(
-          icon: const Icon(Icons.arrow_back),
-          onPressed: () => Navigator.of(context).pop(_changed),
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8),
+          child: Align(
+            alignment: Alignment.center,
+            child: AppBackButton(
+              onTap: () => Navigator.of(context).pop(_changed),
+            ),
+          ),
         ),
         title: Text(
           "Bible Session",
@@ -491,8 +498,8 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
       ),
       padding: const EdgeInsets.fromLTRB(32, 80, 32, 32),
       children: [
-        Icon(
-          Icons.error_outline_rounded,
+        AppIcon(
+          AppIcons.error,
           size: 44,
           color: AppColors.errorRed,
         ),
@@ -688,20 +695,20 @@ class _SessionInfoCard extends StatelessWidget {
             runSpacing: 8,
             children: [
               _InfoChip(
-                icon: Icons.calendar_today_outlined,
+                icon: AppIcons.calendar,
                 text: session.formattedDate,
               ),
               _InfoChip(
-                icon: Icons.access_time_rounded,
+                icon: AppIcons.clock,
                 text: '${session.formattedTime} IST',
               ),
               _InfoChip(
-                icon: Icons.timer_outlined,
+                icon: AppIcons.stopwatch,
                 text: session.formattedDuration,
               ),
               if (session.category.isNotEmpty)
                 _InfoChip(
-                  icon: Icons.local_offer_outlined,
+                  icon: AppIcons.tag,
                   text: session.category,
                 ),
             ],
@@ -795,7 +802,7 @@ class _InfoChip extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(icon, size: 13, color: AppColors.primaryBrown),
+          AppIcon(icon, size: 13, color: AppColors.primaryBrown),
           const SizedBox(width: 6),
           Text(
             text,
@@ -904,8 +911,8 @@ class _PriestInfoCardState extends State<_PriestInfoCard> {
                   ],
                 ),
               ),
-              Icon(
-                Icons.chevron_right_rounded,
+              AppIcon(
+                AppIcons.chevronRight,
                 size: 18,
                 color: AppColors.muted.withValues(alpha: 0.6),
               ),
@@ -939,7 +946,7 @@ class _RegisterForFreeStateView extends StatelessWidget {
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         _InfoBlock(
-          icon: Icons.notifications_active_outlined,
+          icon: AppIcons.bell,
           accent: AppColors.amberGold,
           title: "Register for free to get notified",
           body:
@@ -1003,8 +1010,8 @@ class _RegisteredAwaitingStateView extends StatelessWidget {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(
-                Icons.check_circle_rounded,
+              const AppIcon(
+                AppIcons.checkCircle,
                 size: 18,
                 color: _kJoinedGreen,
               ),
@@ -1022,7 +1029,7 @@ class _RegisteredAwaitingStateView extends StatelessWidget {
         ),
         const SizedBox(height: 16),
         _InfoBlock(
-          icon: Icons.notifications_active_outlined,
+          icon: AppIcons.bell,
           accent: AppColors.amberGold,
           title: session.startsInText.isNotEmpty
               ? session.startsInText
@@ -1119,8 +1126,8 @@ class _PaymentGateStateView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.lock_rounded,
+                  AppIcon(
+                    AppIcons.lock,
                     size: 16,
                     color: AppColors.muted,
                   ),
@@ -1226,8 +1233,8 @@ class _LinkRevealedStateView extends StatelessWidget {
           ),
           child: Row(
             children: [
-              const Icon(
-                Icons.check_circle_rounded,
+              const AppIcon(
+                AppIcons.checkCircle,
                 size: 18,
                 color: _kJoinedGreen,
               ),
@@ -1269,8 +1276,8 @@ class _LinkRevealedStateView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  const Icon(
-                    Icons.videocam_rounded,
+                  const AppIcon(
+                    AppIcons.video,
                     size: 16,
                     color: _kJoinedGreen,
                   ),
@@ -1306,8 +1313,8 @@ class _LinkRevealedStateView extends StatelessWidget {
                 ),
                 child: Row(
                   children: [
-                    const Icon(
-                      Icons.check_circle_rounded,
+                    const AppIcon(
+                      AppIcons.checkCircle,
                       size: 14,
                       color: _kJoinedGreen,
                     ),
@@ -1494,8 +1501,8 @@ class _RatingStateViewState extends State<_RatingStateView> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.flag_outlined,
+                  AppIcon(
+                    AppIcons.flag,
                     size: 14,
                     color: AppColors.errorRed,
                   ),
@@ -1534,8 +1541,8 @@ class _StarRow extends StatelessWidget {
           behavior: HitTestBehavior.opaque,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 4),
-            child: Icon(
-              filled ? Icons.star_rounded : Icons.star_outline_rounded,
+            child: AppIcon(
+              filled ? AppIcons.starFilled : AppIcons.starOutline,
               size: 38,
               color: filled
                   ? AppColors.amberGold
@@ -1592,10 +1599,10 @@ class _AlreadyRatedStateView extends StatelessWidget {
                   final filled = i < (registration.rating ?? 0);
                   return Padding(
                     padding: const EdgeInsets.only(right: 4),
-                    child: Icon(
+                    child: AppIcon(
                       filled
-                          ? Icons.star_rounded
-                          : Icons.star_outline_rounded,
+                          ? AppIcons.starFilled
+                          : AppIcons.starOutline,
                       size: 28,
                       color: filled
                           ? AppColors.amberGold
@@ -1648,7 +1655,7 @@ class _CompletedNotAttendedStateView extends StatelessWidget {
         _CompletedHeader(message: "Session Completed"),
         const SizedBox(height: 14),
         _InfoBlock(
-          icon: Icons.event_busy_outlined,
+          icon: AppIcons.eventBusy,
           accent: AppColors.muted,
           title: "This session has ended",
           body:
@@ -1698,8 +1705,8 @@ class _CancelledStateView extends StatelessWidget {
             children: [
               Row(
                 children: [
-                  Icon(
-                    Icons.cancel_outlined,
+                  AppIcon(
+                    AppIcons.cancel,
                     size: 18,
                     color: AppColors.errorRed,
                   ),
@@ -1751,8 +1758,8 @@ class _CancelledStateView extends StatelessWidget {
             child: Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Icon(
-                  Icons.info_outline_rounded,
+                AppIcon(
+                  AppIcons.info,
                   size: 16,
                   color: AppColors.amberGold,
                 ),
@@ -1789,7 +1796,7 @@ class _EndingSoonStateView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return _InfoBlock(
-      icon: Icons.hourglass_bottom_rounded,
+      icon: AppIcons.hourglass,
       accent: AppColors.muted,
       title: "Session Ending Soon",
       body:
@@ -1822,8 +1829,8 @@ class _CompletedHeader extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          const Icon(
-            Icons.check_circle_rounded,
+          const AppIcon(
+            AppIcons.checkCircle,
             size: 18,
             color: _kJoinedGreen,
           ),
@@ -1868,7 +1875,7 @@ class _InfoBlock extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(icon, size: 18, color: accent),
+          AppIcon(icon, size: 18, color: accent),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -2182,8 +2189,8 @@ class _ReportIssueSheetState extends State<_ReportIssueSheet> {
             const SizedBox(height: 16),
             Row(
               children: [
-                Icon(
-                  Icons.flag_outlined,
+                AppIcon(
+                  AppIcons.flag,
                   size: 20,
                   color: AppColors.errorRed,
                 ),

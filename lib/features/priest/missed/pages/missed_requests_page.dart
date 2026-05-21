@@ -57,9 +57,11 @@ import 'package:shimmer/shimmer.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/notifications/data/notification_model.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class MissedRequestsPage extends StatefulWidget {
   const MissedRequestsPage({super.key});
@@ -482,7 +484,7 @@ class _MissedRequestsPageState extends State<MissedRequestsPage>
                 ),
                 const SizedBox(height: 16),
                 _DismissOption(
-                  icon: Icons.schedule_rounded,
+                  icon: AppIcons.clock,
                   text: 'I was busy, will respond later',
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
@@ -491,7 +493,7 @@ class _MissedRequestsPageState extends State<MissedRequestsPage>
                 ),
                 const SizedBox(height: 8),
                 _DismissOption(
-                  icon: Icons.check_circle_outline_rounded,
+                  icon: AppIcons.checkCircleOutline,
                   text: 'Already contacted them',
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
@@ -500,7 +502,7 @@ class _MissedRequestsPageState extends State<MissedRequestsPage>
                 ),
                 const SizedBox(height: 8),
                 _DismissOption(
-                  icon: Icons.not_interested_rounded,
+                  icon: AppIcons.notInterested,
                   text: 'Not able to help right now',
                   onTap: () {
                     Navigator.of(sheetCtx).pop();
@@ -656,32 +658,9 @@ class _MissedRequestsPageState extends State<MissedRequestsPage>
         scrolledUnderElevation: 0,
         centerTitle: false,
         leadingWidth: 60,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 16),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => context.pop(),
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Icon(
-                Icons.arrow_back_ios_new,
-                size: 16,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 16),
+          child: AppBackButton(),
         ),
         title: Text(
           'Missed Requests',
@@ -809,8 +788,8 @@ class _MissedRequestCardState extends State<_MissedRequestCard> {
     final isVoice = g.latestSessionType == 'voice';
     final typeLabel = isVoice ? 'call' : 'chat';
     final typeIcon = isVoice
-        ? Icons.phone_missed_rounded
-        : Icons.chat_bubble_outline_rounded;
+        ? AppIcons.phoneMissed
+        : AppIcons.chatOutline;
 
     // Subtitle copy diverges by attempt count.
     final attemptLine = isMulti
@@ -943,7 +922,7 @@ class _MissedRequestCardState extends State<_MissedRequestCard> {
                               const SizedBox(height: 3),
                               Row(
                                 children: [
-                                  Icon(
+                                  AppIcon(
                                     typeIcon,
                                     size: 13,
                                     color: AppColors.amberGold,
@@ -996,8 +975,8 @@ class _MissedRequestCardState extends State<_MissedRequestCard> {
                       ),
                       child: Row(
                         children: [
-                          Icon(
-                            Icons.lightbulb_outline_rounded,
+                          AppIcon(
+                            AppIcons.lightbulb,
                             size: 14,
                             color: AppColors.amberGold.withValues(alpha: 0.6),
                           ),
@@ -1028,7 +1007,7 @@ class _MissedRequestCardState extends State<_MissedRequestCard> {
                         ),
                         const SizedBox(width: 8),
                         _SecondaryIconButton(
-                          icon: Icons.edit_outlined,
+                          icon: AppIcons.edit,
                           onTap: widget.isBusy ? null : widget.onType,
                         ),
                       ],
@@ -1203,7 +1182,7 @@ class _SecondaryIconButtonState extends State<_SecondaryIconButton> {
                   color: AppColors.primaryBrown.withValues(alpha: 0.2),
                 ),
               ),
-              child: Icon(
+              child: AppIcon(
                 widget.icon,
                 size: 16,
                 color: AppColors.primaryBrown,
@@ -1248,8 +1227,8 @@ class _DismissButtonState extends State<_DismissButton> {
               shape: BoxShape.circle,
               color: AppColors.muted.withValues(alpha: 0.06),
             ),
-            child: Icon(
-              Icons.close_rounded,
+            child: AppIcon(
+              AppIcons.close,
               size: 15,
               color: AppColors.muted.withValues(alpha: 0.5),
             ),
@@ -1305,7 +1284,7 @@ class _DismissOptionState extends State<_DismissOption> {
             ),
             child: Row(
               children: [
-                Icon(widget.icon, size: 18, color: AppColors.muted),
+                AppIcon(widget.icon, size: 18, color: AppColors.muted),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Text(
@@ -1317,8 +1296,8 @@ class _DismissOptionState extends State<_DismissOption> {
                     ),
                   ),
                 ),
-                Icon(
-                  Icons.chevron_right_rounded,
+                AppIcon(
+                  AppIcons.chevronRight,
                   size: 18,
                   color: AppColors.muted.withValues(alpha: 0.3),
                 ),
@@ -1415,8 +1394,8 @@ class _EmptyMissedRequests extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.success.withValues(alpha: 0.10),
               ),
-              child: Icon(
-                Icons.check_circle_outline_rounded,
+              child: AppIcon(
+                AppIcons.checkCircleOutline,
                 size: 36,
                 color: AppColors.success.withValues(alpha: 0.55),
               ),
@@ -1457,8 +1436,8 @@ class _ErrorState extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.errorRed.withValues(alpha: 0.08),
               ),
-              child: Icon(
-                Icons.cloud_off_rounded,
+              child: AppIcon(
+                AppIcons.cloudOff,
                 size: 32,
                 color: AppColors.errorRed.withValues(alpha: 0.6),
               ),

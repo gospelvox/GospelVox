@@ -13,6 +13,7 @@ import 'package:gospel_vox/features/admin/settings/bloc/coin_packs_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/coin_packs_state.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 import 'package:gospel_vox/features/admin/settings/widgets/pack_edit_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class CoinPacksTab extends StatefulWidget {
   const CoinPacksTab({super.key});
@@ -208,7 +209,7 @@ class _AddButtonState extends State<_AddButton> {
           child: Row(
             mainAxisAlignment: MainAxisAlignment.center,
             children: [
-              const Icon(Icons.add, size: 18, color: AdminColors.textBody),
+              const AppIcon(AppIcons.add, size: 18, color: AdminColors.textBody),
               const SizedBox(width: 8),
               Text('Add New Pack',
                   style: GoogleFonts.inter(

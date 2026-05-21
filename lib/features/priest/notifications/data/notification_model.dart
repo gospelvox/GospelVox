@@ -8,6 +8,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
 
@@ -126,74 +127,74 @@ class NotificationModel {
   IconData get icon {
     switch (type) {
       case 'session_request':
-        return Icons.chat_bubble_outline_rounded;
+        return AppIcons.chatOutline;
       case 'session_ended':
-        return Icons.access_time_rounded;
+        return AppIcons.clock;
       case 'application_approved':
-        return Icons.check_circle_outline_rounded;
+        return AppIcons.checkCircleOutline;
       case 'application_rejected':
-        return Icons.cancel_outlined;
+        return AppIcons.cancel;
       case 'account_activated':
-        return Icons.verified_outlined;
+        return AppIcons.badge;
       case 'account_suspended':
-        return Icons.block_outlined;
+        return AppIcons.block;
       case 'account_reactivated':
-        return Icons.refresh_rounded;
+        return AppIcons.refresh;
       case 'withdrawal_processed':
-        return Icons.account_balance_outlined;
+        return AppIcons.bank;
       case 'withdrawal_sent':
-        return Icons.payments_outlined;
+        return AppIcons.payments;
       case 'follow_up':
       case 'priest_message':
-        return Icons.message_outlined;
+        return AppIcons.chatOutline;
       case 'missed_request':
-        return Icons.phone_missed_rounded;
+        return AppIcons.phoneMissed;
       case 'review_milestone':
-        return Icons.star_rounded;
+        return AppIcons.starFilled;
       case 'priest_reply':
-        return Icons.reply_rounded;
+        return AppIcons.reply;
       case 'report_resolved':
-        return Icons.shield_outlined;
+        return AppIcons.shield;
       // Bible session lifecycle. Each icon is paired with its
       // life-cycle meaning rather than its audience — that way the
       // inbox reads consistently whether a priest or user is
       // viewing the same notification type.
       case 'bible_session_registered':
-        return Icons.how_to_reg_rounded;
+        return AppIcons.howToReg;
       case 'bible_session_link_added':
-        return Icons.link_rounded;
+        return AppIcons.link;
       case 'bible_session_paid':
-        return Icons.payments_rounded;
+        return AppIcons.payments;
       case 'bible_session_payment_received':
-        return Icons.payments_rounded;
+        return AppIcons.payments;
       case 'bible_session_completed':
       case 'bible_session_auto_completed':
-        return Icons.check_circle_rounded;
+        return AppIcons.checkCircle;
       case 'bible_session_live':
-        return Icons.play_circle_rounded;
+        return AppIcons.play;
       case 'bible_session_cancelled':
-        return Icons.cancel_rounded;
+        return AppIcons.cancel;
       case 'bible_session_reminder_24h':
-        return Icons.event_rounded;
+        return AppIcons.event;
       case 'bible_session_reminder_1h':
-        return Icons.schedule_rounded;
+        return AppIcons.clock;
       case 'bible_session_pay_reminder':
         return Icons.payment_rounded;
       case 'bible_session_starting':
       case 'bible_session_starting_priest':
-        return Icons.play_circle_rounded;
+        return AppIcons.play;
       case 'bible_session_link_reminder':
-        return Icons.warning_amber_rounded;
+        return AppIcons.warning;
       case 'bible_session_link_urgent':
-        return Icons.error_outline_rounded;
+        return AppIcons.error;
       case 'bible_session_golive':
-        return Icons.mic_rounded;
+        return AppIcons.mic;
       case 'bible_session_first_registration':
-        return Icons.celebration_rounded;
+        return AppIcons.celebration;
       case 'bible_session_full':
-        return Icons.group_rounded;
+        return AppIcons.group;
       default:
-        return Icons.notifications_none_rounded;
+        return AppIcons.bellOutline;
     }
   }
 

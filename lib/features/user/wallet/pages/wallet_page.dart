@@ -16,6 +16,7 @@ import 'package:gospel_vox/features/user/wallet/bloc/wallet_state.dart';
 import 'package:gospel_vox/features/user/wallet/widgets/payment_failure_sheet.dart';
 import 'package:gospel_vox/features/user/wallet/widgets/payment_processing_overlay.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class WalletPage extends StatefulWidget {
   const WalletPage({super.key});
@@ -537,8 +538,8 @@ class _WalletPageState extends State<WalletPage> {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.error_outline_rounded,
+          AppIcon(
+            AppIcons.error,
             size: 44,
             color: AppColors.errorRed,
           ),
@@ -684,8 +685,8 @@ class _WalletPageState extends State<WalletPage> {
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
-            Icons.auto_awesome_rounded,
+          AppIcon(
+            AppIcons.magic,
             size: 12,
             color: AppColors.muted.withValues(alpha: 0.55),
           ),
@@ -859,8 +860,8 @@ class _HeroReceiveSection extends StatelessWidget {
                     mainAxisAlignment: MainAxisAlignment.center,
                     mainAxisSize: MainAxisSize.min,
                     children: [
-                      Icon(
-                        Icons.bolt_rounded,
+                      AppIcon(
+                        AppIcons.bolt,
                         size: 14,
                         color: AppColors.amberGold,
                       ),
@@ -985,8 +986,8 @@ class _WelcomeOfferCardState extends State<_WelcomeOfferCard> {
                         ),
                       ],
                     ),
-                    child: const Icon(
-                      Icons.card_giftcard_rounded,
+                    child: const AppIcon(
+                      AppIcons.gift,
                       size: 18,
                       color: Colors.white,
                     ),
@@ -1089,8 +1090,8 @@ class _WelcomeOfferCardState extends State<_WelcomeOfferCard> {
                         ),
                       ),
                       const SizedBox(width: 6),
-                      const Icon(
-                        Icons.arrow_forward_rounded,
+                      const AppIcon(
+                        AppIcons.arrowRight,
                         size: 16,
                         color: Colors.white,
                       ),

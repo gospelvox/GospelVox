@@ -38,14 +38,15 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/reviews/widgets/review_reply_sheet.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PriestReviewsPage extends StatefulWidget {
   const PriestReviewsPage({super.key});
@@ -216,35 +217,10 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leadingWidth: 56,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 12),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 12),
         child: Align(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (context.canPop()) context.pop();
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                    color: Colors.black.withValues(alpha: 0.05),
-                  ),
-                ],
-              ),
-              child: const Icon(
-                Icons.arrow_back_ios_new,
-                size: 16,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+          child: AppBackButton(),
         ),
       ),
       title: Text(
@@ -266,8 +242,8 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.cloud_off_rounded,
+            AppIcon(
+              AppIcons.cloudOff,
               size: 40,
               color: AppColors.muted.withValues(alpha: 0.6),
             ),
@@ -488,8 +464,8 @@ class _DistributionBar extends StatelessWidget {
           ),
         ),
         const SizedBox(width: 4),
-        Icon(
-          Icons.star_rounded,
+        AppIcon(
+          AppIcons.starFilled,
           size: 11,
           color: AppColors.amberGold,
         ),
@@ -547,13 +523,13 @@ class _RatingStarsRow extends StatelessWidget {
         final position = i + 1;
         final IconData icon;
         if (rating >= position) {
-          icon = Icons.star_rounded;
+          icon = AppIcons.starFilled;
         } else if (rating >= position - 0.5) {
-          icon = Icons.star_half_rounded;
+          icon = AppIcons.starHalf;
         } else {
-          icon = Icons.star_outline_rounded;
+          icon = AppIcons.starOutline;
         }
-        return Icon(
+        return AppIcon(
           icon,
           size: 14,
           color: AppColors.amberGold,
@@ -819,8 +795,8 @@ class _StarsCompact extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: List.generate(5, (i) {
         final filled = i < rating;
-        return Icon(
-          filled ? Icons.star_rounded : Icons.star_outline_rounded,
+        return AppIcon(
+          filled ? AppIcons.starFilled : AppIcons.starOutline,
           size: 13,
           color: filled
               ? AppColors.amberGold
@@ -900,8 +876,8 @@ class _ReplyCta extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            Icon(
-              Icons.reply_rounded,
+            AppIcon(
+              AppIcons.reply,
               size: 14,
               color: AppColors.primaryBrown,
             ),
@@ -945,8 +921,8 @@ class _ReplyBlock extends StatelessWidget {
         children: [
           Row(
             children: [
-              Icon(
-                Icons.reply_rounded,
+              AppIcon(
+                AppIcons.reply,
                 size: 13,
                 color: AppColors.primaryBrown,
               ),
@@ -1025,8 +1001,8 @@ class _EmptyState extends StatelessWidget {
                 shape: BoxShape.circle,
                 color: AppColors.amberGold.withValues(alpha: 0.12),
               ),
-              child: Icon(
-                Icons.star_outline_rounded,
+              child: AppIcon(
+                AppIcons.starOutline,
                 size: 36,
                 color: AppColors.amberGold,
               ),

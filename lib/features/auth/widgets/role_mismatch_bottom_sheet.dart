@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class RoleMismatchBottomSheet extends StatelessWidget {
   final String email;
@@ -76,8 +77,8 @@ class RoleMismatchBottomSheet extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: AppColors.amberGold.withValues(alpha: 0.1),
                   ),
-                  child: const Icon(
-                    Icons.swap_horiz_rounded,
+                  child: const AppIcon(
+                    AppIcons.swap,
                     size: 28,
                     color: AppColors.amberGold,
                   ),

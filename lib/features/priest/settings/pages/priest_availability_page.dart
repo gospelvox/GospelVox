@@ -20,10 +20,10 @@ import 'dart:async';
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
 
@@ -190,35 +190,10 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
       elevation: 0,
       surfaceTintColor: Colors.transparent,
       leadingWidth: 56,
-      leading: Padding(
-        padding: const EdgeInsets.only(left: 12),
+      leading: const Padding(
+        padding: EdgeInsets.only(left: 12),
         child: Align(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (context.canPop()) context.pop();
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                    color: Colors.black.withValues(alpha: 0.05),
-                  ),
-                ],
-              ),
-              child: Icon(
-                Icons.arrow_back_rounded,
-                size: 20,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+          child: AppBackButton(),
         ),
       ),
       title: Text(

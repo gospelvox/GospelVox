@@ -7,6 +7,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class WalletTransaction {
   final String id;
@@ -54,17 +55,17 @@ class WalletTransaction {
   IconData get icon {
     switch (type) {
       case 'session_charge':
-        return Icons.chat_bubble_outline_rounded;
+        return AppIcons.chatOutline;
       case 'bible_session_earning':
-        return Icons.menu_book_outlined;
+        return AppIcons.bible;
       case 'activation_fee':
-        return Icons.verified_outlined;
+        return AppIcons.badge;
       case 'withdrawal':
-        return Icons.account_balance_outlined;
+        return AppIcons.bank;
       case 'refund':
-        return Icons.replay_rounded;
+        return AppIcons.replay;
       default:
-        return Icons.receipt_outlined;
+        return AppIcons.receipt;
     }
   }
 

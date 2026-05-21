@@ -26,6 +26,7 @@ import 'package:gospel_vox/core/widgets/confirm_changes_sheet.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speaker_detail_cubit.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speakers_state.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 final NumberFormat _inr = NumberFormat.currency(
   locale: 'en_IN',
@@ -125,8 +126,8 @@ class _SpeakerDetailView extends StatelessWidget {
           }
           context.pop();
         },
-        child: Icon(
-          Icons.arrow_back,
+        child: AppIcon(
+          AppIcons.back,
           color: isBusy
               ? AdminColors.textLight
               : AdminColors.textPrimary,
@@ -216,19 +217,19 @@ class _DetailContent extends StatelessWidget {
             title: 'PERSONAL',
             items: [
               _DetailRow(
-                icon: Icons.mail_outline,
+                icon: AppIcons.mail,
                 label: 'Email',
                 value: speaker.email.isEmpty ? '—' : speaker.email,
               ),
               _DetailRow(
-                icon: Icons.phone_outlined,
+                icon: AppIcons.phone,
                 label: 'Phone',
                 value: speaker.phone.isEmpty
                     ? '—'
                     : '+91 ${speaker.phone}',
               ),
               _DetailRow(
-                icon: Icons.work_outline,
+                icon: AppIcons.briefcase,
                 label: 'Experience',
                 value: '${speaker.yearsOfExperience} years',
               ),
@@ -240,7 +241,7 @@ class _DetailContent extends StatelessWidget {
             title: 'MINISTRY',
             items: [
               _DetailRow(
-                icon: Icons.church_outlined,
+                icon: AppIcons.church,
                 label: 'Church',
                 value: speaker.churchName.isEmpty
                     ? '—'
@@ -248,13 +249,13 @@ class _DetailContent extends StatelessWidget {
               ),
               if (speaker.diocese.isNotEmpty)
                 _DetailRow(
-                  icon: Icons.map_outlined,
+                  icon: AppIcons.map,
                   label: 'Diocese',
                   value: speaker.diocese,
                 ),
               if (speaker.subDenomination.isNotEmpty)
                 _DetailRow(
-                  icon: Icons.category_outlined,
+                  icon: AppIcons.category,
                   label: 'Sub-denomination',
                   value: speaker.subDenomination,
                 ),
@@ -318,17 +319,17 @@ class _DetailContent extends StatelessWidget {
               title: 'WALLET',
               items: [
                 _DetailRow(
-                  icon: Icons.account_balance_wallet_outlined,
+                  icon: AppIcons.wallet,
                   label: 'Current Balance',
                   value: _inr.format(speaker.walletBalance),
                 ),
                 _DetailRow(
-                  icon: Icons.trending_up,
+                  icon: AppIcons.trendingUp,
                   label: 'Total Earned',
                   value: _inr.format(speaker.totalEarnings),
                 ),
                 _DetailRow(
-                  icon: Icons.toggle_on_outlined,
+                  icon: AppIcons.check,
                   label: 'Activated',
                   value: speaker.isActivated ? 'Yes' : 'No',
                 ),
@@ -419,8 +420,8 @@ class _ProfileHeader extends StatelessWidget {
               mainAxisAlignment: MainAxisAlignment.center,
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.location_on_outlined,
+                const AppIcon(
+                  AppIcons.location,
                   size: 14,
                   color: AdminColors.textLight,
                 ),
@@ -444,8 +445,8 @@ class _ProfileHeader extends StatelessWidget {
   }
 
   Widget _placeholder() => const Center(
-        child: Icon(
-          Icons.person,
+        child: AppIcon(
+          AppIcons.user,
           size: 36,
           color: AdminColors.textLight,
         ),
@@ -639,7 +640,7 @@ class _DetailRow extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, size: 18, color: AdminColors.textLight),
+        AppIcon(icon, size: 18, color: AdminColors.textLight),
         const SizedBox(width: 12),
         Text(
           label,
@@ -776,10 +777,10 @@ class _DocumentRow extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             hasDocument
-                ? Icons.description_outlined
-                : Icons.close_rounded,
+                ? AppIcons.document
+                : AppIcons.close,
             size: 20,
             color: hasDocument
                 ? AdminColors.textMuted
@@ -1382,8 +1383,8 @@ class _RejectReasonSheetState extends State<_RejectReasonSheet> {
                         shape: BoxShape.circle,
                         color: AdminColors.errorBg,
                       ),
-                      child: const Icon(
-                        Icons.block_rounded,
+                      child: const AppIcon(
+                        AppIcons.block,
                         size: 18,
                         color: AdminColors.error,
                       ),
@@ -1578,8 +1579,8 @@ class _ReasonChip extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (selected) ...[
-              const Icon(
-                Icons.check_rounded,
+              const AppIcon(
+                AppIcons.check,
                 size: 14,
                 color: AdminColors.error,
               ),
@@ -1733,8 +1734,8 @@ class _FullScreenError extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

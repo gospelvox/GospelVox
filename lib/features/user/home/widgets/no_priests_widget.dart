@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class NoPriestsWidget extends StatelessWidget {
   const NoPriestsWidget({super.key});
@@ -29,8 +30,8 @@ class NoPriestsWidget extends StatelessWidget {
                   shape: BoxShape.circle,
                   color: AppColors.primaryBrown.withValues(alpha: 0.06),
                 ),
-                child: Icon(
-                  Icons.people_outline_rounded,
+                child: AppIcon(
+                  AppIcons.users,
                   size: 36,
                   color: AppColors.primaryBrown.withValues(alpha: 0.4),
                 ),
@@ -93,8 +94,8 @@ class _InfoTipBlock extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.info_outline_rounded,
+          AppIcon(
+            AppIcons.info,
             size: 16,
             color: AppColors.primaryBrown.withValues(alpha: 0.7),
           ),

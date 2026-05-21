@@ -12,6 +12,7 @@ import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for success; AppColors has no proper "success-green" token.
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
@@ -148,11 +149,11 @@ class _SnackBarOverlayState extends State<_SnackBarOverlay>
   IconData get _icon {
     switch (widget.type) {
       case _SnackType.error:
-        return Icons.error_outline;
+        return AppIcons.error;
       case _SnackType.success:
-        return Icons.check_circle_outline;
+        return AppIcons.checkCircleOutline;
       case _SnackType.info:
-        return Icons.info_outline;
+        return AppIcons.info;
     }
   }
 
@@ -198,7 +199,7 @@ class _SnackBarOverlayState extends State<_SnackBarOverlay>
           ),
           child: Row(
             children: [
-              Icon(_icon, color: Colors.white, size: 22),
+              AppIcon(_icon, color: Colors.white, size: 22),
               const SizedBox(width: 12),
               Expanded(
                 child: Text(
@@ -218,7 +219,7 @@ class _SnackBarOverlayState extends State<_SnackBarOverlay>
                 behavior: HitTestBehavior.opaque,
                 child: const Padding(
                   padding: EdgeInsets.all(4),
-                  child: Icon(Icons.close, color: Colors.white, size: 20),
+                  child: AppIcon(AppIcons.close, color: Colors.white, size: 20),
                 ),
               ),
             ],

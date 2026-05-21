@@ -32,6 +32,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kOnlineGreen = Color(0xFF059669);
 
@@ -523,10 +524,10 @@ class _EmptyState extends StatelessWidget {
               shape: BoxShape.circle,
               color: AppColors.muted.withValues(alpha: 0.06),
             ),
-            child: Icon(
+            child: AppIcon(
               isChats
-                  ? Icons.chat_bubble_outline_rounded
-                  : Icons.phone_outlined,
+                  ? AppIcons.chatOutline
+                  : AppIcons.phone,
               size: 40,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),

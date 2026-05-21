@@ -27,8 +27,10 @@ import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class UserSettingsPage extends StatefulWidget {
   const UserSettingsPage({super.key});
@@ -210,12 +212,11 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
         backgroundColor: AppColors.background,
         elevation: 0,
         scrolledUnderElevation: 0,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back,
-            color: AppColors.deepDarkBrown,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 8),
+          child: Align(
+            child: AppBackButton(),
           ),
-          onPressed: () => context.pop(),
         ),
         title: Text(
           'Settings',
@@ -334,7 +335,7 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                       ),
                     ),
                     child: _DangerRow(
-                      icon: Icons.delete_outline_rounded,
+                      icon: AppIcons.delete,
                       title: 'Delete Account',
                       subtitle: 'Permanently delete your account and data',
                       onTap: _showDeleteAccountFlow,
@@ -354,7 +355,7 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                     child: Column(
                       children: [
                         _SettingsRow(
-                          icon: Icons.description_outlined,
+                          icon: AppIcons.document,
                           title: 'Terms of Service',
                           onTap: () {
                             AppSnackBar.info(
@@ -365,7 +366,7 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                         ),
                         const _RowDivider(),
                         _SettingsRow(
-                          icon: Icons.privacy_tip_outlined,
+                          icon: AppIcons.privacy,
                           title: 'Privacy Policy',
                           onTap: () {
                             AppSnackBar.info(
@@ -490,7 +491,7 @@ class _SettingsRow extends StatelessWidget {
                 color: AppColors.primaryBrown.withValues(alpha: 0.05),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(
+              child: AppIcon(
                 icon,
                 size: 18,
                 color: AppColors.primaryBrown.withValues(alpha: 0.6),
@@ -507,8 +508,8 @@ class _SettingsRow extends StatelessWidget {
                 ),
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),
@@ -548,8 +549,8 @@ class _DangerRow extends StatelessWidget {
                 color: AppColors.errorRed.withValues(alpha: 0.06),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: const Icon(
-                Icons.delete_outline_rounded,
+              child: const AppIcon(
+                AppIcons.delete,
                 size: 18,
                 color: AppColors.errorRed,
               ),
@@ -579,8 +580,8 @@ class _DangerRow extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),
@@ -625,8 +626,8 @@ class _MutedRow extends StatelessWidget {
               color: AppColors.muted.withValues(alpha: 0.08),
               borderRadius: BorderRadius.circular(10),
             ),
-            child: Icon(
-              Icons.notifications_off_outlined,
+            child: AppIcon(
+              AppIcons.bellOff,
               size: 18,
               color: AppColors.muted,
             ),
@@ -823,8 +824,8 @@ class _DeleteAccountSheetState extends State<_DeleteAccountSheet> {
                   shape: BoxShape.circle,
                   color: AppColors.errorRed.withValues(alpha: 0.08),
                 ),
-                child: const Icon(
-                  Icons.warning_amber_rounded,
+                child: const AppIcon(
+                  AppIcons.warning,
                   size: 28,
                   color: AppColors.errorRed,
                 ),

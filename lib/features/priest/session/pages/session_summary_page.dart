@@ -10,6 +10,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for the net-earnings emphasis. Local constant because
 // AppColors has no dedicated success-green token.
@@ -101,8 +102,8 @@ class _SessionSummaryPageState extends State<SessionSummaryPage>
                         shape: BoxShape.circle,
                         color: _kNetGreen.withValues(alpha: 0.1),
                       ),
-                      child: const Icon(
-                        Icons.check_rounded,
+                      child: const AppIcon(
+                        AppIcons.check,
                         size: 32,
                         color: _kNetGreen,
                       ),
@@ -136,28 +137,28 @@ class _SessionSummaryPageState extends State<SessionSummaryPage>
                   _SummaryCard(
                     rows: [
                       _SummaryRow(
-                        icon: Icons.access_time_rounded,
+                        icon: AppIcons.clock,
                         label: 'Duration',
                         value: _formatDuration(s.durationMinutes),
                       ),
                       _SummaryRow(
-                        icon: Icons.speed_rounded,
+                        icon: AppIcons.speed,
                         label: 'Session Rate',
                         value: '${session.ratePerMinute} coins/min',
                       ),
                       _SummaryRow(
-                        icon: Icons.toll_rounded,
+                        icon: AppIcons.coins,
                         label: 'Gross Earnings',
                         value: '$gross coins',
                       ),
                       _SummaryRow(
-                        icon: Icons.percent_rounded,
+                        icon: AppIcons.percent,
                         label: 'Commission ($commissionPercent%)',
                         value: '-$commission coins',
                         valueColor: AppColors.errorRed,
                       ),
                       _SummaryRow(
-                        icon: Icons.savings_outlined,
+                        icon: AppIcons.savings,
                         label: 'Net Earnings',
                         value: '$net coins',
                         valueColor: _kNetGreen,
@@ -251,7 +252,7 @@ class _SummaryRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 20,
             color: emphasized
@@ -308,8 +309,8 @@ class _WalletAddedBanner extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(
-            Icons.account_balance_wallet_rounded,
+          AppIcon(
+            AppIcons.wallet,
             size: 20,
             color: _kNetGreen,
           ),

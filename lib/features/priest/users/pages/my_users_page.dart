@@ -31,8 +31,10 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PriestMyUsersPage extends StatefulWidget {
   const PriestMyUsersPage({super.key});
@@ -103,32 +105,9 @@ class _PriestMyUsersPageState extends State<PriestMyUsersPage> {
         surfaceTintColor: Colors.transparent,
         scrolledUnderElevation: 0,
         leadingWidth: 60,
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 16),
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () => context.pop(),
-            child: Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    color: Colors.black.withValues(alpha: 0.04),
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                  ),
-                ],
-              ),
-              child: Icon(
-                Icons.arrow_back_ios_new,
-                size: 16,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 16),
+          child: AppBackButton(),
         ),
         title: Text(
           'My Users',
@@ -164,8 +143,8 @@ class _PriestMyUsersPageState extends State<PriestMyUsersPage> {
                   shape: BoxShape.circle,
                   color: AppColors.muted.withValues(alpha: 0.06),
                 ),
-                child: Icon(
-                  Icons.people_outline_rounded,
+                child: AppIcon(
+                  AppIcons.users,
                   size: 40,
                   color: AppColors.muted.withValues(alpha: 0.3),
                 ),

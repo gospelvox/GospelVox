@@ -27,6 +27,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // One per-hint bool in SharedPreferences, prefixed so we can sweep
 // all read-state entries later (e.g. on sign-out) without touching
@@ -250,8 +251,8 @@ class _InfoHintState extends State<InfoHint>
                   shape: BoxShape.circle,
                   color: pillBg,
                 ),
-                child: Icon(
-                  Icons.info_rounded,
+                child: AppIcon(
+                  AppIcons.info,
                   size: 14,
                   color: AppColors.primaryBrown
                       .withValues(alpha: iconAlpha),

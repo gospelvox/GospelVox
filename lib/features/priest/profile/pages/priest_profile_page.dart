@@ -31,7 +31,9 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Source of truth for chip options. Kept here (rather than imported from
 // the registration step) because that file is in a "do not touch" area
@@ -249,13 +251,13 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
               ),
               const SizedBox(height: 18),
               _PhotoSourceRow(
-                icon: Icons.photo_camera_outlined,
+                icon: AppIcons.camera,
                 label: 'Take a photo',
                 onTap: () => Navigator.of(sheetCtx).pop(ImageSource.camera),
               ),
               const SizedBox(height: 6),
               _PhotoSourceRow(
-                icon: Icons.photo_library_outlined,
+                icon: AppIcons.gallery,
                 label: 'Choose from library',
                 onTap: () => Navigator.of(sheetCtx).pop(ImageSource.gallery),
               ),
@@ -397,36 +399,32 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       leading: Padding(
         padding: const EdgeInsets.only(left: 12),
         child: Align(
-          child: GestureDetector(
-            behavior: HitTestBehavior.opaque,
-            onTap: () {
-              if (_isEditing) {
-                _cancelEdit();
-              } else if (context.canPop()) {
-                context.pop();
-              }
-            },
-            child: Container(
-              width: 36,
-              height: 36,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.surfaceWhite,
-                boxShadow: [
-                  BoxShadow(
-                    blurRadius: 6,
-                    offset: const Offset(0, 2),
-                    color: Colors.black.withValues(alpha: 0.05),
+          child: _isEditing
+              ? GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: _cancelEdit,
+                  child: Container(
+                    width: 36,
+                    height: 36,
+                    decoration: BoxDecoration(
+                      shape: BoxShape.circle,
+                      color: AppColors.surfaceWhite,
+                      boxShadow: [
+                        BoxShadow(
+                          blurRadius: 6,
+                          offset: const Offset(0, 2),
+                          color: Colors.black.withValues(alpha: 0.05),
+                        ),
+                      ],
+                    ),
+                    child: AppIcon(
+                      AppIcons.close,
+                      size: 18,
+                      color: AppColors.deepDarkBrown,
+                    ),
                   ),
-                ],
-              ),
-              child: Icon(
-                _isEditing ? Icons.close_rounded : Icons.arrow_back_ios_new,
-                size: _isEditing ? 18 : 16,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-          ),
+                )
+              : const AppBackButton(),
         ),
       ),
       title: Text(
@@ -529,8 +527,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
               shape: BoxShape.circle,
               color: AppColors.primaryBrown,
             ),
-            child: const Icon(
-              Icons.edit_rounded,
+            child: const AppIcon(
+              AppIcons.edit,
               size: 14,
               color: Colors.white,
             ),
@@ -625,8 +623,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                           ),
                         ],
                       ),
-                      child: const Icon(
-                        Icons.camera_alt_rounded,
+                      child: const AppIcon(
+                        AppIcons.camera,
                         size: 16,
                         color: Colors.white,
                       ),
@@ -656,8 +654,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.photo_camera_outlined,
+                  AppIcon(
+                    AppIcons.camera,
                     size: 14,
                     color: AppColors.primaryBrown,
                   ),
@@ -812,8 +810,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
-                  Icon(
-                    Icons.star_rounded,
+                  AppIcon(
+                    AppIcons.starFilled,
                     size: 15,
                     color: AppColors.amberGold,
                   ),
@@ -830,8 +828,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                       ),
                     ),
                   ),
-                  Icon(
-                    Icons.chevron_right_rounded,
+                  AppIcon(
+                    AppIcons.chevronRight,
                     size: 14,
                     color: AppColors.muted.withValues(alpha: 0.6),
                   ),
@@ -857,19 +855,19 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       return Column(
         children: [
           _DisabledLockedField(
-            icon: Icons.person_outline_rounded,
+            icon: AppIcons.userOutline,
             label: 'Full Name',
             value: _fullName,
           ),
           const SizedBox(height: 10),
           _DisabledLockedField(
-            icon: Icons.mail_outline_rounded,
+            icon: AppIcons.mail,
             label: 'Email',
             value: _email,
           ),
           const SizedBox(height: 10),
           _DisabledLockedField(
-            icon: Icons.church_outlined,
+            icon: AppIcons.church,
             label: 'Denomination',
             value: _denomination,
           ),
@@ -880,19 +878,19 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     return _ProfileGroup(
       children: [
         _ProfileField(
-          icon: Icons.person_outline_rounded,
+          icon: AppIcons.userOutline,
           label: 'Full Name',
           value: _fullName,
           isLocked: true,
         ),
         _ProfileField(
-          icon: Icons.mail_outline_rounded,
+          icon: AppIcons.mail,
           label: 'Email',
           value: _email,
           isLocked: true,
         ),
         _ProfileField(
-          icon: Icons.church_outlined,
+          icon: AppIcons.church,
           label: 'Denomination',
           value: _denomination,
           isLocked: true,
@@ -909,7 +907,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         children: [
           _FormField(
             label: 'Phone',
-            icon: Icons.phone_outlined,
+            icon: AppIcons.phone,
             controller: _phoneController,
             hint: 'e.g. +91 98765 43210',
             keyboardType: TextInputType.phone,
@@ -929,7 +927,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
           const SizedBox(height: 14),
           _FormField(
             label: 'Diocese',
-            icon: Icons.map_outlined,
+            icon: AppIcons.map,
             controller: _dioceseController,
             hint: 'Your diocese',
             inputFormatters: [LengthLimitingTextInputFormatter(80)],
@@ -937,7 +935,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
           const SizedBox(height: 14),
           _FormField(
             label: 'Location',
-            icon: Icons.location_on_outlined,
+            icon: AppIcons.location,
             controller: _locationController,
             hint: 'City, State',
             inputFormatters: [LengthLimitingTextInputFormatter(80)],
@@ -945,7 +943,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
           const SizedBox(height: 14),
           _FormField(
             label: 'Years of Experience',
-            icon: Icons.work_outline_rounded,
+            icon: AppIcons.briefcase,
             controller: _experienceController,
             hint: 'e.g. 12',
             keyboardType: TextInputType.number,
@@ -961,7 +959,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     return _ProfileGroup(
       children: [
         _ProfileField(
-          icon: Icons.phone_outlined,
+          icon: AppIcons.phone,
           label: 'Phone',
           value: _phone,
         ),
@@ -971,17 +969,17 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
           value: _churchName,
         ),
         _ProfileField(
-          icon: Icons.map_outlined,
+          icon: AppIcons.map,
           label: 'Diocese',
           value: _diocese,
         ),
         _ProfileField(
-          icon: Icons.location_on_outlined,
+          icon: AppIcons.location,
           label: 'Location',
           value: _location,
         ),
         _ProfileField(
-          icon: Icons.work_outline_rounded,
+          icon: AppIcons.briefcase,
           label: 'Experience',
           value:
               _yearsOfExperience > 0 ? '$_yearsOfExperience years' : '',
@@ -996,7 +994,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     if (_isEditing) {
       return _FormField(
         label: 'About your ministry',
-        icon: Icons.menu_book_outlined,
+        icon: AppIcons.bible,
         controller: _bioController,
         hint: 'Share your story, what brings you here, who you serve...',
         maxLines: 6,
@@ -1380,8 +1378,8 @@ class _EditPillButtonState extends State<_EditPillButton> {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                const Icon(
-                  Icons.edit_rounded,
+                const AppIcon(
+                  AppIcons.edit,
                   size: 14,
                   color: Colors.white,
                 ),
@@ -1555,7 +1553,7 @@ class _ProfileField extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 18,
             color: AppColors.muted.withValues(alpha: 0.55),
@@ -1591,8 +1589,8 @@ class _ProfileField extends StatelessWidget {
           ),
           if (isLocked) ...[
             const SizedBox(width: 8),
-            Icon(
-              Icons.lock_outline_rounded,
+            AppIcon(
+              AppIcons.lock,
               size: 14,
               color: AppColors.muted.withValues(alpha: 0.4),
             ),
@@ -1633,7 +1631,7 @@ class _DisabledLockedField extends StatelessWidget {
       ),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 18,
             color: AppColors.muted.withValues(alpha: 0.5),
@@ -1678,8 +1676,8 @@ class _DisabledLockedField extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Icon(
-                  Icons.lock_rounded,
+                AppIcon(
+                  AppIcons.lock,
                   size: 10,
                   color: AppColors.muted,
                 ),
@@ -1818,7 +1816,7 @@ class _FormFieldState extends State<_FormField> {
                       ? 2
                       : 12,
                 ),
-                child: Icon(widget.icon, size: 18, color: iconColor),
+                child: AppIcon(widget.icon, size: 18, color: iconColor),
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -1914,8 +1912,8 @@ class _ChoiceChipTile extends StatelessWidget {
           mainAxisSize: MainAxisSize.min,
           children: [
             if (selected) ...[
-              const Icon(
-                Icons.check_rounded,
+              const AppIcon(
+                AppIcons.check,
                 size: 14,
                 color: Colors.white,
               ),
@@ -1946,8 +1944,8 @@ class _ChipEditHint extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(
-          Icons.touch_app_outlined,
+        AppIcon(
+          AppIcons.touch,
           size: 13,
           color: AppColors.muted.withValues(alpha: 0.7),
         ),
@@ -1980,8 +1978,8 @@ class _InfoTip extends StatelessWidget {
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Icon(
-            Icons.info_outline_rounded,
+          AppIcon(
+            AppIcons.info,
             size: 13,
             color: AppColors.muted.withValues(alpha: 0.7),
           ),
@@ -2032,7 +2030,7 @@ class _PhotoSourceRow extends StatelessWidget {
                 color: AppColors.primaryBrown.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(icon, size: 20, color: AppColors.primaryBrown),
+              child: AppIcon(icon, size: 20, color: AppColors.primaryBrown),
             ),
             const SizedBox(width: 14),
             Expanded(
@@ -2045,8 +2043,8 @@ class _PhotoSourceRow extends StatelessWidget {
                 ),
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.4),
             ),

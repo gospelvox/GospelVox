@@ -13,6 +13,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class PostSessionPage extends StatefulWidget {
   final SessionSummary summary;
@@ -138,8 +139,8 @@ class _PostSessionPageState extends State<PostSessionPage>
                         color:
                             AppColors.primaryBrown.withValues(alpha: 0.08),
                       ),
-                      child: Icon(
-                        Icons.check_rounded,
+                      child: AppIcon(
+                        AppIcons.check,
                         size: 32,
                         color: AppColors.primaryBrown,
                       ),
@@ -173,23 +174,23 @@ class _PostSessionPageState extends State<PostSessionPage>
                   _SummaryCard(
                     rows: [
                       _SummaryRow(
-                        icon: Icons.access_time_rounded,
+                        icon: AppIcons.clock,
                         label: 'Duration',
                         value: _formatDuration(s.durationMinutes),
                       ),
                       _SummaryRow(
-                        icon: Icons.toll_rounded,
+                        icon: AppIcons.coins,
                         label: 'Coins Spent',
                         value: '${s.totalCharged} coins',
                         valueColor: AppColors.errorRed,
                       ),
                       _SummaryRow(
-                        icon: Icons.speed_rounded,
+                        icon: AppIcons.speed,
                         label: 'Rate',
                         value: '${session.ratePerMinute} coins/min',
                       ),
                       _SummaryRow(
-                        icon: Icons.account_balance_wallet_outlined,
+                        icon: AppIcons.wallet,
                         label: 'Remaining Balance',
                         value: '${s.newBalance} coins',
                         valueColor: AppColors.primaryBrown,
@@ -331,7 +332,7 @@ class _SummaryRow extends StatelessWidget {
       padding: const EdgeInsets.symmetric(vertical: 14),
       child: Row(
         children: [
-          Icon(
+          AppIcon(
             icon,
             size: 20,
             color: AppColors.muted.withValues(alpha: 0.55),
@@ -390,10 +391,10 @@ class _StarRow extends StatelessWidget {
               scale: filled ? 1.05 : 1.0,
               duration: const Duration(milliseconds: 140),
               curve: Curves.easeOut,
-              child: Icon(
+              child: AppIcon(
                 filled
-                    ? Icons.star_rounded
-                    : Icons.star_outline_rounded,
+                    ? AppIcons.starFilled
+                    : AppIcons.starOutline,
                 size: 36,
                 color: filled
                     ? AppColors.amberGold

@@ -28,6 +28,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class MeTab extends StatefulWidget {
   const MeTab({super.key});
@@ -213,7 +214,7 @@ class _MeTabState extends State<MeTab> {
                       child: Column(
                         children: [
                           _MenuItem(
-                            icon: Icons.chat_outlined,
+                            icon: AppIcons.chats,
                             title: 'My Sessions',
                             subtitle:
                                 'Chat and call history with speakers',
@@ -221,28 +222,28 @@ class _MeTabState extends State<MeTab> {
                           ),
                           const _MenuDivider(),
                           _MenuItem(
-                            icon: Icons.account_balance_wallet_outlined,
+                            icon: AppIcons.wallet,
                             title: 'My Wallet',
                             subtitle: 'View balance and buy coins',
                             onTap: _openWallet,
                           ),
                           const _MenuDivider(),
                           _MenuItem(
-                            icon: Icons.settings_outlined,
+                            icon: AppIcons.settings,
                             title: 'Settings',
                             subtitle: 'Notifications, account, privacy',
                             onTap: () => context.push('/user/settings'),
                           ),
                           const _MenuDivider(),
                           _MenuItem(
-                            icon: Icons.help_outline_rounded,
+                            icon: AppIcons.help,
                             title: 'Help & Support',
                             subtitle: 'Email us at support@gospelvox.com',
                             onTap: _openSupportEmail,
                           ),
                           const _MenuDivider(),
                           _MenuItem(
-                            icon: Icons.info_outline_rounded,
+                            icon: AppIcons.info,
                             title: 'About Gospel Vox',
                             subtitle: 'Version, terms, privacy policy',
                             onTap: () => context.push('/user/about'),
@@ -378,8 +379,8 @@ class _ProfileHeader extends StatelessWidget {
                 ),
               ],
             ),
-            child: const Icon(
-              Icons.edit_outlined,
+            child: const AppIcon(
+              AppIcons.edit,
               size: 16,
               color: AppColors.primaryBrown,
             ),
@@ -424,7 +425,7 @@ class _MenuItem extends StatelessWidget {
                 color: AppColors.primaryBrown.withValues(alpha: 0.05),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(
+              child: AppIcon(
                 icon,
                 size: 18,
                 color: AppColors.primaryBrown.withValues(alpha: 0.6),
@@ -457,8 +458,8 @@ class _MenuItem extends StatelessWidget {
                 ],
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),
@@ -524,8 +525,8 @@ class _SignOutTile extends StatelessWidget {
             : Row(
                 mainAxisAlignment: MainAxisAlignment.center,
                 children: [
-                  Icon(
-                    Icons.logout_rounded,
+                  AppIcon(
+                    AppIcons.logout,
                     size: 18,
                     color: AppColors.errorRed.withValues(alpha: 0.7),
                   ),
@@ -583,8 +584,8 @@ class _SignOutSheet extends StatelessWidget {
                     shape: BoxShape.circle,
                     color: AppColors.errorRed.withValues(alpha: 0.06),
                   ),
-                  child: Icon(
-                    Icons.logout_rounded,
+                  child: AppIcon(
+                    AppIcons.logout,
                     size: 28,
                     color: AppColors.errorRed.withValues(alpha: 0.7),
                   ),

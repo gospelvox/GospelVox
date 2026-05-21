@@ -5,11 +5,12 @@
 // icon, so this page renders correctly even without bundled assets.
 
 import 'package:flutter/material.dart';
-import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
@@ -22,12 +23,11 @@ class AboutPage extends StatelessWidget {
         backgroundColor: AppColors.background,
         elevation: 0,
         scrolledUnderElevation: 0,
-        leading: IconButton(
-          icon: const Icon(
-            Icons.arrow_back,
-            color: AppColors.deepDarkBrown,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 8),
+          child: Align(
+            child: AppBackButton(),
           ),
-          onPressed: () => context.pop(),
         ),
         title: Text(
           'About',
@@ -71,8 +71,8 @@ class AboutPage extends StatelessWidget {
                     height: 80,
                     color: AppColors.primaryBrown,
                     alignment: Alignment.center,
-                    child: const Icon(
-                      Icons.church_rounded,
+                    child: const AppIcon(
+                      AppIcons.church,
                       size: 36,
                       color: Colors.white,
                     ),
@@ -132,21 +132,21 @@ class AboutPage extends StatelessWidget {
               child: Column(
                 children: [
                   _AboutRow(
-                    icon: Icons.description_outlined,
+                    icon: AppIcons.document,
                     title: 'Terms of Service',
                     onTap: () =>
                         AppSnackBar.info(context, 'Coming soon'),
                   ),
                   const _AboutDivider(),
                   _AboutRow(
-                    icon: Icons.privacy_tip_outlined,
+                    icon: AppIcons.privacy,
                     title: 'Privacy Policy',
                     onTap: () =>
                         AppSnackBar.info(context, 'Coming soon'),
                   ),
                   const _AboutDivider(),
                   _AboutRow(
-                    icon: Icons.email_outlined,
+                    icon: AppIcons.mail,
                     title: 'Contact Us',
                     onTap: () =>
                         AppSnackBar.info(context, 'Coming soon'),
@@ -198,7 +198,7 @@ class _AboutRow extends StatelessWidget {
                 color: AppColors.primaryBrown.withValues(alpha: 0.05),
                 borderRadius: BorderRadius.circular(10),
               ),
-              child: Icon(
+              child: AppIcon(
                 icon,
                 size: 18,
                 color: AppColors.primaryBrown.withValues(alpha: 0.6),
@@ -215,8 +215,8 @@ class _AboutRow extends StatelessWidget {
                 ),
               ),
             ),
-            Icon(
-              Icons.chevron_right_rounded,
+            AppIcon(
+              AppIcons.chevronRight,
               size: 20,
               color: AppColors.muted.withValues(alpha: 0.3),
             ),

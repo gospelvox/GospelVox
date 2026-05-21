@@ -21,6 +21,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speakers_cubit.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speakers_state.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class SpeakersListPage extends StatelessWidget {
   const SpeakersListPage({super.key});
@@ -152,8 +153,8 @@ class _SpeakersListViewState extends State<_SpeakersListView>
             context.go('/admin');
           }
         },
-        child: const Icon(
-          Icons.arrow_back,
+        child: const AppIcon(
+          AppIcons.back,
           color: AdminColors.textPrimary,
           size: 22,
         ),
@@ -438,8 +439,8 @@ class _SpeakerListCardState extends State<_SpeakerListCard> {
                   ],
                 ),
               ),
-              const Icon(
-                Icons.chevron_right,
+              const AppIcon(
+                AppIcons.chevronRight,
                 size: 20,
                 color: AdminColors.textLight,
               ),
@@ -621,21 +622,21 @@ class _EmptyState extends StatelessWidget {
   Widget build(BuildContext context) {
     final (icon, title, body) = switch (tabKey) {
       'pending' => (
-          Icons.inbox_outlined,
+          AppIcons.inbox,
           'No pending applications',
           'New applications will appear here',
         ),
       'active' => (
-          Icons.people_outline,
+          AppIcons.users,
           'No active speakers',
           'Approved speakers will appear here',
         ),
       'suspended' => (
-          Icons.block_outlined,
+          AppIcons.block,
           'No suspended speakers',
           'Suspended speakers will appear here',
         ),
-      _ => (Icons.search_off, 'Nothing here', ''),
+      _ => (AppIcons.search, 'Nothing here', ''),
     };
 
     return Center(
@@ -644,7 +645,7 @@ class _EmptyState extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               icon,
               size: 48,
               color: AdminColors.textLight.withValues(alpha: 0.4),
@@ -692,8 +693,8 @@ class _ErrorView extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            const Icon(
-              Icons.error_outline,
+            const AppIcon(
+              AppIcons.error,
               size: 48,
               color: AdminColors.error,
             ),

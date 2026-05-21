@@ -21,6 +21,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/bloc/bible_session_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/bible_session_state.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Live red — distinct from errorRed so a pulsing live badge reads as
 // urgency-of-attention rather than failure.
@@ -286,8 +287,8 @@ class _ErrorBody extends StatelessWidget {
       ),
       padding: const EdgeInsets.fromLTRB(32, 80, 32, 32),
       children: [
-        Icon(
-          Icons.error_outline_rounded,
+        AppIcon(
+          AppIcons.error,
           size: 44,
           color: AppColors.errorRed,
         ),
@@ -607,7 +608,7 @@ class _EmptyBibleSessions extends StatelessWidget {
   }
 
   IconData get _icon =>
-      tab == 'live' ? Icons.podcasts_rounded : Icons.menu_book_outlined;
+      tab == 'live' ? AppIcons.podcast : AppIcons.bible;
 
   @override
   Widget build(BuildContext context) {
@@ -617,7 +618,7 @@ class _EmptyBibleSessions extends StatelessWidget {
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Icon(
+            AppIcon(
               _icon,
               size: 56,
               color: AppColors.muted.withValues(alpha: 0.25),
@@ -923,13 +924,13 @@ class _BibleSessionCardState extends State<_BibleSessionCard> {
                 children: [
                   if (session.scheduledAt != null)
                     _MetaChip(
-                      icon: Icons.event_outlined,
+                      icon: AppIcons.event,
                       text:
                           "${_formatShortDate(session.scheduledAt!)} · "
                           "${session.formattedTime} IST",
                     ),
                   _MetaChip(
-                    icon: Icons.timer_outlined,
+                    icon: AppIcons.stopwatch,
                     text: session.formattedDuration,
                   ),
                 ],
@@ -1032,7 +1033,7 @@ class _MetaChip extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        Icon(
+        AppIcon(
           icon,
           size: 13,
           color: AppColors.muted.withValues(alpha: 0.5),

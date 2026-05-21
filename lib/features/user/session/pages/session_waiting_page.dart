@@ -20,6 +20,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/user/session/bloc/session_request_cubit.dart';
 import 'package:gospel_vox/features/user/session/bloc/session_request_state.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class SessionWaitingPage extends StatefulWidget {
   final String priestId;
@@ -334,10 +335,10 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          Icon(
+          AppIcon(
             isChat
-                ? Icons.chat_bubble_outline_rounded
-                : Icons.mic_none_rounded,
+                ? AppIcons.chatOutline
+                : AppIcons.mic,
             size: 16,
             color: AppColors.primaryBrown,
           ),
@@ -454,7 +455,7 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
 
   void _showDeclinedSheet(String priestName) {
     _showTerminalSheet(
-      icon: Icons.close_rounded,
+      icon: AppIcons.close,
       title: 'Request Declined',
       body: '$priestName is unavailable right now. Try another '
           'speaker or check back later.',
@@ -463,7 +464,7 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
 
   void _showExpiredSheet() {
     _showTerminalSheet(
-      icon: Icons.timer_off_outlined,
+      icon: AppIcons.timerOff,
       title: 'Request Expired',
       body: "The speaker didn't respond in time. Try again or "
           'choose another speaker.',
@@ -513,7 +514,7 @@ class _SessionWaitingPageState extends State<SessionWaitingPage>
                     shape: BoxShape.circle,
                     color: AppColors.muted.withValues(alpha: 0.08),
                   ),
-                  child: Icon(icon, size: 28, color: AppColors.muted),
+                  child: AppIcon(icon, size: 28, color: AppColors.muted),
                 ),
                 const SizedBox(height: 20),
                 Text(
