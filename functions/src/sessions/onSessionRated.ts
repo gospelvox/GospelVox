@@ -29,6 +29,13 @@ const REVIEW_MILESTONES: ReadonlyArray<number> = [
   1, 5, 10, 25, 50, 100, 250, 500,
 ];
 
+// Soft cap on the denormalized review array stored on priests/{uid}.
+// Reviews are also on the source sessions/{sid} doc — this array is
+// the public-read copy the user-side profile page renders. Bounded so
+// the priest doc stays well under the Firestore 1MB limit even with
+// long feedback + reply text.
+const PUBLIC_REVIEWS_CAP = 100;
+
 export const onSessionRated = onDocumentUpdated(
   {document: "sessions/{sessionId}", region: REGION},
   async (event) => {
@@ -105,9 +112,43 @@ export const onSessionRated = onDocumentUpdated(
         priestName =
           (priestData.fullName as string | undefined) ?? "Speaker";
 
+        // Denormalize this review into a public-read array on the
+        // priest doc so the user-side profile page can render reviews
+        // without reading the rules-restricted `sessions` collection.
+        // Newest-first so we can slice the head — a long-tail
+        // simulator priest would otherwise blow past Firestore's 1MB
+        // doc limit.
+        const existingReviews =
+          (priestData.recentReviews as Array<Record<string, unknown>>) ?? [];
+        // Strip the entry for this sessionId if one already exists —
+        // shouldn't happen (onSessionRated only fires on the FIRST
+        // rating) but guards against snapshot replay double-inserts.
+        const withoutThis = existingReviews.filter(
+          (r) => r.sessionId !== sessionId
+        );
+        const feedback =
+          ((after.userFeedback as string | undefined) ?? "").trim();
+        const reviewEntry: Record<string, unknown> = {
+          sessionId,
+          userName: (after.userName as string | undefined) ?? "",
+          userPhotoUrl:
+            (after.userPhotoUrl as string | undefined) ?? "",
+          rating,
+          feedback,
+          // endedAt is the most useful "when" for review ordering —
+          // falls back to createdAt if endedAt didn't land for some
+          // reason (cancelled sessions don't reach this CF anyway).
+          endedAt: (after.endedAt as admin.firestore.Timestamp | null) ?? null,
+        };
+        const updatedReviews = [reviewEntry, ...withoutThis].slice(
+          0,
+          PUBLIC_REVIEWS_CAP
+        );
+
         const priestUpdate: Record<string, unknown> = {
           rating: newAvg,
           reviewCount: newCount,
+          recentReviews: updatedReviews,
         };
 
         // Pick the largest milestone the new count has just crossed

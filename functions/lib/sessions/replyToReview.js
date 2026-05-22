@@ -84,6 +84,44 @@ exports.replyToReview = (0, https_1.onCall)({ region: constants_1.REGION }, asyn
         reply.createdAt = now;
     }
     await sessionRef.update({ priestReply: reply });
+    // Mirror the reply onto the denormalized review entry on the
+    // priest doc so the user-side profile page sees the reply (the
+    // public copy is the only one rules let other users read).
+    // Best-effort: if the priest doc has no array yet (older review
+    // pre-deploy), we just skip — the source-of-truth session doc
+    // still has the reply.
+    try {
+        const priestRef = db.doc(`priests/${priestUid}`);
+        await db.runTransaction(async (tx) => {
+            var _a, _b;
+            const snap = await tx.get(priestRef);
+            if (!snap.exists)
+                return;
+            const data = (_a = snap.data()) !== null && _a !== void 0 ? _a : {};
+            const reviews = (_b = data.recentReviews) !== null && _b !== void 0 ? _b : [];
+            if (reviews.length === 0)
+                return;
+            let touched = false;
+            const updated = reviews.map((r) => {
+                if (r.sessionId === sessionId) {
+                    touched = true;
+                    return Object.assign(Object.assign({}, r), { priestReply: text, 
+                        // ISO string instead of serverTimestamp() — Firestore
+                        // forbids server sentinels inside an array element. The
+                        // exact priestReplyAt is rarely used by the UI; the
+                        // canonical timestamp lives on the session doc.
+                        priestReplyAt: new Date().toISOString() });
+                }
+                return r;
+            });
+            if (touched) {
+                tx.update(priestRef, { recentReviews: updated });
+            }
+        });
+    }
+    catch (err) {
+        console.error(`[replyToReview] Mirror to priest doc failed for ${sessionId}:`, err);
+    }
     // Inbox + push only on the FIRST publish. Edits shouldn't re-ping
     // the user — that's the standard professional-app behaviour and
     // matches what the product confirmed.

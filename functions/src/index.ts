@@ -25,6 +25,8 @@ export {sendPriestMessage} from "./sessions/sendPriestMessage";
 export {onSessionTerminal} from "./sessions/onSessionTerminal";
 export {onSessionRated} from "./sessions/onSessionRated";
 export {replyToReview} from "./sessions/replyToReview";
+export {backfillPriestReviews} from "./sessions/backfillPriestReviews";
+export {getPublicPriestReviews} from "./sessions/getPublicPriestReviews";
 
 // ═══ Admin ═══
 export {approveRejectPriest} from "./admin/approveRejectPriest";

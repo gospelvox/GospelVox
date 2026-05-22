@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendNotification = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.onReportResolved = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.sendNotification = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.onReportResolved = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -42,6 +42,10 @@ var onSessionRated_1 = require("./sessions/onSessionRated");
 Object.defineProperty(exports, "onSessionRated", { enumerable: true, get: function () { return onSessionRated_1.onSessionRated; } });
 var replyToReview_1 = require("./sessions/replyToReview");
 Object.defineProperty(exports, "replyToReview", { enumerable: true, get: function () { return replyToReview_1.replyToReview; } });
+var backfillPriestReviews_1 = require("./sessions/backfillPriestReviews");
+Object.defineProperty(exports, "backfillPriestReviews", { enumerable: true, get: function () { return backfillPriestReviews_1.backfillPriestReviews; } });
+var getPublicPriestReviews_1 = require("./sessions/getPublicPriestReviews");
+Object.defineProperty(exports, "getPublicPriestReviews", { enumerable: true, get: function () { return getPublicPriestReviews_1.getPublicPriestReviews; } });
 // ═══ Admin ═══
 var approveRejectPriest_1 = require("./admin/approveRejectPriest");
 Object.defineProperty(exports, "approveRejectPriest", { enumerable: true, get: function () { return approveRejectPriest_1.approveRejectPriest; } });
