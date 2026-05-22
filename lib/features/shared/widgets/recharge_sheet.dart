@@ -71,6 +71,17 @@ class RechargeSheet extends StatefulWidget {
       backgroundColor: Colors.transparent,
       isScrollControlled: true,
       barrierColor: Colors.black.withValues(alpha: 0.5),
+      // Snappier enter/exit than the Material default (250/200 ms).
+      // 180 ms enter + decelerate curve reads as immediate without
+      // the slow "creeping up" feel the stock animation has — paired
+      // with the pre-warmed pack cache below, the user experiences
+      // the sheet as instant content from the moment they tap Call.
+      sheetAnimationStyle: AnimationStyle(
+        duration: const Duration(milliseconds: 180),
+        reverseDuration: const Duration(milliseconds: 150),
+        curve: Curves.easeOutCubic,
+        reverseCurve: Curves.easeInCubic,
+      ),
       constraints: BoxConstraints(
         // 0.88 leaves a visible strip of the underlying screen at
         // the top so the sheet reads as a sheet (not a full page).
@@ -117,6 +128,19 @@ class _RechargeSheetState extends State<RechargeSheet> {
     _razorpay.onSuccess = _onPaySuccess;
     _razorpay.onFailure = _onPayFailure;
     _razorpay.onWallet = (_) {};
+
+    // Warm-cache fast-path. If the pack list was fetched recently
+    // (within the repository's TTL), render the sheet with content on
+    // the very first frame — no shimmer, no perceived lag. The
+    // network refresh still kicks off below so the cache stays fresh.
+    final cached = _wallet.getCachedCoinPacks();
+    if (cached != null && cached.isNotEmpty) {
+      final display = _orderedDisplayPacks(cached);
+      final popular = display.where((p) => p.isPopular).firstOrNull;
+      _packs = cached;
+      _selected = popular ?? (display.isNotEmpty ? display.first : null);
+      _loading = false;
+    }
     _loadPacks();
   }
 
@@ -130,15 +154,31 @@ class _RechargeSheetState extends State<RechargeSheet> {
     try {
       final packs = await _wallet.getCoinPacks();
       if (!mounted) return;
+      // If the cached-path already populated the sheet AND the new
+      // result is byte-identical (same length / ids), skip the
+      // setState — repainting just to overwrite identical data jolts
+      // the visual state for no user-visible reason.
+      if (_packs.length == packs.length &&
+          _packs.isNotEmpty &&
+          _packs.every((p) => packs.any((q) => q.id == p.id))) {
+        return;
+      }
       final display = _orderedDisplayPacks(packs);
       final popular = display.where((p) => p.isPopular).firstOrNull;
       setState(() {
         _packs = packs;
-        _selected = popular ?? (display.isNotEmpty ? display.first : null);
+        // Preserve the user's selection if they already picked one
+        // before the refresh landed.
+        _selected = _selected ??
+            (popular ?? (display.isNotEmpty ? display.first : null));
         _loading = false;
+        _error = null;
       });
     } catch (_) {
       if (!mounted) return;
+      // Don't blow away content if the cached path already filled the
+      // sheet — keep showing the (slightly stale) cached packs.
+      if (_packs.isNotEmpty) return;
       setState(() {
         _error = "Couldn't load coin packs. Check connection.";
         _loading = false;

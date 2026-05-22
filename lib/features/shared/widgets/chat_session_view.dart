@@ -1004,6 +1004,7 @@ class _MessageList extends StatelessWidget {
           showTimestamp: bubble.showTimestamp,
           isBurstContinuation: bubble.isBurstContinuation,
           currentUid: currentUid,
+          isUserSide: isUserSide,
           onReact: onReact,
         );
         // Eligible for swipe-to-reply: current session, not a
@@ -1153,6 +1154,11 @@ class _ChatBubble extends StatelessWidget {
   // Threaded through so the in-bubble reply preview can label the
   // quoted sender as "You" vs their actual name.
   final String currentUid;
+  // True when this bubble is being rendered for the USER (listener
+  // side). Drives the "Free message" tag visibility — only shown on
+  // the priest side, since on the user side a free message is just
+  // a regular incoming message in the conversation flow.
+  final bool isUserSide;
   final void Function(String messageId, String emoji) onReact;
 
   const _ChatBubble({
@@ -1163,6 +1169,7 @@ class _ChatBubble extends StatelessWidget {
     required this.showTimestamp,
     required this.isBurstContinuation,
     required this.currentUid,
+    required this.isUserSide,
     required this.onReact,
   });
 
@@ -1191,6 +1198,7 @@ class _ChatBubble extends StatelessWidget {
         showTimestamp: showTimestamp,
         isBurstContinuation: isBurstContinuation,
         currentUid: currentUid,
+        isUserSide: isUserSide,
         onReact: onReact,
       ),
     );
@@ -1204,6 +1212,9 @@ class _BubbleBody extends StatelessWidget {
   final bool showTimestamp;
   final bool isBurstContinuation;
   final String currentUid;
+  // See _ChatBubble.isUserSide — gates the "Free message" tag so
+  // it only renders on the priest's side of the conversation.
+  final bool isUserSide;
   final void Function(String messageId, String emoji) onReact;
 
   const _BubbleBody({
@@ -1213,6 +1224,7 @@ class _BubbleBody extends StatelessWidget {
     required this.showTimestamp,
     required this.isBurstContinuation,
     required this.currentUid,
+    required this.isUserSide,
     required this.onReact,
   });
 
@@ -1245,12 +1257,15 @@ class _BubbleBody extends StatelessWidget {
                 ),
               ),
             ),
-          // Subtle "Free message" tag above the FIRST bubble of a
-          // free-message burst, so users (and priest, for symmetry)
-          // can tell at a glance which messages came outside of a
-          // billable session. Drops below the timestamp row so the
-          // visual hierarchy is timestamp → tag → bubble.
-          if (message.isPriestMessage && !isBurstContinuation)
+          // "Free message" tag above the FIRST bubble of a free-
+          // message burst. Shown ONLY on the priest's side — for
+          // the priest it's a useful "billing context" signal (this
+          // bubble didn't earn coins). For the user it's noise: a
+          // free message is just an incoming message in the chat
+          // flow, no special treatment needed.
+          if (message.isPriestMessage &&
+              !isBurstContinuation &&
+              !isUserSide)
             Padding(
               padding: EdgeInsets.only(
                 bottom: 4,

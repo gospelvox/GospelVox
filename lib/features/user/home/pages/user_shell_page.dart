@@ -81,6 +81,16 @@ class _UserShellPageState extends State<UserShellPage>
   // calls and keeps the animation controller from being thrashed.
   ScrollDirection _lastDirection = ScrollDirection.idle;
 
+  // Keyboard-tracking state. When the on-screen keyboard opens, the
+  // Scaffold body shrinks to viewInsets.bottom — without this hook,
+  // the floating nav would sit just above the keyboard (instead of
+  // staying anchored to the screen edge), which looks like the nav
+  // teleported up onto the keyboard. We slide it off-screen via the
+  // existing hide-controller while the keyboard is up, and restore
+  // whatever pre-keyboard state it had when the keyboard closes.
+  bool _wasKeyboardOpen = false;
+  double _navStateBeforeKeyboard = 0.0;
+
   @override
   void initState() {
     super.initState();
@@ -117,6 +127,34 @@ class _UserShellPageState extends State<UserShellPage>
     super.dispose();
   }
 
+  // Fires whenever ancestor inherited widgets change — including
+  // MediaQuery, which updates when the on-screen keyboard opens or
+  // closes. We diff the keyboard state and drive the hide-controller
+  // accordingly so the floating nav slides off-screen with the same
+  // 220 ms animation it uses for the scroll-based hide.
+  @override
+  void didChangeDependencies() {
+    super.didChangeDependencies();
+    final keyboardOpen = MediaQuery.of(context).viewInsets.bottom > 0;
+    if (keyboardOpen == _wasKeyboardOpen) return;
+    _wasKeyboardOpen = keyboardOpen;
+
+    if (keyboardOpen) {
+      // Remember whatever scroll-state the nav was in so we can
+      // restore it on close (don't fight the scroll listener).
+      _navStateBeforeKeyboard = _hideController.value;
+      _hideController.forward();
+    } else {
+      // Restore: if the nav was hidden because of scroll, keep it
+      // hidden; otherwise reveal.
+      if (_navStateBeforeKeyboard >= 0.5) {
+        _hideController.forward();
+      } else {
+        _hideController.reverse();
+      }
+    }
+  }
+
   void _switchToTab(int index) {
     if (index == _currentIndex) return;
     if (index < 0 || index > _kMaxTabIndex) return;
@@ -130,7 +168,17 @@ class _UserShellPageState extends State<UserShellPage>
   // bubbling (so RefreshIndicator etc. still receive it). We do NOT
   // call setState here — the AnimationController drives a scoped
   // AnimatedBuilder, which is the only thing that rebuilds.
+  //
+  // IMPORTANT: only vertical scrolls count. A horizontal PageView
+  // swipe inside a tab (e.g., Sessions → Speakers ↔ History) fires
+  // the same UserScrollNotification with a `reverse`/`forward`
+  // direction, which would otherwise be mistaken for "user is
+  // scrolling content downward" and would yank the bottom nav off-
+  // screen mid-swipe. Filtering by axis keeps the hide-on-scroll
+  // behaviour scoped to vertical content scrolls only.
   bool _onScroll(UserScrollNotification n) {
+    if (n.metrics.axis != Axis.vertical) return false;
+
     final dir = n.direction;
     if (dir == _lastDirection) return false;
     _lastDirection = dir;

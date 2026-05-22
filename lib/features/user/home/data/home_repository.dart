@@ -130,4 +130,86 @@ class HomeRepository {
     final rates = await getSessionRates();
     return rates['chat'] ?? 10;
   }
+
+  // Recent written reviews for a priest, used by the profile page's
+  // Reviews preview. Single-`where` query (priestId == X) with
+  // client-side filtering + sorting to avoid a composite index — same
+  // pattern as PriestReviewsPage. Returns at most [limit] entries
+  // that have BOTH a rating and a non-empty written feedback (a
+  // star-only review is useless as a preview).
+  //
+  // Any failure (index missing, permission denied, timeout) returns
+  // an empty list so the Reviews section just hides on the profile
+  // instead of breaking the whole page.
+  Future<List<PriestReview>> getRecentReviews(
+    String priestId, {
+    int limit = 3,
+  }) async {
+    try {
+      final snap = await _db
+          .collection('sessions')
+          .where('priestId', isEqualTo: priestId)
+          .limit(80)
+          .get()
+          .timeout(const Duration(seconds: 8));
+
+      final rows = snap.docs
+          .map((d) => d.data())
+          .where((d) {
+            final rating = (d['userRating'] as num?)?.toDouble();
+            final feedback =
+                (d['userFeedback'] as String?)?.trim() ?? '';
+            return rating != null && feedback.isNotEmpty;
+          })
+          .toList();
+
+      rows.sort((a, b) {
+        final ta = a['endedAt'] is Timestamp
+            ? (a['endedAt'] as Timestamp).toDate()
+            : null;
+        final tb = b['endedAt'] is Timestamp
+            ? (b['endedAt'] as Timestamp).toDate()
+            : null;
+        if (ta == null && tb == null) return 0;
+        if (ta == null) return 1;
+        if (tb == null) return -1;
+        return tb.compareTo(ta);
+      });
+
+      return rows.take(limit).map((d) {
+        return PriestReview(
+          userName: (d['userName'] as String?) ?? '',
+          userPhotoUrl: (d['userPhotoUrl'] as String?) ?? '',
+          rating: (d['userRating'] as num?)?.toDouble() ?? 0,
+          feedback: (d['userFeedback'] as String?) ?? '',
+          at: d['endedAt'] is Timestamp
+              ? (d['endedAt'] as Timestamp).toDate()
+              : null,
+        );
+      }).toList();
+    } catch (_) {
+      return const [];
+    }
+  }
+}
+
+// Lightweight view-model for the profile-page review preview. Lives
+// here (not in shared/data/session_model.dart) because it's a strict
+// subset of SessionModel — only the fields the public preview card
+// renders — and adding it to SessionModel would force every other
+// reader to know about the projection.
+class PriestReview {
+  final String userName;
+  final String userPhotoUrl;
+  final double rating;
+  final String feedback;
+  final DateTime? at;
+
+  const PriestReview({
+    required this.userName,
+    required this.userPhotoUrl,
+    required this.rating,
+    required this.feedback,
+    required this.at,
+  });
 }

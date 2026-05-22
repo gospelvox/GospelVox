@@ -449,15 +449,57 @@ class SessionHistoryRepository {
       }),
     );
 
+    // Pre-sort each priest's sessions so we can grab the most-recent
+    // chat session (if any) for the last-message fetch below.
+    for (final priestId in priestIds) {
+      grouped[priestId]!.sort((a, b) {
+        final aTime = a.endedAt ?? a.createdAt ?? DateTime(2000);
+        final bTime = b.endedAt ?? b.createdAt ?? DateTime(2000);
+        return bTime.compareTo(aTime);
+      });
+    }
+
+    // Fan-out: fetch the last message for each priest's most-recent
+    // chat session. One small Firestore read per priest (orderBy +
+    // limit 1). Returns null for voice-only priests, or on any
+    // failure — the renderer falls back to "Last call" / "Last chat".
+    final lastMessages = await Future.wait(priestIds.map((priestId) async {
+      final chatSessions = grouped[priestId]!
+          .where((s) => s.type == 'chat' && s.id.isNotEmpty)
+          .toList();
+      if (chatSessions.isEmpty) return null;
+      final lastChat = chatSessions.first; // already sorted desc above
+
+      try {
+        final messagesSnap = await db
+            .collection('sessions/${lastChat.id}/messages')
+            .orderBy('createdAt', descending: true)
+            .limit(1)
+            .get()
+            .timeout(const Duration(seconds: 5));
+        if (messagesSnap.docs.isEmpty) return null;
+        final doc = messagesSnap.docs.first;
+        final data = doc.data();
+        final text = data['text'] as String? ?? '';
+        if (text.isEmpty) return null;
+        final senderId = data['senderId'] as String? ?? '';
+        final createdAt = data['createdAt'] is Timestamp
+            ? (data['createdAt'] as Timestamp).toDate()
+            : null;
+        return (
+          text: text,
+          fromUser: senderId == userId,
+          at: createdAt,
+        );
+      } catch (_) {
+        return null;
+      }
+    }));
+
     final groups = <PriestSessionGroup>[];
     for (var i = 0; i < priestIds.length; i++) {
       final priestId = priestIds[i];
-      final priestSessions = grouped[priestId]!
-        ..sort((a, b) {
-          final aTime = a.endedAt ?? a.createdAt ?? DateTime(2000);
-          final bTime = b.endedAt ?? b.createdAt ?? DateTime(2000);
-          return bTime.compareTo(aTime);
-        });
+      final priestSessions = grouped[priestId]!;
 
       final lastSession = priestSessions.first;
 
@@ -472,6 +514,8 @@ class SessionHistoryRepository {
           ? null
           : rated.fold<double>(0, (acc, s) => acc + s.userRating!) /
               rated.length;
+
+      final msg = lastMessages[i];
 
       groups.add(PriestSessionGroup(
         priestId: priestId,
@@ -489,18 +533,23 @@ class SessionHistoryRepository {
         lastSessionDuration: lastSession.durationMinutes,
         lastSessionType: lastSession.type,
         averageRating: avgRating,
+        lastMessageText: msg?.text,
+        lastMessageFromUser: msg?.fromUser,
+        lastMessageAt: msg?.at,
       ));
     }
 
     // Online (non-busy) priests float to the top — they're the ones
-    // the user can act on right now. Within each bucket, most-recent
-    // session first.
+    // the user can act on right now. Within each bucket, the most-
+    // recent ACTIVITY (last session OR last message) wins — that way
+    // a priest whose follow-up message arrived yesterday outranks
+    // one whose session was three days ago.
     groups.sort((a, b) {
       final aAvailable = a.isOnline && !a.isBusy;
       final bAvailable = b.isOnline && !b.isBusy;
       if (aAvailable != bAvailable) return aAvailable ? -1 : 1;
-      final aTime = a.lastSessionAt ?? DateTime(2000);
-      final bTime = b.lastSessionAt ?? DateTime(2000);
+      final aTime = a.lastActivityAt ?? DateTime(2000);
+      final bTime = b.lastActivityAt ?? DateTime(2000);
       return bTime.compareTo(aTime);
     });
 
@@ -532,19 +581,50 @@ class SessionHistoryRepository {
     // Skip delivered=false (muted at send time) — the chat-history
     // view filters those out too, so showing the row would be a
     // dead-end click.
+    // Two buckets:
+    //   • messageOnly  → priests with NO completed session (need a
+    //                    synthetic PriestSessionGroup built below).
+    //   • freeMsgEnrich → priests WITH a completed session — we track
+    //                    their latest free message so we can override
+    //                    the session-message preview when the free
+    //                    message is newer. Without this, a priest
+    //                    sending a follow-up free message after a
+    //                    session would look stale on the history row.
     final messageOnly = <String, _MessageOnlyMeta>{};
+    final freeMsgEnrich = <String, ({String text, DateTime? at})>{};
+
     for (final doc in messagesSnap.docs) {
       final data = doc.data();
       if (data['delivered'] == false) continue;
       final priestId = data['priestId'] as String? ?? '';
-      if (priestId.isEmpty || knownIds.contains(priestId)) continue;
+      if (priestId.isEmpty) continue;
 
       final createdAt = data['createdAt'] is Timestamp
           ? (data['createdAt'] as Timestamp).toDate()
           : null;
       final priestName = data['priestName'] as String? ?? '';
       final priestPhotoUrl = data['priestPhotoUrl'] as String? ?? '';
+      final messageText = (data['body'] as String? ??
+              data['message'] as String? ??
+              '')
+          .trim();
 
+      if (knownIds.contains(priestId)) {
+        // Priest already has a session — track their latest free
+        // message for preview-enrichment below.
+        if (messageText.isEmpty) continue;
+        final existing = freeMsgEnrich[priestId];
+        final isFresher = existing == null ||
+            (createdAt != null &&
+                (existing.at == null ||
+                    createdAt.isAfter(existing.at!)));
+        if (isFresher) {
+          freeMsgEnrich[priestId] = (text: messageText, at: createdAt);
+        }
+        continue;
+      }
+
+      // Priest has NO completed session — needs a synthetic group.
       final existing = messageOnly[priestId];
       final isFresher = existing == null ||
           (createdAt != null &&
@@ -555,11 +635,43 @@ class SessionHistoryRepository {
           priestName: priestName,
           priestPhotoUrl: priestPhotoUrl,
           lastAt: createdAt,
+          messageText: messageText,
         );
       }
     }
 
-    if (messageOnly.isEmpty) return sessionGroups;
+    // Enrich session-based groups whose newest free message is more
+    // recent than their session-message preview. The user-side row
+    // should always show the genuinely most-recent thing the priest
+    // said, regardless of whether it came through a session bubble
+    // or a free message.
+    final enrichedSessionGroups = freeMsgEnrich.isEmpty
+        ? sessionGroups
+        : sessionGroups.map((g) {
+            final free = freeMsgEnrich[g.priestId];
+            if (free == null) return g;
+            // Free message must be strictly newer than the current
+            // preview's timestamp to take over. If timestamps tie
+            // (rare), prefer the session message so the bubble we
+            // already have stays consistent.
+            if (g.lastMessageAt != null &&
+                free.at != null &&
+                !free.at!.isAfter(g.lastMessageAt!)) {
+              return g;
+            }
+            return g.copyWith(
+              lastMessageText: free.text,
+              // Free messages are always priest → user, so the
+              // preview never gets a "You: " prefix here.
+              lastMessageFromUser: false,
+              lastMessageAt: free.at,
+            );
+          }).toList();
+
+    // Early-return path now uses the enriched list so a priest who
+    // ONLY had a follow-up free message (no new session) still gets
+    // their preview line updated.
+    if (messageOnly.isEmpty) return enrichedSessionGroups;
 
     // Live status fan-out for the new priests. Same parallel pattern
     // as getUserPriestGroups so a long subscriber list doesn't pay
@@ -604,19 +716,29 @@ class SessionHistoryRepository {
         lastSessionDuration: 0,
         lastSessionType: 'chat',
         averageRating: null,
+        // Priest-sent follow-up. Always fromUser=false because these
+        // entries come from priest_message notifications addressed
+        // TO this user.
+        lastMessageText: meta.messageText.isEmpty ? null : meta.messageText,
+        lastMessageFromUser: meta.messageText.isEmpty ? null : false,
+        lastMessageAt: meta.lastAt,
       ));
     }
 
     // Merge + re-sort using the same rules getUserPriestGroups uses
-    // (available first, then by recency desc) so the combined list
-    // stays consistent with the user's expectation of priority.
-    final all = <PriestSessionGroup>[...sessionGroups, ...synthetic];
+    // (available first, then by activity recency desc) so a priest
+    // whose follow-up message arrived yesterday outranks one whose
+    // session was three days ago.
+    final all = <PriestSessionGroup>[
+      ...enrichedSessionGroups,
+      ...synthetic,
+    ];
     all.sort((a, b) {
       final aAvailable = a.isOnline && !a.isBusy;
       final bAvailable = b.isOnline && !b.isBusy;
       if (aAvailable != bAvailable) return aAvailable ? -1 : 1;
-      final aTime = a.lastSessionAt ?? DateTime(2000);
-      final bTime = b.lastSessionAt ?? DateTime(2000);
+      final aTime = a.lastActivityAt ?? DateTime(2000);
+      final bTime = b.lastActivityAt ?? DateTime(2000);
       return bTime.compareTo(aTime);
     });
 
@@ -790,6 +912,20 @@ class PriestSessionGroup {
   final String lastSessionType;
   final double? averageRating;
 
+  // WhatsApp-style last-message preview, populated for priests with
+  // at least one completed chat session. Null for voice-only priests
+  // and for fetch failures — the renderer falls back to a "Last call"
+  // / "Last chat" descriptor in that case.
+  final String? lastMessageText;
+  // True when the most-recent message in the last chat session was
+  // sent by the signed-in user; drives the "You: " prefix on the
+  // preview line.
+  final bool? lastMessageFromUser;
+  // Timestamp of the most-recent message — used by the row's date
+  // formatter when it's more recent than `lastSessionAt` (a chat
+  // session can have follow-up messages after it ended).
+  final DateTime? lastMessageAt;
+
   const PriestSessionGroup({
     required this.priestId,
     required this.priestName,
@@ -804,6 +940,9 @@ class PriestSessionGroup {
     required this.lastSessionDuration,
     required this.lastSessionType,
     required this.averageRating,
+    this.lastMessageText,
+    this.lastMessageFromUser,
+    this.lastMessageAt,
   });
 
   // "Available" = online and not in another session. Drives the
@@ -811,6 +950,41 @@ class PriestSessionGroup {
   bool get isAvailable => isOnline && !isBusy;
 
   String get lastSessionText => df.formatTimeAgo(lastSessionAt);
+
+  // Most-recent activity timestamp — newer of last session vs last
+  // message. Drives the row's WhatsApp-style date column.
+  DateTime? get lastActivityAt {
+    if (lastMessageAt == null) return lastSessionAt;
+    if (lastSessionAt == null) return lastMessageAt;
+    return lastMessageAt!.isAfter(lastSessionAt!)
+        ? lastMessageAt
+        : lastSessionAt;
+  }
+
+  PriestSessionGroup copyWith({
+    String? lastMessageText,
+    bool? lastMessageFromUser,
+    DateTime? lastMessageAt,
+  }) {
+    return PriestSessionGroup(
+      priestId: priestId,
+      priestName: priestName,
+      priestPhotoUrl: priestPhotoUrl,
+      priestDenomination: priestDenomination,
+      isOnline: isOnline,
+      isBusy: isBusy,
+      totalSessions: totalSessions,
+      chatSessions: chatSessions,
+      voiceSessions: voiceSessions,
+      lastSessionAt: lastSessionAt,
+      lastSessionDuration: lastSessionDuration,
+      lastSessionType: lastSessionType,
+      averageRating: averageRating,
+      lastMessageText: lastMessageText ?? this.lastMessageText,
+      lastMessageFromUser: lastMessageFromUser ?? this.lastMessageFromUser,
+      lastMessageAt: lastMessageAt ?? this.lastMessageAt,
+    );
+  }
 }
 
 // Internal helper for getUserPriestThreads — captures just enough
@@ -821,11 +995,16 @@ class _MessageOnlyMeta {
   final String priestName;
   final String priestPhotoUrl;
   final DateTime? lastAt;
+  // The notification body (priest's follow-up text) — surfaced as the
+  // WhatsApp-style preview on the history row. Empty when the
+  // notification carried no body.
+  final String messageText;
 
   const _MessageOnlyMeta({
     required this.priestName,
     required this.priestPhotoUrl,
     required this.lastAt,
+    required this.messageText,
   });
 }
 

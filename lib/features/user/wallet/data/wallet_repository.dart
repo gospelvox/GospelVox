@@ -7,6 +7,16 @@ class WalletRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
   final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(region: 'asia-south1');
 
+  // In-memory pack cache. Coin packs change ~once a quarter at most
+  // (admin tweaks pricing), but the recharge sheet opens dozens of
+  // times in a single session — caching makes the second-onward sheet
+  // open render instantly with content instead of a 200-400 ms
+  // shimmer. TTL keeps the cache fresh enough for pricing updates
+  // mid-session.
+  static List<CoinPackModel>? _cachedPacks;
+  static DateTime? _cachedPacksAt;
+  static const Duration _packsTtl = Duration(minutes: 15);
+
   // Stream of user's coin balance (real-time updates)
   Stream<int> watchBalance(String uid) {
     return _firestore
@@ -24,8 +34,23 @@ class WalletRepository {
     return (doc.data()?['coinBalance'] as num?)?.toInt() ?? 0;
   }
 
-  // Get all active coin packs ordered by 'order' field
+  // Synchronous cache peek for the recharge sheet's instant-render
+  // path. Returns null when the cache is empty or stale; the sheet
+  // then renders shimmer + kicks off `getCoinPacks()` like before.
+  List<CoinPackModel>? getCachedCoinPacks() {
+    final at = _cachedPacksAt;
+    if (_cachedPacks == null || at == null) return null;
+    if (DateTime.now().difference(at) > _packsTtl) return null;
+    return _cachedPacks;
+  }
+
+  // Get all active coin packs ordered by 'order' field. Result is
+  // cached for `_packsTtl`; the next call within that window returns
+  // immediately from memory.
   Future<List<CoinPackModel>> getCoinPacks() async {
+    final cached = getCachedCoinPacks();
+    if (cached != null) return cached;
+
     final snap = await _firestore
         .collection('app_config')
         .doc('coin_packs')
@@ -33,10 +58,13 @@ class WalletRepository {
         .orderBy('order')
         .get()
         .timeout(const Duration(seconds: 10));
-    return snap.docs
+    final packs = snap.docs
         .where((doc) => doc.data()['isActive'] == true)
         .map((doc) => CoinPackModel.fromFirestore(doc.id, doc.data()))
         .toList();
+    _cachedPacks = packs;
+    _cachedPacksAt = DateTime.now();
+    return packs;
   }
 
   // Check if user has ever purchased coins (for welcome offer)

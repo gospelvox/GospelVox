@@ -63,6 +63,7 @@ import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
 import 'package:gospel_vox/features/user/home/widgets/priest_card.dart';
+import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // ─── Design tokens for this screen ─────────────────────────
@@ -261,6 +262,17 @@ class _HomeViewState extends State<_HomeView>
     _animController.forward();
 
     _startBibleStream();
+
+    // Fire-and-forget warm-up of the coin-pack list so a low-balance
+    // RechargeSheet opens with instant content the first time the user
+    // taps Call from the home feed. Result is cached at the repository
+    // layer; if the user never triggers the sheet, the cost is one
+    // small Firestore read at page mount.
+    try {
+      sl<WalletRepository>().getCoinPacks();
+    } catch (_) {
+      // Silent — pre-warm is best-effort.
+    }
 
     // Decode every banner asset into the ImageCache before the
     // carousel paints its first frame. Combined with
@@ -561,7 +573,15 @@ class _HomeViewState extends State<_HomeView>
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: _C.bgColor,
-      body: BlocConsumer<HomeCubit, HomeState>(
+      // Page-level tap-to-dismiss for the keyboard. translucent so
+      // taps still reach cards/chips/buttons underneath; the handler
+      // only fires for surface taps and unfocuses whatever currently
+      // owns focus. Keeps the keyboard from sticking around after a
+      // user taps a priest card mid-typing.
+      body: GestureDetector(
+        behavior: HitTestBehavior.translucent,
+        onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+        child: BlocConsumer<HomeCubit, HomeState>(
         listener: (ctx, state) {
           if (state is HomeError) {
             AppSnackBar.error(ctx, state.message);
@@ -576,6 +596,11 @@ class _HomeViewState extends State<_HomeView>
             // to re-fetch priests — the carousel auto-updates.
             onRefresh: () => ctx.read<HomeCubit>().refresh(),
             child: CustomScrollView(
+              // Dragging the list down also clears the keyboard —
+              // belt-and-braces with the page-level GestureDetector
+              // since RefreshIndicator may consume some pointer events.
+              keyboardDismissBehavior:
+                  ScrollViewKeyboardDismissBehavior.onDrag,
               physics: const AlwaysScrollableScrollPhysics(
                 parent: BouncingScrollPhysics(),
               ),
@@ -609,6 +634,7 @@ class _HomeViewState extends State<_HomeView>
             ),
           );
         },
+        ),
       ),
     );
   }
@@ -742,6 +768,13 @@ class _HomeViewState extends State<_HomeView>
       ),
       child: TextField(
         controller: _searchController,
+        // Tapping anywhere outside the field dismisses the keyboard
+        // before the underlying tap fires its own handler (e.g. a
+        // priest-card push). Without this, a user mid-typing who
+        // tapped a card would land on the profile with the keyboard
+        // still visible.
+        onTapOutside: (_) =>
+            FocusManager.instance.primaryFocus?.unfocus(),
         onChanged: (q) {
           context.read<HomeCubit>().search(q);
           setState(() {});

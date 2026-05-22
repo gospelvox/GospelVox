@@ -106,7 +106,7 @@ class FloatingBottomNav extends StatelessWidget {
                       currentIndex: currentIndex,
                       icon: AppIcons.chats,
                       activeIcon: AppIcons.chat,
-                      label: 'Sessions',
+                      label: 'Connect',
                       onTap: () => onTap(1),
                     ),
                     // Reserved column under the centre FAB. The FAB

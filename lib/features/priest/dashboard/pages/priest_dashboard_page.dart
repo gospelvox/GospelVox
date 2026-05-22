@@ -1564,35 +1564,63 @@ class _NotificationBellState extends State<_NotificationBell> {
                     ),
                     if (count > 0)
                       Positioned(
-                        top: 6,
-                        right: 6,
+                        top: 4,
+                        right: 4,
+                        // Growing-stadium terracotta badge — same
+                        // recipe as the user-side home bell:
+                        //   • minWidth == minHeight == 18 →
+                        //     single-digit counts render as a perfect
+                        //     circle (radius height/2 = 9 keeps the
+                        //     ends fully round).
+                        //   • As digits grow, horizontal padding lets
+                        //     the container widen; the radius stays
+                        //     constant so the badge morphs into a
+                        //     stadium without overflowing.
+                        //   • Counts >= 100 collapse to "99+" so the
+                        //     badge never widens past ~30 px, keeping
+                        //     a clean shape even at marketplace scale.
+                        //   • AppColors.terraCotta == the same warm
+                        //     desaturated red the user-side bell and
+                        //     bottom-nav badge already use — one
+                        //     visual system across both surfaces.
                         child: Container(
                           constraints: const BoxConstraints(
-                            minWidth: 14,
-                            minHeight: 14,
+                            minWidth: 18,
+                            minHeight: 18,
                           ),
-                          padding:
-                              const EdgeInsets.symmetric(horizontal: 3),
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 5,
+                          ),
                           decoration: BoxDecoration(
-                            // Warmer, desaturated brown-red — sits
-                            // inside the warm palette instead of
-                            // shouting at the user.
-                            color: const Color(0xFFA8392B),
-                            borderRadius: BorderRadius.circular(7),
+                            color: AppColors.terraCotta,
+                            borderRadius: BorderRadius.circular(9),
+                            // White cutout border so the badge reads
+                            // as "punched through" the bell circle
+                            // behind it. Matches the surfaceWhite
+                            // that the bell sits on (not the page bg
+                            // — the bell is inside a white container,
+                            // unlike the bare bell on the user side).
                             border: Border.all(
-                              color: AppColors.background,
+                              color: AppColors.surfaceWhite,
                               width: 1.5,
                             ),
                           ),
-                          child: Center(
-                            child: Text(
-                              count > 9 ? '9+' : '$count',
-                              style: GoogleFonts.inter(
-                                fontSize: 8,
-                                fontWeight: FontWeight.w700,
-                                color: Colors.white,
-                                height: 1.0,
-                              ),
+                          alignment: Alignment.center,
+                          child: Text(
+                            count > 99 ? '99+' : '$count',
+                            maxLines: 1,
+                            softWrap: false,
+                            style: GoogleFonts.inter(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: Colors.white,
+                              height: 1.05,
+                              // Tabular keeps digit widths constant
+                              // so the morph from circle → pill stays
+                              // smooth as counts roll over.
+                              fontFeatures: const [
+                                FontFeature.tabularFigures(),
+                              ],
                             ),
                           ),
                         ),

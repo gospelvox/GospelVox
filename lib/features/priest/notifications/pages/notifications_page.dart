@@ -75,6 +75,15 @@ class _NotificationsPageState extends State<NotificationsPage> {
             .toList();
         _isLoading = false;
       });
+      // Open-time bell-badge clearer: fire-and-forget batch that
+      // marks every unread notification for this priest as read.
+      // Without this the dashboard's bell could stay stuck at "9+"
+      // forever — the manual "Mark all read" button only clears
+      // the visible filtered list, and the visible list misses
+      // anything past the 50-newest cutoff or anything excluded by
+      // future filters. Visiting the inbox = clearing the bell is
+      // the contract the user expects, so we honour it on open.
+      unawaited(_markAllReadInBackground(uid));
     } on TimeoutException {
       if (!mounted) return;
       setState(() => _isLoading = false);
@@ -167,6 +176,39 @@ class _NotificationsPageState extends State<NotificationsPage> {
           .map((n) => n.id == id ? n.copyWith(isRead: true) : n)
           .toList();
     });
+  }
+
+  // Fire-and-forget bell-badge clearer. Runs its OWN query for every
+  // unread doc the priest owns — not just the docs in the visible
+  // filtered list — so the dashboard's bell badge actually drops to
+  // 0 on inbox visit, even for:
+  //
+  //   • notifications past the 50-newest cutoff of the visible list
+  //   • notifications hidden by future client-side filters
+  //
+  // Mirrors the user-side _markAllReadInBackground exactly so both
+  // surfaces share one contract. Silent on failure — the badge stays
+  // at whatever the dashboard stream reports; next inbox visit
+  // retries. limit(500) caps at the Firestore batch-size limit.
+  Future<void> _markAllReadInBackground(String uid) async {
+    try {
+      final db = FirebaseFirestore.instance;
+      final snap = await db
+          .collection('notifications')
+          .where('userId', isEqualTo: uid)
+          .where('isRead', isEqualTo: false)
+          .limit(500)
+          .get()
+          .timeout(const Duration(seconds: 10));
+      if (snap.docs.isEmpty) return;
+      final batch = db.batch();
+      for (final d in snap.docs) {
+        batch.update(d.reference, {'isRead': true});
+      }
+      await batch.commit();
+    } catch (_) {
+      // Silent — next inbox visit retries.
+    }
   }
 
   Future<void> _markAllRead() async {
