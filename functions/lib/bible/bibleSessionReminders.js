@@ -8,10 +8,18 @@ const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 const FANOUT_CHUNK_SIZE = 200;
 // Time windows. Each window must be wider than the cron cadence
-// (5 min) so a single tick never misses a reminder boundary. We
-// also gate on a per-session `remindersSent` map so a tick that
-// catches the window twice (rare clock drift, retries) only fires
-// once per kind per session.
+// (2 min) so a single tick never misses a reminder boundary. We
+// also gate on a per-session `remindersSent` map so the multiple
+// ticks that land inside the same 5-min window only fire the
+// reminder once per kind per session.
+//
+// The cron was tightened from 5-min → 2-min cadence so the auto-
+// complete pass at the bottom of this file flips stale `live` docs
+// to `completed` within ~2 min of the deadline instead of ~5. The
+// reminder windows themselves stayed at 5 min wide — wider than
+// the cron cadence so we never miss a boundary, narrower than the
+// reminder kind so two consecutive kinds (e.g. 24h vs 1h) don't
+// collide.
 const FIVE_MIN = 5;
 const ONE_HOUR_MIN = 60;
 const ONE_DAY_MIN = 24 * 60;
@@ -72,10 +80,14 @@ async function activeRegistrants(sessionId) {
         .get();
     return snap.docs.filter((d) => d.data().status !== "cancelled");
 }
-// Scheduled every 5 minutes. Iterates over upcoming sessions, classifies
-// each by `diffMin` (minutes until scheduledAt), and fires whichever
-// reminders fall inside the current 5-minute window AND haven't been
-// fired before (per the `remindersSent` map on the session doc).
+// Scheduled every 2 minutes (see `schedule:` below). Iterates over
+// upcoming sessions, classifies each by `diffMin` (minutes until
+// scheduledAt), and fires whichever reminders fall inside the
+// current 5-minute window AND haven't been fired before (per the
+// `remindersSent` map on the session doc). The 5-min window is
+// wider than the 2-min cadence so a single tick never misses a
+// boundary, and the dedup guarantees the multiple ticks landing
+// inside the same window fire each reminder at most once.
 //
 // Why a single-field query: filtering only on `status == 'upcoming'`
 // keeps us in single-field equality land — no composite index needed.
@@ -83,7 +95,7 @@ async function activeRegistrants(sessionId) {
 // session volume is small (dozens), so the cost is negligible and
 // the trade-off is worth the deploy-simplicity.
 exports.bibleSessionReminders = (0, scheduler_1.onSchedule)({
-    schedule: "every 5 minutes",
+    schedule: "every 2 minutes",
     timeZone: "Asia/Kolkata",
     region: constants_1.REGION,
     retryCount: 2,
@@ -364,34 +376,48 @@ exports.bibleSessionReminders = (0, scheduler_1.onSchedule)({
             continue;
         }
         // Mirror completeBibleSession: bump the priest's totalSessions
-        // counter so a session that ended via the auto-complete cron
-        // counts the same as one the priest manually marked done.
-        // Without this the dashboard / admin counters undercount
-        // every session the priest forgot to wrap up themselves.
+        // counter AND release the in-bible-session lock (liveBibleSessionId
+        // + bibleSessionLockedUntil). This cron is the load-bearing
+        // safety net for the lock — if a priest taps "Mark Completed"
+        // and the CF fails, OR they background the app and never tap
+        // complete at all, this branch is what eventually flips them
+        // back to "Online" for incoming calls/chats.
+        //
+        // Without clearing the lock here, a priest whose Bible session
+        // ended via the cron (not manual complete) would stay flagged
+        // as in-bible-session indefinitely, blocking all incoming
+        // session requests for hours/days until manual cleanup.
         const priestIdForCount = session.priestId;
         if (priestIdForCount) {
             try {
                 await db.doc(`priests/${priestIdForCount}`).update({
                     totalSessions: admin.firestore.FieldValue.increment(1),
+                    liveBibleSessionId: admin.firestore.FieldValue.delete(),
+                    bibleSessionLockedUntil: admin.firestore.FieldValue.delete(),
                 });
             }
             catch (err) {
-                console.error("[bibleSessionReminders] totalSessions increment failed " +
+                console.error("[bibleSessionReminders] priest doc update failed " +
                     `for priest=${priestIdForCount} session=${sessionId}:`, err);
             }
         }
-        // Priest summary — count + revenue. paid registrations only;
-        // 'registered' rows are unpaid and don't contribute revenue.
+        // Priest summary — count + revenue. One read of the full
+        // registrations subcollection feeds both the paid-count tally
+        // (revenue line in the priest inbox doc) and the active-
+        // registrant fanout below (user-facing "session ended" push).
+        // Two filters over the same snapshot avoid a second round-trip
+        // and a composite-index dependency.
         let paidCount = 0;
+        let activeRegs = [];
         try {
-            const paidRegs = await db
+            const allRegsSnap = await db
                 .collection(`bible_sessions/${sessionId}/registrations`)
-                .where("status", "==", "paid")
                 .get();
-            paidCount = paidRegs.size;
+            paidCount = allRegsSnap.docs.filter((d) => d.data().status === "paid").length;
+            activeRegs = allRegsSnap.docs.filter((d) => d.data().status !== "cancelled");
         }
         catch (err) {
-            console.error("[bibleSessionReminders] paid-count read failed for " +
+            console.error("[bibleSessionReminders] registrations read failed for " +
                 `${sessionId}:`, err);
         }
         const price = Number((_d = session.price) !== null && _d !== void 0 ? _d : 0);
@@ -417,6 +443,26 @@ exports.bibleSessionReminders = (0, scheduler_1.onSchedule)({
         catch (err) {
             console.error("[bibleSessionReminders] auto-complete notif failed for " +
                 `${sessionId}:`, err);
+        }
+        // ── Notify active registrants ───────────────────────────────
+        // Mirrors the manual completeBibleSession path — paid users
+        // lose access to the meeting link the moment status flips to
+        // 'completed', and without a signal that reads as a broken
+        // link. Free-registered (unpaid) users get the same note so
+        // they have closure on a session they expressed interest in.
+        // Cancelled registrations are skipped (they already opted out).
+        //
+        // Reuses the chunked-batch helper above (notifyRegistrants)
+        // which handles in-app inbox + push fanout with per-chunk
+        // error swallowing — a single bad chunk can't poison the rest
+        // of the cron tick.
+        if (activeRegs.length > 0) {
+            await notifyRegistrants(sessionId, activeRegs, {
+                type: "bible_session_completed_user",
+                title: "🙌 Session Wrapped Up",
+                body: `"${title}" has wrapped up. ` +
+                    "Thank you for being part of this blessed time.",
+            });
         }
     }
 });

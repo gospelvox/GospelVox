@@ -35,7 +35,7 @@ const REVIEW_MILESTONES = [
 // long feedback + reply text.
 const PUBLIC_REVIEWS_CAP = 100;
 exports.onSessionRated = (0, firestore_1.onDocumentUpdated)({ document: "sessions/{sessionId}", region: constants_1.REGION }, async (event) => {
-    var _a, _b;
+    var _a, _b, _c;
     const before = (_a = event.data) === null || _a === void 0 ? void 0 : _a.before.data();
     const after = (_b = event.data) === null || _b === void 0 ? void 0 : _b.after.data();
     if (!before || !after)
@@ -146,9 +146,67 @@ exports.onSessionRated = (0, firestore_1.onDocumentUpdated)({ document: "session
         console.error(`[onSessionRated] Aggregation failed for ${sessionId}:`, err);
         return;
     }
-    // Milestone notification is best-effort and lives outside the
-    // transaction — a push failure must not roll back the aggregation
-    // that just made the priest's dashboard rating correct.
+    // Skip downstream pushes if the priest doc didn't exist (the
+    // transaction's no-priest branch left priestName at "" and
+    // stamped ratingAggregated:true without aggregating). Pushing
+    // to a nonexistent priest would just hit "no FCM tokens" inside
+    // sendPushNotification — harmless but wasteful.
+    if (priestName === "")
+        return;
+    // ── Per-review push ─────────────────────────────────────────
+    // Fires for EVERY rating so the priest learns about each new
+    // review the moment it lands, instead of having to manually
+    // open /priest/reviews to discover non-milestone ones. Mirrors
+    // onBibleSessionRated's per-review push so both surfaces
+    // behave identically — every reviewed session, whether bible
+    // or call/chat, produces exactly one priest-facing push.
+    //
+    // Idempotency is inherited from the trigger guards above
+    // (rating-already-existed early-return + ratingAggregated
+    // flag), so this block runs at most once per (session, user).
+    const userName = (_c = after.userName) !== null && _c !== void 0 ? _c : "Someone";
+    const reviewTitle = "⭐ New Review";
+    const reviewBody = `${userName} rated your session ${rating} ` +
+        `star${rating === 1 ? "" : "s"}.`;
+    try {
+        const notifRef = db.collection("notifications").doc();
+        await notifRef.set({
+            userId: priestId,
+            type: "session_rated",
+            title: reviewTitle,
+            body: reviewBody,
+            sessionId,
+            data: { sessionId, route: "/priest/reviews" },
+            isRead: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
+    catch (err) {
+        console.error(`[onSessionRated] per-review inbox write failed for ${priestId}:`, err);
+    }
+    // sendPushNotification swallows its own errors (per its
+    // contract — losing a push is recoverable via the inbox doc
+    // above, but throwing here would re-fire the trigger on retry
+    // and could double-aggregate). No try/catch needed.
+    await (0, sendPush_1.sendPushNotification)({
+        userId: priestId,
+        title: reviewTitle,
+        body: reviewBody,
+        data: {
+            type: "session_rated",
+            route: "/priest/reviews",
+            sessionId,
+        },
+    });
+    // ── Milestone celebration (inbox-only) ──────────────────────
+    // Bonus inbox card when the priest crosses 1 / 5 / 10 / 25 /
+    // 50 / 100 / 250 / 500 reviews — a celebratory record they can
+    // scroll back to later. The OS push was removed here: the
+    // per-review push above already wakes the device on the same
+    // event (the milestone review IS the review), and firing both
+    // would land two notifications for the same write. Keeping
+    // milestones as inbox-only preserves the achievement signal
+    // without the duplicate buzz.
     if (milestoneToPush !== null) {
         const milestone = milestoneToPush;
         const { title, body } = buildMilestoneCopy(milestone, priestName);
@@ -164,22 +222,7 @@ exports.onSessionRated = (0, firestore_1.onDocumentUpdated)({ document: "session
             });
         }
         catch (err) {
-            console.error(`[onSessionRated] Inbox write failed for ${priestId}:`, err);
-        }
-        try {
-            await (0, sendPush_1.sendPushNotification)({
-                userId: priestId,
-                title,
-                body,
-                data: {
-                    type: "review_milestone",
-                    route: "/priest/reviews",
-                    milestone: String(milestone),
-                },
-            });
-        }
-        catch (_c) {
-            // sendPushNotification already swallows + logs.
+            console.error(`[onSessionRated] milestone inbox write failed for ${priestId}:`, err);
         }
     }
 });

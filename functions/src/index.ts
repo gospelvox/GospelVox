@@ -51,6 +51,7 @@ export {bibleSessionReminders} from "./bible/bibleSessionReminders";
 export {startBibleSession} from "./bible/startBibleSession";
 export {payAndJoinBibleSession} from "./bible/payAndJoinBibleSession";
 export {createBibleSession} from "./bible/createBibleSession";
+export {onBibleSessionRated} from "./bible/onBibleSessionRated";
 
 // ═══ Notifications ═══
 export {sendNotification} from "./notifications/sendNotification";

@@ -93,6 +93,29 @@ export const startBibleSession = onCall(
     // immediately before the flip, accepting a much tighter race
     // window (sub-millisecond) than the original
     // read-then-update gap.
+    // Compute the lock deadline up front. We use Date.now() (the CF
+    // runtime's wall clock) rather than serverTimestamp because we
+    // need an actual Timestamp value to write into the priest doc,
+    // not a sentinel. The skew between Date.now() and the actual
+    // server-stamped startedAt is sub-millisecond — negligible
+    // against a 15-minute grace window.
+    //
+    // bibleSessionLockedUntil is the safety-net deadline read by
+    // SpeakerModel.isInBibleSession on the client AND by
+    // createSessionRequest on the server. If everything else fails,
+    // once this timestamp passes the priest is automatically treated
+    // as released, so a stuck `liveBibleSessionId` can never block
+    // them permanently.
+    const durationMinRaw = session.durationMinutes as number | undefined;
+    const durationMin =
+      typeof durationMinRaw === "number" && Number.isFinite(durationMinRaw)
+        ? Math.max(1, Math.round(durationMinRaw))
+        : 60;
+    const lockedUntilMs =
+      Date.now() + (durationMin + 15) * 60 * 1000;
+    const lockedUntil = admin.firestore.Timestamp.fromMillis(lockedUntilMs);
+    const priestRef = db.doc(`priests/${callerUid}`);
+
     try {
       await db.runTransaction(async (tx) => {
         const fresh = await tx.get(sessionRef);
@@ -121,6 +144,22 @@ export const startBibleSession = onCall(
         tx.update(sessionRef, {
           status: "live",
           startedAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        // Atomic with the status flip — either both writes commit
+        // or neither. This is what makes the lock bulletproof: a
+        // live session and a held priest-doc lock can never exist
+        // in disagreement.
+        //
+        // We write to priests/{callerUid} (not just the session) so
+        // every UI surface that already reads the priest doc
+        // (priest cards, profile, all-speakers list) picks up the
+        // "in bible session" state without any extra Firestore
+        // reads. createSessionRequest also reads this doc on every
+        // ring, so the server-side ring gate is one cheap check
+        // away.
+        tx.update(priestRef, {
+          liveBibleSessionId: sessionId,
+          bibleSessionLockedUntil: lockedUntil,
         });
       });
     } catch (err) {

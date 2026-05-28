@@ -142,6 +142,52 @@ export const createSessionRequest = onCall(
         "priest-offline"
       );
     }
+
+    // Priest is teaching a live Bible session — block the ring so
+    // they aren't disturbed mid-Google-Meet. The lock has TWO
+    // independent signals and we trust BOTH:
+    //
+    //   1. liveBibleSessionId — set atomically by startBibleSession.
+    //      Cleared by completeBibleSession (manual) AND the
+    //      bibleSessionReminders auto-complete cron.
+    //
+    //   2. bibleSessionLockedUntil — a wall-clock deadline
+    //      (startedAt + durationMinutes + 15min). Acts as the
+    //      self-healing guard: if every CF that's supposed to
+    //      clear the field fails, once this timestamp passes the
+    //      gate treats the priest as released anyway.
+    //
+    // The user still gets a missed-request notification so the
+    // priest sees who tried to reach them while they were teaching
+    // — same intent-capture semantics as priest-busy.
+    const lockedSessionId = priestData.liveBibleSessionId;
+    if (
+      typeof lockedSessionId === "string" &&
+      lockedSessionId.length > 0
+    ) {
+      const lockedUntilTs =
+        priestData.bibleSessionLockedUntil as
+          admin.firestore.Timestamp | undefined;
+      const lockedUntil = lockedUntilTs?.toDate();
+      const stillLocked =
+        !lockedUntil || lockedUntil.getTime() > Date.now();
+      if (stillLocked) {
+        await writeBusyMissedRequest({
+          priestId: priestId,
+          requesterId: uid,
+          requesterName:
+            (userData.displayName as string | undefined) ?? "",
+          requesterPhotoUrl:
+            (userData.photoUrl as string | undefined) ?? "",
+          type: type,
+        });
+        throw new HttpsError(
+          "failed-precondition",
+          "priest-in-bible-session"
+        );
+      }
+    }
+
     if (priestData.isBusy === true) {
       await writeBusyMissedRequest({
         priestId: priestId,

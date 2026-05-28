@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendNotification = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.onReportResolved = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.sendNotification = exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.onReportResolved = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -82,6 +82,8 @@ var payAndJoinBibleSession_1 = require("./bible/payAndJoinBibleSession");
 Object.defineProperty(exports, "payAndJoinBibleSession", { enumerable: true, get: function () { return payAndJoinBibleSession_1.payAndJoinBibleSession; } });
 var createBibleSession_1 = require("./bible/createBibleSession");
 Object.defineProperty(exports, "createBibleSession", { enumerable: true, get: function () { return createBibleSession_1.createBibleSession; } });
+var onBibleSessionRated_1 = require("./bible/onBibleSessionRated");
+Object.defineProperty(exports, "onBibleSessionRated", { enumerable: true, get: function () { return onBibleSessionRated_1.onBibleSessionRated; } });
 // ═══ Notifications ═══
 var sendNotification_1 = require("./notifications/sendNotification");
 Object.defineProperty(exports, "sendNotification", { enumerable: true, get: function () { return sendNotification_1.sendNotification; } });

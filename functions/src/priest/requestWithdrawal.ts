@@ -4,17 +4,24 @@
 // Why "pending" not "completed":
 //   The CF debits walletBalance and writes a withdrawal record, but
 //   the real bank payout (Razorpay X / manual transfer) happens
-//   downstream. The admin payout dashboard (Week 5) flips status
-//   to "paid" once the money has actually moved. Calling this
-//   "completed" before that would mean lying to priests about where
-//   their money is.
+//   downstream. The admin payout dashboard flips status to "paid"
+//   once the money has actually moved.
+//
+// Concurrency safety:
+//   The balance read + debit + withdrawal write happen inside a
+//   Firestore transaction. Two concurrent requests can no longer
+//   both pass the "enough balance?" check and both deduct — the
+//   transaction sees a serial view of the priest doc, so the
+//   second one re-reads the already-debited balance and either
+//   debits correctly or rejects with insufficient_balance.
 //
 // Idempotency:
-//   The client passes a clientRequestId on every call. We dedupe on
-//   it before doing any work — if the same id has already produced
-//   a withdrawal, we return the existing record instead of debiting
-//   again. Protects against SDK-level retries and unstable networks
-//   between the Flutter app and the CF runtime.
+//   The client passes a clientRequestId on every call. We use it as
+//   the deterministic doc id for the withdrawal record, so the dedup
+//   check is a single transactional `tx.get(withdrawalRef)`. If the
+//   same id has already produced a withdrawal, we return the
+//   existing record instead of debiting again — protects against
+//   SDK-level retries and unstable networks.
 //
 // Structured errors:
 //   We surface failures via HttpsError(code, message, details). The
@@ -32,6 +39,11 @@ const db = admin.firestore();
 // (36) or a Firestore auto-id (20); short enough to reject garbage
 // payloads that try to bloat the index.
 const MAX_CLIENT_REQUEST_ID_LEN = 64;
+// Restrict the token to characters that are safe as a Firestore
+// doc id and that match the formats we actually generate / accept
+// (Firestore auto-ids are base62; UUIDs add `-`). Stops a hostile
+// caller from feeding us `/`, `..`, or other path-breaking input.
+const CLIENT_REQUEST_ID_REGEX = /^[A-Za-z0-9_-]+$/;
 
 export const requestWithdrawal = onCall(
   {region: REGION},
@@ -62,7 +74,8 @@ export const requestWithdrawal = onCall(
     if (
       typeof clientRequestId !== "string" ||
       clientRequestId.length === 0 ||
-      clientRequestId.length > MAX_CLIENT_REQUEST_ID_LEN
+      clientRequestId.length > MAX_CLIENT_REQUEST_ID_LEN ||
+      !CLIENT_REQUEST_ID_REGEX.test(clientRequestId)
     ) {
       throw new HttpsError(
         "invalid-argument",
@@ -71,78 +84,11 @@ export const requestWithdrawal = onCall(
       );
     }
 
-    // ── Idempotency check ──
-    // Done before reading the priest doc so a duplicate call short-
-    // circuits with minimal work. We don't filter by priestId on
-    // the query (single-field indexes are auto-created; composite
-    // would need a manual index) — instead we re-check ownership
-    // in code after the fetch.
-    const dedupeSnap = await db
-      .collection("withdrawals")
-      .where("clientRequestId", "==", clientRequestId)
-      .limit(1)
-      .get();
-
-    if (!dedupeSnap.empty) {
-      const existing = dedupeSnap.docs[0];
-      const existingData = existing.data();
-      if (existingData.priestId !== uid) {
-        // Same id submitted by a different priest — almost certainly
-        // an attempt to forge an idempotency hit.
-        throw new HttpsError(
-          "permission-denied",
-          "Request id conflict",
-          {reason: "request_id_conflict"},
-        );
-      }
-      // Return the original result rather than recharging. We re-
-      // read the priest doc so the returned balance reflects any
-      // settlement writes that happened after the original call.
-      const priestSnap = await db.doc(`priests/${uid}`).get();
-      const balance = Number(priestSnap.data()?.walletBalance ?? 0);
-      return {
-        withdrawalId: existing.id,
-        newBalance: balance,
-        amount: Number(existingData.amount ?? 0),
-        deduplicated: true,
-      };
-    }
-
-    const priestRef = db.doc(`priests/${uid}`);
-    const priestDoc = await priestRef.get();
-
-    if (!priestDoc.exists) {
-      throw new HttpsError(
-        "not-found",
-        "Priest profile not found",
-        {reason: "priest_not_found"},
-      );
-    }
-
-    const priestData = priestDoc.data() ?? {};
-
-    if (priestData.status !== "approved" || !priestData.isActivated) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Account must be approved and activated",
-        {reason: "account_inactive"},
-      );
-    }
-
-    const bankAccountName = priestData.bankAccountName as string | undefined;
-    const bankAccountNumber = priestData.bankAccountNumber as
-      | string
-      | undefined;
-    const bankIfscCode = priestData.bankIfscCode as string | undefined;
-
-    if (!bankAccountName || !bankAccountNumber || !bankIfscCode) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Bank details are required for withdrawals",
-        {reason: "no_bank_details"},
-      );
-    }
-
+    // Settings (the admin-tunable minimum) are read outside the
+    // transaction because they don't need to be atomic with the
+    // balance debit — minWithdrawalAmount is stable per deploy and
+    // pulling it inside the txn would force the txn to retry on any
+    // unrelated settings write.
     const settingsDoc = await db.doc("app_config/settings").get();
     const minAmount = Number(
       settingsDoc.data()?.minWithdrawalAmount ?? 100,
@@ -156,93 +102,176 @@ export const requestWithdrawal = onCall(
       );
     }
 
-    const currentBalance = Number(priestData.walletBalance ?? 0);
-    if (currentBalance < amount) {
-      throw new HttpsError(
-        "failed-precondition",
-        "Insufficient balance",
-        {reason: "insufficient_balance"},
-      );
-    }
+    const priestRef = db.doc(`priests/${uid}`);
+    // The withdrawal doc id IS the clientRequestId. That turns the
+    // dedup check into a single tx.get on a known ref — fully
+    // transactional, no "where" query needed inside the txn.
+    const withdrawalRef = db.doc(`withdrawals/${clientRequestId}`);
 
-    // ── Atomic withdrawal: balance debit, totals bump, audit row,
-    //    notification, and the withdrawal doc itself. Either every-
-    //    thing writes or nothing does.
-    const batch = db.batch();
-
-    batch.update(priestRef, {
-      walletBalance: admin.firestore.FieldValue.increment(-amount),
-      // Maintained on the priest doc so the wallet page can show
-      // lifetime "Withdrawn" without scanning the transaction list.
-      totalWithdrawn: admin.firestore.FieldValue.increment(amount),
-    });
-
-    const withdrawalRef = db.collection("withdrawals").doc();
-    batch.set(withdrawalRef, {
-      priestId: uid,
-      amount: amount,
-      // "pending" until the admin payout dashboard flips it to
-      // "paid" after sending the actual bank transfer. "blocked"
-      // is the fraud-block path; rejected by manual review.
-      status: "pending",
-      clientRequestId: clientRequestId,
-      bankAccountName,
-      bankAccountNumber,
-      bankIfscCode,
-      bankName: priestData.bankName ?? "",
-      upiId: priestData.upiId ?? "",
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
+    // Pre-allocate ids for the audit-log writes so we can stamp them
+    // into the transaction without an `await` inside the txn body.
     const txRef = db.collection("wallet_transactions").doc();
-    batch.set(txRef, {
-      userId: uid,
-      type: "withdrawal",
-      coins: -amount,
-      description: `Withdrawal to ${priestData.bankName ?? "bank"}`,
-      withdrawalId: withdrawalRef.id,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-
     const notifRef = db.collection("notifications").doc();
-    batch.set(notifRef, {
-      userId: uid,
-      type: "withdrawal_requested",
-      title: "Withdrawal Requested",
-      // Honest copy: the request is in the queue, not en route to
-      // the bank yet. The "Withdrawal Processed" notification
-      // lands separately when the admin marks the payout paid.
-      body:
-        `Your withdrawal request of ₹${amount} has been ` +
-        "submitted. It will be processed within 1-3 business days.",
-      isRead: false,
-      createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
 
-    await batch.commit();
+    type TxResult = {
+      withdrawalId: string;
+      newBalance: number;
+      amount: number;
+      deduplicated: boolean;
+    };
+
+    const txResult = await db.runTransaction<TxResult>(async (tx) => {
+      // ALL reads come first — Firestore transactions require it.
+      const [existingWithdrawal, priestDoc] = await Promise.all([
+        tx.get(withdrawalRef),
+        tx.get(priestRef),
+      ]);
+
+      // ── Idempotency hit ──
+      // The same clientRequestId already produced a withdrawal.
+      // Return the existing record + fresh balance instead of
+      // recharging. Cross-priest replay attempts are rejected here
+      // (same id, different owner = forgery).
+      if (existingWithdrawal.exists) {
+        const existingData = existingWithdrawal.data() ?? {};
+        if (existingData.priestId !== uid) {
+          throw new HttpsError(
+            "permission-denied",
+            "Request id conflict",
+            {reason: "request_id_conflict"},
+          );
+        }
+        const balance = Number(priestDoc.data()?.walletBalance ?? 0);
+        return {
+          withdrawalId: existingWithdrawal.id,
+          newBalance: balance,
+          amount: Number(existingData.amount ?? 0),
+          deduplicated: true,
+        };
+      }
+
+      // ── Validation against the freshly-read priest doc ──
+      if (!priestDoc.exists) {
+        throw new HttpsError(
+          "not-found",
+          "Priest profile not found",
+          {reason: "priest_not_found"},
+        );
+      }
+
+      const priestData = priestDoc.data() ?? {};
+
+      if (priestData.status !== "approved" || !priestData.isActivated) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Account must be approved and activated",
+          {reason: "account_inactive"},
+        );
+      }
+
+      const bankAccountName =
+        priestData.bankAccountName as string | undefined;
+      const bankAccountNumber =
+        priestData.bankAccountNumber as string | undefined;
+      const bankIfscCode = priestData.bankIfscCode as string | undefined;
+
+      if (!bankAccountName || !bankAccountNumber || !bankIfscCode) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Bank details are required for withdrawals",
+          {reason: "no_bank_details"},
+        );
+      }
+
+      const currentBalance = Number(priestData.walletBalance ?? 0);
+      if (currentBalance < amount) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Insufficient balance",
+          {reason: "insufficient_balance"},
+        );
+      }
+
+      // ── All writes — transactional, all-or-nothing. ──
+      tx.update(priestRef, {
+        walletBalance: admin.firestore.FieldValue.increment(-amount),
+        // Maintained on the priest doc so the wallet page can show
+        // lifetime "Withdrawn" without scanning the transaction list.
+        totalWithdrawn: admin.firestore.FieldValue.increment(amount),
+      });
+
+      tx.set(withdrawalRef, {
+        priestId: uid,
+        amount: amount,
+        // "pending" until the admin payout dashboard flips it to
+        // "paid" after sending the actual bank transfer. "blocked"
+        // is the fraud-block path; rejected by manual review.
+        status: "pending",
+        clientRequestId: clientRequestId,
+        bankAccountName,
+        bankAccountNumber,
+        bankIfscCode,
+        bankName: priestData.bankName ?? "",
+        upiId: priestData.upiId ?? "",
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      tx.set(txRef, {
+        userId: uid,
+        type: "withdrawal",
+        coins: -amount,
+        description: `Withdrawal to ${priestData.bankName ?? "bank"}`,
+        withdrawalId: withdrawalRef.id,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      tx.set(notifRef, {
+        userId: uid,
+        type: "withdrawal_requested",
+        title: "Withdrawal Requested",
+        // Honest copy: the request is in the queue, not en route to
+        // the bank yet. The "Withdrawal Processed" notification
+        // lands separately when the admin marks the payout paid.
+        body:
+          `Your withdrawal request of ₹${amount} has been ` +
+          "submitted. It will be processed within 1-3 business days.",
+        isRead: false,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+
+      return {
+        withdrawalId: withdrawalRef.id,
+        newBalance: currentBalance - amount,
+        amount: amount,
+        deduplicated: false,
+      };
+    });
 
     // Push the priest so the request lands as an OS notification —
     // useful when the admin batch-processes payouts hours later and
-    // the priest backgrounded the wallet screen.
-    await sendPushNotification({
-      userId: uid,
-      title: "Withdrawal Submitted",
-      body:
-        `₹${amount} withdrawal is being processed. ` +
-        "You'll be notified when it's sent to your bank.",
-      data: {
-        type: "withdrawal_processed",
-        route: "/priest/wallet",
-      },
-    });
+    // the priest backgrounded the wallet screen. Outside the txn so
+    // a push failure can't roll back the (already-committed) debit.
+    // Skipped on the dedup path because the original call already
+    // pushed when it first landed.
+    if (!txResult.deduplicated) {
+      try {
+        await sendPushNotification({
+          userId: uid,
+          title: "Withdrawal Submitted",
+          body:
+            `₹${amount} withdrawal is being processed. ` +
+            "You'll be notified when it's sent to your bank.",
+          data: {
+            type: "withdrawal_processed",
+            route: "/priest/wallet",
+          },
+        });
+      } catch (_) {
+        // Push is best-effort; the in-app notification doc above is
+        // the authoritative receipt.
+      }
+    }
 
-    const newBalance = currentBalance - amount;
-
-    return {
-      withdrawalId: withdrawalRef.id,
-      newBalance: newBalance,
-      amount: amount,
-      deduplicated: false,
-    };
+    return txResult;
   },
 );
