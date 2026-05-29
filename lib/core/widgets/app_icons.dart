@@ -87,6 +87,10 @@ class AppIcons {
   static const IconData bellOff = IconData(0xf1f6, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData reply = IconData(0xf3e5, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData send = IconData(0xf1d8, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
+  // Universal share glyph — box with the up-arrow inside, reads as
+  // "share with another app" on every platform (matches the iOS
+  // share icon and the typical Android "share" affordance).
+  static const IconData share = IconData(0xf14d, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData edit = IconData(0xf044, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData delete = IconData(0xf1f8, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData deleteSweep = IconData(0xf2ed, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');

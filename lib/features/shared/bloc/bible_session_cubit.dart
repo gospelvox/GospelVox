@@ -40,30 +40,46 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
     emit(const BibleSessionLoading());
 
     try {
+      // Three parallel reads — dropped the `getAllSessions()` call
+      // that used to fill the now-removed "All" tab. That query was
+      // pure waste: a full-collection scan that returned every doc
+      // the other three queries already covered, on every refresh.
       final results = await Future.wait([
         _repository.getUpcomingSessions(),
         _repository.getLiveSessions(),
         _repository.getPastSessions(),
-        _repository.getAllSessions(),
       ]);
 
       if (isClosed) return;
       final pastFiltered = _filterRecentPast(results[2]);
-      // For every LIVE session, fan-read the current user's reg doc
-      // and collect ids where status=='paid'. Drives the live card's
-      // "Open Meeting ✅" vs "Join Now · ₹X" branch — without this
-      // the list card has no way to know the viewer already paid
-      // and re-prompts them on every refresh. Best-effort: a per-doc
-      // read failure leaves that id out of the set, which degrades
-      // to the existing "Join Now" CTA rather than crashing.
-      final paidIds = await _resolvePaidSessionIds(results[1]);
+      // Per-session reg lookups for the CURRENT user, batched in
+      // parallel:
+      //   • paidIds drives the LIVE card's "Open Meeting ✅" vs
+      //     "Join Now · ₹X" branch — without it the list keeps
+      //     prompting paid users to pay again on every refresh.
+      //   • registeredIds drives the UPCOMING card's "Registered ✓"
+      //     vs "Register Free" branch — without it the list keeps
+      //     telling already-registered users to register again.
+      // Both run in parallel to keep the load round-trip short.
+      // Best-effort: per-doc read failures leave that id out of the
+      // set, which degrades to the prompt-again CTA rather than
+      // crashing.
+      final results2 = await Future.wait([
+        _resolvePaidSessionIds(results[1]),
+        _resolveRegisteredSessionIds(results[0]),
+      ]);
       if (isClosed) return;
       emit(BibleSessionLoaded(
         upcoming: results[0],
         live: results[1],
         past: pastFiltered,
-        all: results[3],
-        paidSessionIds: paidIds,
+        // `all` is no longer consumed by the user-side UI; keep the
+        // state field for backwards compat (priest-side surfaces may
+        // still read it) but populate as empty so the field is just
+        // an unused container, not a wasted Firestore read.
+        all: const [],
+        paidSessionIds: results2[0],
+        registeredSessionIds: results2[1],
       ));
     } on TimeoutException {
       if (isClosed) return;
@@ -92,6 +108,32 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
       try {
         final reg = await _repository.getRegistration(s.id, uid);
         return (reg != null && reg.isPaid) ? s.id : null;
+      } catch (_) {
+        return null;
+      }
+    }));
+    return results.whereType<String>().toSet();
+  }
+
+  // Same pattern as _resolvePaidSessionIds but for UPCOMING sessions:
+  // returns the set of ids where the current user has a non-cancelled
+  // registration. Drives the upcoming card's "Registered ✓" CTA.
+  //
+  // A reg doc is considered "registered" whenever it exists and isn't
+  // status='cancelled' — covers the normal 'registered' state and the
+  // edge-case 'paid' state (paid users on an upcoming session
+  // shouldn't logically exist in V1, but the check is defensive).
+  Future<Set<String>> _resolveRegisteredSessionIds(
+    List<BibleSessionModel> upcomingSessions,
+  ) async {
+    if (upcomingSessions.isEmpty) return const {};
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return const {};
+
+    final results = await Future.wait(upcomingSessions.map((s) async {
+      try {
+        final reg = await _repository.getRegistration(s.id, uid);
+        return (reg != null && !reg.isCancelled) ? s.id : null;
       } catch (_) {
         return null;
       }
@@ -133,5 +175,56 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
     }
   }
 
-  Future<void> refresh() => loadSessions();
+  // Public refresh — used by pull-to-refresh, detail-page return,
+  // and app-resume. Delegates to the SILENT refresh path so the UI
+  // doesn't flash the shimmer placeholder on every kick.
+  Future<void> refresh() => _silentRefresh();
+
+  // Silent background refresh.
+  //
+  // The OLD `refresh = loadSessions` path emitted `BibleSessionLoading`
+  // before each refetch, which made the BlocBuilder swap the loaded
+  // list out for the shimmer skeleton — every periodic tick (and
+  // every pull-to-refresh) caused a visible "page reloading" flicker.
+  // Even with no network changes the user saw the list disappear
+  // and reappear, which read as a bug.
+  //
+  // This path keeps the existing Loaded state on screen, fetches in
+  // the background, and only emits a NEW Loaded (with copyWith) when
+  // the data arrives. Errors are swallowed — a transient connectivity
+  // blip leaves the stale list visible instead of throwing the user
+  // into the full-screen error state and losing their place. The
+  // initial load is still routed through `loadSessions` so first-mount
+  // can show the shimmer (there's nothing to display otherwise).
+  Future<void> _silentRefresh() async {
+    if (isClosed) return;
+    final current = state;
+    if (current is! BibleSessionLoaded) {
+      return loadSessions();
+    }
+
+    try {
+      final results = await Future.wait([
+        _repository.getUpcomingSessions(),
+        _repository.getLiveSessions(),
+        _repository.getPastSessions(),
+      ]);
+      if (isClosed) return;
+      final pastFiltered = _filterRecentPast(results[2]);
+      final results2 = await Future.wait([
+        _resolvePaidSessionIds(results[1]),
+        _resolveRegisteredSessionIds(results[0]),
+      ]);
+      if (isClosed) return;
+      emit(current.copyWith(
+        upcoming: results[0],
+        live: results[1],
+        past: pastFiltered,
+        paidSessionIds: results2[0],
+        registeredSessionIds: results2[1],
+      ));
+    } catch (_) {
+      // Soft-fail by design — see header comment.
+    }
+  }
 }

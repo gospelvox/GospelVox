@@ -76,16 +76,15 @@ class BibleSessionRepository {
   // to one live session at a time (enforced server-side in
   // startBibleSession), so this list is typically very small.
   //
-  // Local stale-deadline filter:
-  //   The auto-complete cron (bibleSessionReminders.ts) flips status
-  //   from 'live' → 'completed' at startedAt + duration + 15min, but
-  //   it runs on a 5-minute schedule. Between the deadline and the
-  //   next cron tick, a finished session is still status='live' on
-  //   the server. Without this client-side filter the user would see
-  //   a "LIVE NOW" card for a session that's actually over.
-  //   `BibleSessionModel.isJoinable` returns false the moment the
-  //   deadline passes (uses the same offset as the cron) — drop
-  //   anything that fails that check.
+  // No client-side stale-deadline filter: between the join deadline
+  // (`startedAt + duration + 15min`) and the next 5-minute cron tick
+  // a session is still `status == 'live'` on the server. The OLD
+  // behaviour dropped these from the list entirely, leaving them
+  // invisible in BOTH live AND past until the cron ran (0–5 min gap
+  // where the user couldn't see their session anywhere). The card UI
+  // now flags `!isJoinable` as "Just ended" so the row stays visible,
+  // detail page's STATE I still blocks any new payments, and the
+  // cron flips it to past on its next tick.
   Future<List<BibleSessionModel>> getLiveSessions() async {
     final snap = await _sessions
         .where('status', isEqualTo: 'live')
@@ -94,7 +93,6 @@ class BibleSessionRepository {
 
     final sessions = snap.docs
         .map((doc) => BibleSessionModel.fromFirestore(doc.id, doc.data()))
-        .where((s) => s.isJoinable)
         .toList();
 
     // Newest live first — a priest who started two sessions back-to-
@@ -390,15 +388,31 @@ class BibleSessionRepository {
 
   // ── User-side registration ──────────────────────────────────────
 
-  // Free registration. Single doc write — `registrationCount` on the
-  // parent session doc is maintained by the onBibleRegistrationWrite
-  // CF trigger (rules deny user-side writes to that field anyway).
+  // Free registration. `registrationCount` on the parent session doc
+  // is maintained by the onBibleRegistrationWrite CF trigger (rules
+  // deny user-side writes to that field).
   //
-  // `set` (non-merge) is intentional so re-registration after a
-  // cancel cleanly overwrites the prior `cancelled` doc with a fresh
-  // `registered` row. The matching rule allows that transition for
-  // the doc owner; the trigger sees status 'cancelled' → 'registered'
-  // and bumps the count back up.
+  // Two code paths gated on the existing doc state:
+  //
+  //   • First-time registration — doc doesn't exist → `set` with
+  //     the seed fields. Hits the create rule.
+  //
+  //   • Re-register after cancel — doc exists with status='cancelled'
+  //     → `update` with status, registeredAt, and an explicit
+  //     `cancelledAt: FieldValue.delete()`. Hits the update rule's
+  //     re-register branch which permits exactly those three keys
+  //     in affectedKeys. A naive `set` here would also work in
+  //     theory, but only because the non-merge write happens to
+  //     remove `cancelledAt` as a side effect — making the rule
+  //     `hasOnly` clause and the client write depend on coincidence
+  //     rather than intent. Using `update` keeps the affected key
+  //     set tight and the rule contract explicit.
+  //
+  //   • Already 'registered' or 'paid' — no-op. The UI shouldn't
+  //     call this in those states, but a re-tap on a stale screen
+  //     should silently return rather than thrash registeredAt
+  //     (which would re-fire user-confirmation notifications on
+  //     every tap via the trigger's +1 delta detection).
   Future<void> registerForSession({
     required String sessionId,
     required String userId,
@@ -410,12 +424,30 @@ class BibleSessionRepository {
         .collection('registrations')
         .doc(userId);
 
-    await regRef.set({
-      'userName': userName,
-      'userPhotoUrl': userPhotoUrl,
-      'status': 'registered',
-      'registeredAt': FieldValue.serverTimestamp(),
-    }).timeout(_timeout);
+    final existing = await regRef.get().timeout(_timeout);
+
+    if (!existing.exists) {
+      await regRef.set({
+        'userName': userName,
+        'userPhotoUrl': userPhotoUrl,
+        'status': 'registered',
+        'registeredAt': FieldValue.serverTimestamp(),
+      }).timeout(_timeout);
+      return;
+    }
+
+    final currentStatus =
+        existing.data()?['status'] as String? ?? '';
+    if (currentStatus == 'cancelled') {
+      await regRef.update({
+        'status': 'registered',
+        'registeredAt': FieldValue.serverTimestamp(),
+        'cancelledAt': FieldValue.delete(),
+      }).timeout(_timeout);
+      return;
+    }
+
+    // Already 'registered' or 'paid' — no-op (see comment above).
   }
 
   // User self-cancel. Single status update — the count decrement is

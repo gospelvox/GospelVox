@@ -48,6 +48,13 @@ class _C {
   static const busyAmber = Color(0xFFD4A060);
   static const muted = Color(0xFF9B7B6E);
   static const darkBrown = Color(0xFF140800);
+  // Distinct hue for the "In Bible Session" state. Soft plum sits
+  // outside the warm palette (browns / ambers / sage) so the pill
+  // reads as a different KIND of unavailability — "respectfully
+  // occupied, sacred time" rather than the generic Busy amber. It's
+  // still legible against the warm-cream card surface and against
+  // dark photos behind the badge.
+  static const bibleAccent = Color(0xFF6B5B95);
 }
 
 // Default gradient stack used when callers don't supply their own.
@@ -213,7 +220,15 @@ class _PriestCardState extends State<PriestCard> {
             ),
           ),
         ),
-        if (priest.isOnline)
+        // Show the badge while online OR while in a bible session.
+        // The OR branch covers the stale-heartbeat edge case: a
+        // priest who's mid-Bible-Meet but backgrounded the app long
+        // enough for isOnline to drift false would otherwise show
+        // nothing — worse, the action row below would render
+        // "Notify me" (offline branch) which is misleading. With
+        // this guard the user always sees the correct "In Bible
+        // Session" pill while the lock is held.
+        if (priest.isOnline || priest.isInBibleSession)
           Positioned(
             top: 10,
             left: 10,
@@ -274,7 +289,25 @@ class _PriestCardState extends State<PriestCard> {
   }
 
   Widget _buildActions() {
-    if (widget.priest.isAvailable) {
+    final priest = widget.priest;
+    // In a Bible session — block both Call and Chat with a single
+    // muted, non-actionable pill. Higher precedence than isAvailable
+    // / isOnline because the priest is physically in a Google Meet
+    // and must not be rung. Tap routes to the priest profile
+    // (widget.onTap) instead of attempting a session — the profile
+    // page surfaces the same "In Bible Session" banner with more
+    // context. Keeps card-area tap behavior consistent and avoids a
+    // dead-tap button.
+    if (priest.isInBibleSession) {
+      return _ActionButton(
+        icon: AppIcons.bible,
+        label: 'In Bible session',
+        filled: false,
+        muted: true,
+        onTap: widget.onTap,
+      );
+    }
+    if (priest.isAvailable) {
       return Row(
         children: [
           Expanded(
@@ -585,7 +618,26 @@ class _StatusBadge extends StatelessWidget {
 
   // 4-tuple now — the trailing bool says whether the dot should pulse.
   // Only the "Online & not busy" state animates.
+  //
+  // Precedence order matters here:
+  //   1. In Bible Session — the strongest "do not disturb" state.
+  //      Priest may also be technically isBusy=true (back-to-back
+  //      with a chat) or even appear offline-via-stale-heartbeat,
+  //      but they're physically in a Google Meet — so this label
+  //      wins over everything else.
+  //   2. Available (isOnline && !isBusy && !isInBibleSession) —
+  //      green pulsing.
+  //   3. Busy (online but isBusy / manual pause).
+  //   4. Offline.
+  //
+  // The plum dot does pulse, same as Online — it's a "live" state
+  // (the session is in progress right now), and the gentle breathing
+  // signals "active session, not a passive flag" without competing
+  // with the green dot's color.
   (String, Color, Color, bool) _spec(SpeakerModel p) {
+    if (p.isInBibleSession) {
+      return ('In Bible Session', _C.bibleAccent, _C.darkBrown, true);
+    }
     if (p.isAvailable) {
       return ('Online', _C.onlineGreen, _C.darkBrown, true);
     }

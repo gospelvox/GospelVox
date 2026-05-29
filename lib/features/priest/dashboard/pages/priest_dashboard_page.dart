@@ -66,20 +66,38 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   int _totalSessions = 0;
   double _totalEarnings = 0.0;
   double _rating = 0.0;
-  // Total ratings count — read directly from the priest doc where the
-  // onSessionRated Cloud Function keeps it in sync. Used as the gate
-  // for "has ratings": a priest with 1+ reviews shows the average,
-  // a priest with 0 reviews shows the empty-state hint. We can't use
-  // `_rating > 0` for this — an aggregated 0.0 average is technically
-  // possible (it isn't with our 1-5 scale, but the gate should still
-  // reflect "do we have data?" not "is the data nonzero?").
+  // Effective ratings count for the dashboard tile. Sourced in
+  // priority order:
+  //   1. priests/{uid}.reviewCount — the CF-aggregated counter, kept
+  //      atomically in sync with `rating` and `recentReviews` by
+  //      onSessionRated + onBibleSessionRated.
+  //   2. priests/{uid}.recentReviews length — when the aggregated
+  //      counter is 0 but the denormalised array has entries, the
+  //      array is the authoritative signal. Covers backfilled priests
+  //      (the legacy backfill writes recentReviews without updating
+  //      reviewCount) and the brief window before a CF that has just
+  //      rewritten the array catches up on the counter field.
+  //   3. Local sessions query — last-resort async fallback in
+  //      _computeRatingFromSessions for un-backfilled legacy priests
+  //      whose chat/voice ratings live only on sessions/{id}.userRating.
+  // Used as the gate for "has ratings": a positive count shows the
+  // average, zero shows the empty-state hint. We can't use `_rating >
+  // 0` for this — an aggregated 0.0 average is technically possible
+  // (it isn't with our 1-5 scale, but the gate should still reflect
+  // "do we have data?" not "is the data nonzero?").
   int _reviewCount = 0;
-  // Latches once the client-side rating fallback has run. The
-  // priest doc stream re-fires every heartbeat (lastHeartbeat
-  // updates land here), so without the latch we'd re-issue the
-  // sessions query every 30s for a priest whose CF aggregation
-  // hasn't populated rating/reviewCount yet.
+  // Latches once the client-side rating fallback has run. The priest
+  // doc stream re-fires every heartbeat (lastHeartbeat updates land
+  // here), so without the latch we'd re-issue the sessions query
+  // every 30s for a priest whose CF aggregation hasn't populated
+  // rating/reviewCount yet AND who has no recentReviews entries.
   bool _ratingFallbackAttempted = false;
+  // True between starting the fallback and it returning. Gates the
+  // rating tile so it doesn't flash "No ratings yet" during the
+  // ~1 second the fallback takes — the tile shows a quiet "—" while
+  // we're still resolving, then flips to either the real number or
+  // the empty state once we know for sure.
+  bool _ratingFallbackInFlight = false;
 
   StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _docSub;
 
@@ -182,6 +200,47 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
       if (!mounted) return;
       final data = snap.data() ?? const <String, dynamic>{};
       final wasActivated = _isActivated;
+
+      // Resolve the rating + count from the priest doc using a
+      // priority chain. The aggregated counter is the canonical
+      // source, but it can lag (CF in-flight) or be wrong (legacy
+      // backfill only wrote recentReviews). Falling through to the
+      // denormalised array means a backfilled priest sees the right
+      // number on the first frame instead of waiting for the async
+      // sessions-query fallback every mount. Both onSessionRated and
+      // onBibleSessionRated update recentReviews atomically with
+      // reviewCount, so an entry-bearing array with reviewCount == 0
+      // is the unambiguous "aggregation is out of sync" signal.
+      final docReviewCount =
+          (data['reviewCount'] as num?)?.toInt() ?? 0;
+      final docRating = (data['rating'] as num?)?.toDouble() ?? 0.0;
+      int effectiveReviewCount = docReviewCount;
+      double effectiveRating = docRating;
+      if (effectiveReviewCount == 0) {
+        final arrayRatings = ((data['recentReviews'] as List?) ?? const [])
+            .whereType<Map>()
+            .map((m) => (m['rating'] as num?)?.toDouble())
+            .whereType<double>()
+            .where((r) => r > 0)
+            .toList();
+        if (arrayRatings.isNotEmpty) {
+          effectiveReviewCount = arrayRatings.length;
+          effectiveRating = double.parse(
+            (arrayRatings.reduce((a, b) => a + b) / arrayRatings.length)
+                .toStringAsFixed(1),
+          );
+        }
+      }
+
+      // Decide if the async fallback is needed BEFORE setState so the
+      // same build cycle flips the rating tile into its "resolving"
+      // state — without this the tile renders "No ratings yet" for
+      // one frame before the fallback kicks in. Now only triggers
+      // when both the counter AND the array are empty (the
+      // un-backfilled legacy case).
+      final shouldStartFallback =
+          effectiveReviewCount == 0 && !_ratingFallbackAttempted;
+
       setState(() {
         _fullName = data['fullName'] as String? ?? '';
         _photoUrl = data['photoUrl'] as String? ?? '';
@@ -190,17 +249,32 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
         _isActivated = data['isActivated'] as bool? ?? false;
         _totalSessions = (data['totalSessions'] as num?)?.toInt() ?? 0;
         _totalEarnings = (data['totalEarnings'] as num?)?.toDouble() ?? 0.0;
-        _rating = (data['rating'] as num?)?.toDouble() ?? 0.0;
-        _reviewCount = (data['reviewCount'] as num?)?.toInt() ?? 0;
+        _rating = effectiveRating;
+        _reviewCount = effectiveReviewCount;
         _loading = false;
+        if (shouldStartFallback) _ratingFallbackInFlight = true;
       });
 
-      // Client-side rating fallback: if the priest doc has no
-      // aggregated reviewCount yet (CF hasn't fired, legacy data, or
-      // the trigger failed mid-write), compute the average locally
-      // from rated sessions. Latched so we don't re-query on every
+      // Last-resort client-side rating fallback. Only fires when
+      // BOTH the aggregated reviewCount and the denormalised
+      // recentReviews array are empty — i.e. an un-backfilled legacy
+      // priest whose chat/voice ratings exist only on the source
+      // sessions docs. The recentReviews short-circuit above covers
+      // every other case (backfilled priests, CF-in-flight after a
+      // rating) synchronously, so this async path almost never runs
+      // in practice. Latched so we don't re-query on every
       // heartbeat-driven priest-doc snapshot.
-      if (_reviewCount == 0 && !_ratingFallbackAttempted) {
+      //
+      // Why only when the effective count is 0: every other rating-
+      // display surface in the app reads priests/{uid}.rating directly
+      // (profile page, reviews page, user-side priest profile/card,
+      // session history summary). Recomputing on every mount would
+      // make the dashboard disagree with all of those whenever the
+      // CF-aggregated value has drifted from the raw average. The
+      // canonical fix for drift lives in the CF; the dashboard's
+      // job is to surface what the source of truth says, not to
+      // unilaterally correct it.
+      if (shouldStartFallback) {
         _ratingFallbackAttempted = true;
         _computeRatingFromSessions();
       }
@@ -317,39 +391,92 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     });
   }
 
-  // ─── Rating fallback ───────────────────────────────────────
+  // ─── Rating fallback (race-window only) ────────────────────
 
-  // Runs once per dashboard mount when the priest doc reports
-  // reviewCount == 0. Reads the priest's sessions, keeps the ones a
-  // user rated, and averages them locally. The CF (onSessionRated)
-  // remains the source of truth for the priest doc fields; this
-  // method just patches the dashboard's local view so a temporarily
-  // missing aggregation doesn't show "No ratings yet" even when
-  // rated sessions exist.
+  // Runs at most once per dashboard mount, only when the priest doc
+  // reports reviewCount == 0. Covers the race between the first
+  // rating landing on the session/registration doc and the CF
+  // updating priests/{uid}.rating + reviewCount — without this the
+  // priest sees "No ratings yet" until the next mount even though
+  // their first review already exists.
+  //
+  // Reads BOTH chat/voice ratings (from the sessions collection) AND
+  // bible-session ratings (from the denormalised priests/{uid}.recentReviews
+  // array), averages the combined set, and patches the dashboard's
+  // local view. The two CFs (onSessionRated + onBibleSessionRated)
+  // remain the source of truth for the priest doc fields; this
+  // method just covers their write lag.
+  //
+  // What it MUST NOT do: override the doc value when reviewCount > 0.
+  // Every other rating-display surface in the app reads the priest
+  // doc directly; if this method "corrected" the dashboard, the
+  // dashboard would silently disagree with profile / reviews /
+  // session history / user-side surfaces — a worse user experience
+  // than a slightly-drifted-but-consistent number.
   Future<void> _computeRatingFromSessions() async {
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid == null) return;
     try {
-      final snap = await FirebaseFirestore.instance
+      final sessionsFuture = FirebaseFirestore.instance
           .collection('sessions')
           .where('priestId', isEqualTo: uid)
           .limit(500)
-          .get()
-          .timeout(const Duration(seconds: 8));
+          .get();
+      // Bible aggregation happens on the priest doc itself — we read
+      // it both for its mirrored recentReviews entries AND so we can
+      // pick up any rating the CF has just written before our
+      // priest-doc stream snapshot caught up.
+      final priestFuture =
+          FirebaseFirestore.instance.doc('priests/$uid').get();
+
+      final results = await Future.wait([
+        sessionsFuture,
+        priestFuture,
+      ]).timeout(const Duration(seconds: 8));
+
+      final snap = results[0] as QuerySnapshot<Map<String, dynamic>>;
+      final priestSnap =
+          results[1] as DocumentSnapshot<Map<String, dynamic>>;
+
       final ratings = <double>[];
       for (final d in snap.docs) {
         final r = (d.data()['userRating'] as num?)?.toDouble();
         if (r != null && r > 0) ratings.add(r);
       }
-      if (ratings.isEmpty || !mounted) return;
+
+      // Pick up bible ratings from the denormalised mirror so a priest
+      // who has only bible reviews (no chat/voice yet) doesn't see the
+      // empty state. We also dedupe-defensively against the sentinel
+      // key so a snapshot replay can't double-count.
+      final seenBibleKeys = <String>{};
+      final recent =
+          (priestSnap.data()?['recentReviews'] as List?) ?? const [];
+      for (final raw in recent.whereType<Map>()) {
+        final entry = Map<String, dynamic>.from(raw);
+        if (entry['source'] != 'bible') continue;
+        final key = entry['sessionId'] as String?;
+        if (key == null || !seenBibleKeys.add(key)) continue;
+        final r = (entry['rating'] as num?)?.toDouble();
+        if (r != null && r > 0) ratings.add(r);
+      }
+
+      if (!mounted) return;
+      if (ratings.isEmpty) {
+        // Truly no ratings yet — flip out of the resolving state so
+        // the tile is allowed to show "No ratings yet".
+        setState(() => _ratingFallbackInFlight = false);
+        return;
+      }
       final avg = ratings.reduce((a, b) => a + b) / ratings.length;
       setState(() {
         _rating = double.parse(avg.toStringAsFixed(1));
         _reviewCount = ratings.length;
+        _ratingFallbackInFlight = false;
       });
     } catch (_) {
       // Best-effort — leave the empty state in place if the query
-      // fails. The CF will eventually catch up on its own.
+      // fails. The CFs will eventually catch up on their own.
+      if (mounted) setState(() => _ratingFallbackInFlight = false);
     }
   }
 
@@ -441,10 +568,20 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
 
   @override
   Widget build(BuildContext context) {
+    // Hold the spinner until BOTH the priest doc has loaded AND the
+    // rating fallback (if it had to run) has returned. Without the
+    // second gate the dashboard renders briefly with the priest doc's
+    // raw reviewCount=0, the rating tile flashes the empty state for
+    // ~1s, then the fallback finishes and the tile flips to the real
+    // rating — a visible state change the priest reads as a glitch.
+    // Blocking the whole surface for that ~1s makes the dashboard
+    // appear in one settled state.
+    final isResolvingDashboard = _loading || _ratingFallbackInFlight;
+
     return Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
-        child: _loading
+        child: isResolvingDashboard
             ? const Center(
                 child: CircularProgressIndicator(
                   color: AppColors.primaryBrown,
@@ -647,10 +784,16 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
   }
 
   Widget _buildStatsRow() {
-    // Gate on reviewCount, not rating: the CF stores both atomically,
-    // and reviewCount is the unambiguous "do we have any ratings?"
-    // signal. The fallback above also populates both fields so the
-    // empty state never shows when rated sessions exist.
+    // Gate on reviewCount, not rating: `_reviewCount` is now the
+    // resolved-effective count (doc reviewCount, falling back to
+    // recentReviews length, falling back to the async sessions
+    // query), so a positive value is the unambiguous "do we have any
+    // ratings?" signal regardless of which path filled it. We can't
+    // use `_rating > 0` — an aggregated 0.0 average is technically
+    // possible. By the time this widget renders, the build() guard
+    // has already waited for the async fallback (if it had to run)
+    // to finish, so this value is final, no "empty → has-rating"
+    // flash.
     final hasRating = _reviewCount > 0;
     final earnedFormatted =
         '₹${_inrFormatter.format(_totalEarnings.round())}';

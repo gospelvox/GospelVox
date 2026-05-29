@@ -45,6 +45,25 @@
 	<true/>
 	<key>UIApplicationSupportsIndirectInputEvents</key>
 	<true/>
+	<!--
+		Custom-scheme deep link for shared priest profiles. A URL like
+		gospelvox://priest/<uid> opens the app and routes to that
+		profile (handled in lib/core/services/deep_link_service.dart).
+		This is the dummy scheme — once gospelvox.app is set up with an
+		apple-app-site-association file we'll add an associated-domains
+		entitlement for Universal Links. The two can coexist.
+	-->
+	<key>CFBundleURLTypes</key>
+	<array>
+		<dict>
+			<key>CFBundleURLName</key>
+			<string>com.gospelvox.gospel_vox</string>
+			<key>CFBundleURLSchemes</key>
+			<array>
+				<string>gospelvox</string>
+			</array>
+		</dict>
+	</array>
 	<!-- Background modes for voice calls + push.
 	     audio: keeps the Agora audio stream alive when the screen
 	            locks or the user switches apps. Without this, iOS

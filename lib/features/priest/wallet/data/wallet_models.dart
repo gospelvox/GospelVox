@@ -91,6 +91,15 @@ class BankDetails {
   final String accountNumber;
   final String ifscCode;
   final String bankName;
+  // Bank branch — auto-filled from the IFSC lookup, but the priest
+  // can edit it before saving in case the directory's value is stale.
+  // Optional on the model so existing priests (saved before this
+  // field existed) still load cleanly; required by the form.
+  final String branchName;
+  // "savings" or "current". Required by some bank-transfer rails
+  // (Razorpay X, NEFT/IMPS routing). Optional on the model for
+  // backwards compatibility; required by the form on new saves.
+  final String accountType;
   final String? upiId;
 
   const BankDetails({
@@ -98,6 +107,8 @@ class BankDetails {
     required this.accountNumber,
     required this.ifscCode,
     required this.bankName,
+    this.branchName = '',
+    this.accountType = '',
     this.upiId,
   });
 
@@ -107,21 +118,33 @@ class BankDetails {
       accountNumber: data['bankAccountNumber'] as String? ?? '',
       ifscCode: data['bankIfscCode'] as String? ?? '',
       bankName: data['bankName'] as String? ?? '',
+      branchName: data['bankBranchName'] as String? ?? '',
+      accountType: data['bankAccountType'] as String? ?? '',
       upiId: data['upiId'] as String?,
     );
   }
 
   // The CF writes the same field names; keeping the keys aligned
   // with priests/{uid} means saveBankDetails can write directly
-  // without an adapter layer.
+  // without an adapter layer. branchName / accountType are written
+  // unconditionally — an empty string is a valid "not set yet"
+  // marker on legacy records that the form will force the priest
+  // to fill in on next edit.
   Map<String, dynamic> toFirestore() => {
         'bankAccountName': accountHolderName,
         'bankAccountNumber': accountNumber,
         'bankIfscCode': ifscCode,
         'bankName': bankName,
+        'bankBranchName': branchName,
+        'bankAccountType': accountType,
         'upiId': upiId ?? '',
       };
 
+  // Withdrawal eligibility — branch + account type are NOT required
+  // here so existing priests with legacy records can still withdraw
+  // while the form gently nudges them to fill the new fields on the
+  // next edit. The Cloud Function only enforces holder + account +
+  // IFSC at the moment, so we stay aligned with that contract.
   bool get isComplete =>
       accountHolderName.isNotEmpty &&
       accountNumber.isNotEmpty &&

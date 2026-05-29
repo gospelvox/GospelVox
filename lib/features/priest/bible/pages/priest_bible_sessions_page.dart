@@ -92,15 +92,27 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
       // Bucket the priest's sessions into three groups. Splitting in
       // the load step keeps the build path cheap — no per-frame
       // filtering or sorting.
+      //
+      // isEffectivelyLive / isEffectivelyCompleted instead of the raw
+      // status flags — a session past its (startedAt + duration + 15min)
+      // deadline is treated as completed for bucketing even if the
+      // auto-complete cron hasn't flipped the doc yet. Without this
+      // the priest's "Live" tab keeps shouting LIVE for a session
+      // they finished an hour ago until the next 5-min cron tick
+      // catches up.
       final live = <BibleSessionModel>[];
       final upcoming = <BibleSessionModel>[];
       final past = <BibleSessionModel>[];
       for (final s in list) {
-        if (s.isLive) {
+        if (s.isEffectivelyLive) {
           live.add(s);
         } else if (s.isUpcoming) {
           upcoming.add(s);
         } else {
+          // Captures completed, cancelled, AND stale-live (past-
+          // deadline) sessions. The cron will flip the latter to
+          // completed soon; until then the priest sees them in
+          // Past where they belong.
           past.add(s);
         }
       }
@@ -470,10 +482,10 @@ class _PriestSessionCardState extends State<_PriestSessionCard> {
             color: AppColors.surfaceWhite,
             borderRadius: BorderRadius.circular(14),
             border: Border.all(
-              color: session.isLive
+              color: session.isEffectivelyLive
                   ? _kLiveRed.withValues(alpha: 0.35)
                   : AppColors.muted.withValues(alpha: 0.06),
-              width: session.isLive ? 1.4 : 1.0,
+              width: session.isEffectivelyLive ? 1.4 : 1.0,
             ),
             boxShadow: [
               BoxShadow(
@@ -549,7 +561,10 @@ class _StatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (session.isLive) {
+    // isEffectivelyLive — a status='live' doc that's past its deadline
+    // should not pulse a LIVE pill at the priest. We render it as
+    // Completed (the cron will flip the doc on its next tick).
+    if (session.isEffectivelyLive) {
       return _Pill(
         bg: _kLiveRed.withValues(alpha: 0.12),
         fg: _kLiveRed,
@@ -585,7 +600,12 @@ class _StatusPill extends StatelessWidget {
         ),
       );
     }
-    if (session.isCompleted) {
+    // isEffectivelyCompleted covers both real 'completed' docs AND
+    // a stale 'live' doc that's past its deadline waiting on the
+    // cron flip. Without this branch a past-deadline live session
+    // would fall through to the Cancelled pill below, which is a
+    // worse lie than waiting one cron tick for the real flip.
+    if (session.isEffectivelyCompleted) {
       return _Pill(
         bg: _kCompletedGreen.withValues(alpha: 0.1),
         fg: _kCompletedGreen,
@@ -889,14 +909,47 @@ class _CreateBibleSessionSheetState
   Future<void> _openReview() async {
     if (!_isValid || _creating) return;
 
-    final scheduledAt = DateTime(
+    // Two DateTimes for the same pick — one for showing the priest
+    // exactly what they entered, one for storage / validation.
+    //
+    //   • displayScheduledAt — DateTime(...) honours the device's
+    //     local timezone, so .hour/.minute round-trip back to the
+    //     picked TimeOfDay regardless of where the priest is.
+    //     Passed to _ReviewSheet so the review row shows "8:00 PM"
+    //     when the priest picked 8 PM, even on a non-IST device.
+    //
+    //   • utcScheduledAt — the authoritative instant. The form
+    //     labels the time field "TIME (IST)" but DateTime(...) without
+    //     .utc would treat the wall-clock pick as device-local, so a
+    //     priest in PDT would have their "8 PM IST" stored as 8 PM
+    //     PDT (= 14h off). Constructing in UTC from the picked
+    //     components and subtracting the IST offset (UTC+5:30) gives
+    //     the true UTC instant that "8 PM IST" represents. For an
+    //     IST device the two end up identical (toUtc(8 PM IST) ==
+    //     UTC(8 PM) - 5:30); for any other device this is what fixes
+    //     the timezone drift.
+    final displayScheduledAt = DateTime(
       _date!.year,
       _date!.month,
       _date!.day,
       _time!.hour,
       _time!.minute,
     );
-    if (scheduledAt.isBefore(DateTime.now())) {
+    final utcScheduledAt = DateTime.utc(
+      _date!.year,
+      _date!.month,
+      _date!.day,
+      _time!.hour,
+      _time!.minute,
+    ).subtract(const Duration(hours: 5, minutes: 30));
+
+    // Validate against the UTC instant — for a non-IST priest, the
+    // local displayScheduledAt could still be "in the future" while
+    // the actual IST instant has already passed, and we want the
+    // form to surface that mismatch up-front instead of after the
+    // priest taps Confirm & Publish and the CF rejects with
+    // invalid-argument.
+    if (utcScheduledAt.isBefore(DateTime.now())) {
       setState(() => _formError = "Pick a future date and time.");
       return;
     }
@@ -926,7 +979,7 @@ class _CreateBibleSessionSheetState
         title: _titleCtrl.text.trim(),
         description: _descCtrl.text.trim(),
         category: _category!,
-        scheduledAt: scheduledAt,
+        scheduledAt: displayScheduledAt,
         durationMinutes: _durationMinutes,
         price: price,
         maxAttendees: maxAttendees,
@@ -937,7 +990,7 @@ class _CreateBibleSessionSheetState
     if (confirmed != true) return;
 
     await _create(
-      scheduledAt: scheduledAt,
+      scheduledAt: utcScheduledAt,
       link: link,
       price: price,
       maxAttendees: maxAttendees,

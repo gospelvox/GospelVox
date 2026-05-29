@@ -22,12 +22,16 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_state.dart';
+import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart'
+    show formatMaskedAccountNumber;
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kSuccessGreen = Color(0xFF2E7D4F);
@@ -41,11 +45,54 @@ class PriestWalletPage extends StatefulWidget {
 
 class _PriestWalletPageState extends State<PriestWalletPage> {
   String? _uid;
+  // Single scroll controller owned by the page so a tap on the
+  // "Wallet History" pill inside the withdraw sheet can close the
+  // sheet AND animate the wallet body down to the transactions
+  // section, instead of just dumping the priest back on the hero
+  // card and making them scroll manually.
+  final ScrollController _bodyScrollController = ScrollController();
+  // GlobalKey on the transactions header — used to compute its
+  // offset inside the scroll view for the scroll-to-history jump.
+  final GlobalKey _transactionsAnchorKey = GlobalKey();
 
   @override
   void initState() {
     super.initState();
     _uid = FirebaseAuth.instance.currentUser?.uid;
+  }
+
+  @override
+  void dispose() {
+    _bodyScrollController.dispose();
+    super.dispose();
+  }
+
+  // Animates the wallet body so the Transaction History header sits
+  // near the top of the viewport. Falls back to scrolling to the
+  // bottom if the anchor hasn't been laid out yet (shouldn't happen
+  // since the withdraw button only exists once we're in Loaded).
+  void _scrollToHistory() {
+    final ctx = _transactionsAnchorKey.currentContext;
+    if (ctx != null) {
+      Scrollable.ensureVisible(
+        ctx,
+        duration: const Duration(milliseconds: 380),
+        curve: Curves.easeInOutCubic,
+        // 96px from the top leaves the AppBar + a comfortable gap
+        // above the header so the section feels intentionally
+        // brought into focus rather than scrolled to the edge.
+        alignmentPolicy: ScrollPositionAlignmentPolicy.explicit,
+        alignment: 0,
+      );
+      return;
+    }
+    if (_bodyScrollController.hasClients) {
+      _bodyScrollController.animateTo(
+        _bodyScrollController.position.maxScrollExtent,
+        duration: const Duration(milliseconds: 380),
+        curve: Curves.easeInOutCubic,
+      );
+    }
   }
 
   @override
@@ -66,8 +113,15 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
             PriestWalletLoaded() => _LoadedBody(
                 state: state,
                 uid: _uid,
+                scrollController: _bodyScrollController,
+                transactionsAnchorKey: _transactionsAnchorKey,
                 onWithdraw: () => _showWithdrawSheet(context, state),
                 onAddBank: () => _navigateToBankDetails(context, null),
+                onEditBank: () => _navigateToBankDetails(
+                  context,
+                  state.bankDetails,
+                ),
+                onDeleteBank: _handleDeleteBank,
               ),
             PriestWalletError() => _ErrorBody(
                 message: state.message,
@@ -127,6 +181,20 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
         onEditBank: () {
           Navigator.pop(sheetContext);
           _navigateToBankDetails(context, state.bankDetails);
+        },
+        // Closes the sheet and animates the wallet body to the
+        // Transaction History section. Lets the priest jump from
+        // "how much to withdraw" → "what did I last withdraw"
+        // without backing out and scrolling manually.
+        onHistory: () {
+          Navigator.pop(sheetContext);
+          // One post-frame tick so the sheet's close animation has
+          // started — otherwise ensureVisible can compute the
+          // pre-pop offset and the jump feels off.
+          WidgetsBinding.instance.addPostFrameCallback((_) {
+            if (!mounted) return;
+            _scrollToHistory();
+          });
         },
         // First-step confirm only opens the second-step sheet — it
         // does NOT debit. Money movement happens only after the
@@ -240,12 +308,76 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
       '/priest/bank-details',
       extra: existing,
     );
-    if (!mounted) return;
+    // Guard the param BuildContext directly — `mounted` only tells
+    // us about the State, not about whichever BuildContext the
+    // caller handed in (which could legitimately be a child route's
+    // context that's already gone).
+    if (!context.mounted) return;
     if (result is BankDetails) {
       // Surface the freshly-saved details to the cubit so the hero
       // CTA flips from "Add Bank Details" to "Withdraw to Bank"
       // without needing a manual refresh.
       cubit.updateBankDetails(result);
+      AppSnackBar.success(context, 'Bank details saved');
+    }
+  }
+
+  // Delete handler for the Linked Bank card. Runs the pending-
+  // withdrawal check first so the priest knows admin payouts will
+  // still process against the snapshotted bank fields on those
+  // rows. Calls into the repo + cubit so the hero CTA flips back
+  // to "Add Bank Details to Withdraw" without waiting on the
+  // priest-doc stream to catch up.
+  //
+  // Uses `this.context` after every `mounted` check — passing a
+  // BuildContext through the async gap upsets the analyzer's
+  // use-context-across-async-gaps lint and creates real safety
+  // issues if a route pops mid-flight.
+  Future<void> _handleDeleteBank() async {
+    final uid = _uid;
+    if (uid == null) return;
+
+    final repo = sl<PriestWalletRepository>();
+    // Capture the cubit while context is known-good. Cubit
+    // references survive the route popping; BuildContext doesn't.
+    final cubit = context.read<PriestWalletCubit>();
+
+    // Pending count guards the confirmation copy. -1 marks the
+    // lookup as having failed so the dialog can soften the wording
+    // ("we couldn't check…") instead of falsely claiming zero.
+    int pending = -1;
+    try {
+      pending = await repo.getPendingWithdrawalCount(uid);
+    } catch (_) {
+      pending = -1;
+    }
+
+    if (!mounted) return;
+
+    final confirmed = await showDialog<bool>(
+      context: context,
+      barrierColor: AppColors.deepDarkBrown.withValues(alpha: 0.35),
+      builder: (dialogCtx) =>
+          _DeleteBankDialog(pendingWithdrawals: pending),
+    );
+
+    if (confirmed != true || !mounted) return;
+
+    try {
+      await repo.clearBankDetails(uid);
+      if (!mounted) return;
+      cubit.clearBankDetails();
+      HapticFeedback.lightImpact();
+      AppSnackBar.success(context, 'Bank details removed');
+    } on TimeoutException {
+      if (!mounted) return;
+      AppSnackBar.error(
+        context,
+        'Network is slow. Check your connection and try again.',
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'Could not remove. Try again.');
     }
   }
 }
@@ -255,14 +387,31 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
 class _LoadedBody extends StatelessWidget {
   final PriestWalletLoaded state;
   final String? uid;
+  // Owned by _PriestWalletPageState so scroll-to-history works from
+  // the withdraw sheet without losing the existing scroll position
+  // on every rebuild.
+  final ScrollController scrollController;
+  // Pin used by Scrollable.ensureVisible to locate the Transaction
+  // History header inside the scroll view.
+  final Key transactionsAnchorKey;
   final VoidCallback onWithdraw;
   final VoidCallback onAddBank;
+  // Edit + Delete on the inline Linked Bank card below the hero.
+  // Edit reuses the same /priest/bank-details route as Add, just
+  // pre-filled. Delete pops up the confirmation dialog with the
+  // pending-withdrawal copy.
+  final VoidCallback onEditBank;
+  final VoidCallback onDeleteBank;
 
   const _LoadedBody({
     required this.state,
     required this.uid,
+    required this.scrollController,
+    required this.transactionsAnchorKey,
     required this.onWithdraw,
     required this.onAddBank,
+    required this.onEditBank,
+    required this.onDeleteBank,
   });
 
   @override
@@ -277,6 +426,7 @@ class _LoadedBody extends StatelessWidget {
         }
       },
       child: SingleChildScrollView(
+        controller: scrollController,
         physics: const AlwaysScrollableScrollPhysics(
           parent: BouncingScrollPhysics(),
         ),
@@ -289,6 +439,20 @@ class _LoadedBody extends StatelessWidget {
               onWithdraw: onWithdraw,
               onAddBank: onAddBank,
             ),
+            // Linked Bank Card — sits directly below the hero so the
+            // priest sees where withdrawals will land at a glance,
+            // and can edit or remove the account without leaving the
+            // wallet page. Only renders once a complete bank record
+            // exists; first-time setup still flows through the hero
+            // "Add Bank Details" CTA.
+            if (!state.needsBankDetails && state.bankDetails != null) ...[
+              const SizedBox(height: 16),
+              _LinkedBankCard(
+                details: state.bankDetails!,
+                onEdit: onEditBank,
+                onDelete: onDeleteBank,
+              ),
+            ],
             if (state.needsBankDetails) ...[
               const SizedBox(height: 12),
               const _InfoTip(
@@ -332,6 +496,7 @@ class _LoadedBody extends StatelessWidget {
             ),
             const SizedBox(height: 28),
             Row(
+              key: transactionsAnchorKey,
               mainAxisAlignment: MainAxisAlignment.spaceBetween,
               children: [
                 Text(
@@ -888,6 +1053,10 @@ class _WithdrawalSheet extends StatefulWidget {
   final BankDetails bankDetails;
   final ValueChanged<int> onConfirm;
   final VoidCallback onEditBank;
+  // Closes the sheet and scrolls the wallet body to the Transaction
+  // History section. Wired up by the wallet page; null-safe so the
+  // sheet still works if a future caller doesn't supply it.
+  final VoidCallback? onHistory;
 
   const _WithdrawalSheet({
     required this.balance,
@@ -895,6 +1064,7 @@ class _WithdrawalSheet extends StatefulWidget {
     required this.bankDetails,
     required this.onConfirm,
     required this.onEditBank,
+    this.onHistory,
   });
 
   @override
@@ -960,11 +1130,6 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
     _validateAmount();
   }
 
-  String _lastFour(String accountNumber) {
-    if (accountNumber.length < 4) return accountNumber;
-    return accountNumber.substring(accountNumber.length - 4);
-  }
-
   @override
   Widget build(BuildContext context) {
     final viewInsets = MediaQuery.of(context).viewInsets.bottom;
@@ -995,22 +1160,40 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
               ),
             ),
             const SizedBox(height: 20),
-            Text(
-              "Withdraw to Bank",
-              style: GoogleFonts.inter(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-            const SizedBox(height: 6),
-            Text(
-              "Available: ₹${widget.balance.toStringAsFixed(0)}",
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w400,
-                color: AppColors.muted,
-              ),
+            // Title row + Wallet History pill on the right. Mirrors
+            // the reference layout — "available balance" left,
+            // quick jump to past transactions on the right.
+            Row(
+              crossAxisAlignment: CrossAxisAlignment.center,
+              children: [
+                Expanded(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text(
+                        "Withdraw to Bank",
+                        style: GoogleFonts.inter(
+                          fontSize: 20,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.deepDarkBrown,
+                        ),
+                      ),
+                      const SizedBox(height: 6),
+                      Text(
+                        "Available: ₹${widget.balance.toStringAsFixed(0)}",
+                        style: GoogleFonts.inter(
+                          fontSize: 13,
+                          fontWeight: FontWeight.w400,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+                if (widget.onHistory != null)
+                  _WalletHistoryPill(onTap: widget.onHistory!),
+              ],
             ),
             const SizedBox(height: 24),
             Text(
@@ -1129,11 +1312,14 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
                         ),
                         const SizedBox(height: 2),
                         Text(
-                          "A/c: ••••${_lastFour(widget.bankDetails.accountNumber)}",
+                          "A/c ${formatMaskedAccountNumber(widget.bankDetails.accountNumber)}",
                           style: GoogleFonts.inter(
                             fontSize: 12,
                             fontWeight: FontWeight.w400,
                             color: AppColors.muted,
+                            fontFeatures: const [
+                              FontFeature.tabularFigures(),
+                            ],
                           ),
                         ),
                       ],
@@ -1262,12 +1448,66 @@ class _AmountChip extends StatelessWidget {
   }
 }
 
+// ─── Wallet History pill (used on the withdraw amount sheet) ───
+
+class _WalletHistoryPill extends StatelessWidget {
+  final VoidCallback onTap;
+
+  const _WalletHistoryPill({required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.selectionClick();
+        onTap();
+      },
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+        decoration: BoxDecoration(
+          color: AppColors.primaryBrown.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(20),
+          border: Border.all(
+            color: AppColors.primaryBrown.withValues(alpha: 0.16),
+          ),
+        ),
+        child: Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            AppIcon(
+              AppIcons.history,
+              size: 13,
+              color: AppColors.primaryBrown,
+            ),
+            const SizedBox(width: 6),
+            Text(
+              'Wallet History',
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w600,
+                color: AppColors.primaryBrown,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
 // ─── Confirmation sheet ────────────────────────────────────────
 
 // Second-step money-movement gate. The wallet page first opens
 // _WithdrawalSheet (amount entry); on Confirm there, this sheet
 // opens to show the priest exactly what's about to happen and
 // requires one more tap. No CF call has been made yet.
+//
+// Layout mirrors the reference's "Confirm Withdrawal" — a single
+// breakdown card (Amount / Processing Fee / You Will Receive), a
+// To-Bank-Account card with masked account number, an Important
+// Information block setting expectations, and the dual-button
+// commit row at the bottom.
 class _ConfirmWithdrawalSheet extends StatelessWidget {
   final int amount;
   final BankDetails bankDetails;
@@ -1281,12 +1521,14 @@ class _ConfirmWithdrawalSheet extends StatelessWidget {
     required this.onConfirm,
   });
 
-  String _lastFour(String n) =>
-      n.length < 4 ? n : n.substring(n.length - 4);
-
   @override
   Widget build(BuildContext context) {
     final paddingBottom = MediaQuery.of(context).padding.bottom;
+    // Processing fee is 0 in the current economy. Surfaced as a
+    // named value so when admin introduces a fee later (Razorpay X
+    // payout cost passed through, etc.) it's a one-line change.
+    const int processingFee = 0;
+    final receiveAmount = amount - processingFee;
 
     return Container(
       decoration: const BoxDecoration(
@@ -1296,124 +1538,502 @@ class _ConfirmWithdrawalSheet extends StatelessWidget {
           topRight: Radius.circular(24),
         ),
       ),
-      padding: const EdgeInsets.fromLTRB(24, 12, 24, 0),
-      child: Column(
-        mainAxisSize: MainAxisSize.min,
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Center(
-            child: Container(
-              width: 40,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.muted.withValues(alpha: 0.2),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-          ),
-          const SizedBox(height: 20),
-          Center(
-            child: Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.amberGold.withValues(alpha: 0.12),
-              ),
-              child: AppIcon(
-                AppIcons.bank,
-                size: 28,
-                color: AppColors.amberGold,
-              ),
-            ),
-          ),
-          const SizedBox(height: 16),
-          // The headline echoes the bank info verbatim — last-4
-          // digits and bank name are exactly what the priest sees
-          // on their bank statement, so the visual match is the
-          // strongest sanity check before committing.
-          Text(
-            "Withdraw ₹$amount to ${bankDetails.bankName}\n"
-            "A/c ••••${_lastFour(bankDetails.accountNumber)}?",
-            textAlign: TextAlign.center,
-            style: GoogleFonts.inter(
-              fontSize: 17,
-              fontWeight: FontWeight.w700,
-              height: 1.4,
-              color: AppColors.deepDarkBrown,
-            ),
-          ),
-          const SizedBox(height: 12),
-          Text(
-            "This action cannot be undone. "
-            "The amount will be processed within 1-3 business days.",
-            textAlign: TextAlign.center,
-            style: GoogleFonts.inter(
-              fontSize: 12,
-              fontWeight: FontWeight.w400,
-              height: 1.5,
-              color: AppColors.muted,
-            ),
-          ),
-          const SizedBox(height: 24),
-          Row(
-            children: [
-              Expanded(
-                child: _PressableScale(
-                  onTap: onCancel,
-                  child: Container(
-                    height: 52,
-                    decoration: BoxDecoration(
-                      color: AppColors.muted.withValues(alpha: 0.08),
-                      borderRadius: BorderRadius.circular(14),
-                    ),
-                    child: Center(
-                      child: Text(
-                        "Cancel",
-                        style: GoogleFonts.inter(
-                          fontSize: 15,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.deepDarkBrown,
-                        ),
-                      ),
-                    ),
-                  ),
+      padding: const EdgeInsets.fromLTRB(20, 12, 20, 0),
+      child: SingleChildScrollView(
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.2),
+                  borderRadius: BorderRadius.circular(2),
                 ),
               ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: _PressableScale(
-                  onTap: onConfirm,
-                  child: Container(
-                    height: 52,
-                    decoration: BoxDecoration(
-                      color: AppColors.primaryBrown,
-                      borderRadius: BorderRadius.circular(14),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.primaryBrown
-                              .withValues(alpha: 0.2),
-                          blurRadius: 12,
-                          offset: const Offset(0, 4),
-                        ),
-                      ],
+            ),
+            const SizedBox(height: 18),
+            Padding(
+              padding: const EdgeInsets.only(left: 4),
+              child: Text(
+                'Confirm Withdrawal',
+                style: GoogleFonts.inter(
+                  fontSize: 19,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+
+            // ── Amount breakdown card ──
+            _AmountBreakdownCard(
+              amount: amount,
+              processingFee: processingFee,
+              receiveAmount: receiveAmount,
+            ),
+            const SizedBox(height: 18),
+
+            // ── To Bank Account ──
+            Padding(
+              padding: const EdgeInsets.only(left: 4, bottom: 8),
+              child: Text(
+                'To Bank Account',
+                style: GoogleFonts.inter(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.muted,
+                ),
+              ),
+            ),
+            _ConfirmBankCard(bankDetails: bankDetails),
+            const SizedBox(height: 16),
+
+            // ── Important information block ──
+            _ImportantInfoBlock(
+              points: const [
+                'Withdrawals are processed within 1-3 working days.',
+                'Ensure your bank details are correct before confirming.',
+                'For any queries, please contact support.',
+              ],
+            ),
+            const SizedBox(height: 22),
+
+            // ── Commit buttons ──
+            _PressableScale(
+              onTap: onConfirm,
+              child: Container(
+                width: double.infinity,
+                height: 54,
+                decoration: BoxDecoration(
+                  color: AppColors.primaryBrown,
+                  borderRadius: BorderRadius.circular(14),
+                  boxShadow: [
+                    BoxShadow(
+                      color: AppColors.primaryBrown.withValues(alpha: 0.22),
+                      blurRadius: 14,
+                      offset: const Offset(0, 5),
                     ),
-                    child: Center(
-                      child: Text(
-                        "Yes, Withdraw",
+                  ],
+                ),
+                child: Center(
+                  child: Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      AppIcon(
+                        AppIcons.lock,
+                        size: 14,
+                        color: Colors.white,
+                      ),
+                      const SizedBox(width: 8),
+                      Text(
+                        'Confirm & Withdraw',
                         style: GoogleFonts.inter(
                           fontSize: 15,
                           fontWeight: FontWeight.w700,
                           color: Colors.white,
                         ),
                       ),
-                    ),
+                    ],
                   ),
+                ),
+              ),
+            ),
+            const SizedBox(height: 6),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: onCancel,
+              child: Container(
+                width: double.infinity,
+                height: 48,
+                alignment: Alignment.center,
+                child: Text(
+                  'Cancel',
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ),
+            ),
+            SizedBox(height: paddingBottom + 8),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Amount / fee / receive breakdown. Cream card with hairline border
+// keeps it visually grouped without competing with the bank card
+// directly beneath it.
+class _AmountBreakdownCard extends StatelessWidget {
+  final int amount;
+  final int processingFee;
+  final int receiveAmount;
+
+  const _AmountBreakdownCard({
+    required this.amount,
+    required this.processingFee,
+    required this.receiveAmount,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(18, 16, 18, 16),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceCream,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.muted.withValues(alpha: 0.10),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
+        children: [
+          _BreakdownRow(
+            label: 'Withdraw Amount',
+            value: '₹${_formatInr(amount)}',
+            emphasised: false,
+          ),
+          const SizedBox(height: 10),
+          Row(
+            children: [
+              Expanded(
+                child: Row(
+                  children: [
+                    Text(
+                      'Processing Fee',
+                      style: GoogleFonts.inter(
+                        fontSize: 13.5,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    AppIcon(
+                      AppIcons.info,
+                      size: 12,
+                      color: AppColors.muted.withValues(alpha: 0.6),
+                    ),
+                  ],
+                ),
+              ),
+              Text(
+                processingFee == 0 ? '₹0' : '₹${_formatInr(processingFee)}',
+                style: GoogleFonts.inter(
+                  fontSize: 13.5,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.deepDarkBrown,
+                  fontFeatures: const [FontFeature.tabularFigures()],
                 ),
               ),
             ],
           ),
-          SizedBox(height: paddingBottom + 20),
+          const Padding(
+            padding: EdgeInsets.symmetric(vertical: 12),
+            child: _DashedDivider(),
+          ),
+          _BreakdownRow(
+            label: 'You Will Receive',
+            value: '₹${_formatInr(receiveAmount)}',
+            emphasised: true,
+          ),
+        ],
+      ),
+    );
+  }
+
+  // Indian-style grouping (2,5,000) for readability. The CF takes
+  // an integer rupee amount so we never have to worry about paise.
+  static String _formatInr(int v) {
+    final s = v.toString();
+    if (s.length <= 3) return s;
+    final last3 = s.substring(s.length - 3);
+    final rest = s.substring(0, s.length - 3);
+    final buf = StringBuffer();
+    for (int i = 0; i < rest.length; i++) {
+      // Insert commas every 2 chars from the right, working left.
+      if (i > 0 && (rest.length - i) % 2 == 0) buf.write(',');
+      buf.write(rest[i]);
+    }
+    return '${buf.toString()},$last3';
+  }
+}
+
+class _BreakdownRow extends StatelessWidget {
+  final String label;
+  final String value;
+  final bool emphasised;
+
+  const _BreakdownRow({
+    required this.label,
+    required this.value,
+    required this.emphasised,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      children: [
+        Expanded(
+          child: Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: emphasised ? 14 : 13.5,
+              fontWeight: emphasised ? FontWeight.w700 : FontWeight.w500,
+              color: emphasised
+                  ? AppColors.deepDarkBrown
+                  : AppColors.muted,
+            ),
+          ),
+        ),
+        Text(
+          value,
+          style: GoogleFonts.inter(
+            fontSize: emphasised ? 18 : 13.5,
+            fontWeight: emphasised ? FontWeight.w800 : FontWeight.w600,
+            letterSpacing: emphasised ? -0.3 : 0,
+            color: emphasised
+                ? AppColors.primaryBrown
+                : AppColors.deepDarkBrown,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _DashedDivider extends StatelessWidget {
+  const _DashedDivider();
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        const dashWidth = 4.0;
+        const dashGap = 4.0;
+        final dashes = (constraints.maxWidth / (dashWidth + dashGap)).floor();
+        return Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: List.generate(dashes, (_) {
+            return SizedBox(
+              width: dashWidth,
+              height: 1,
+              child: DecoratedBox(
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.28),
+                ),
+              ),
+            );
+          }),
+        );
+      },
+    );
+  }
+}
+
+// Compact bank account card used on the Confirm Withdrawal sheet.
+// Shows the bank icon, bank name, masked account number (4-4-4-4),
+// and account holder name. No actions — this is a display surface
+// confirming where the money is going.
+class _ConfirmBankCard extends StatelessWidget {
+  final BankDetails bankDetails;
+
+  const _ConfirmBankCard({required this.bankDetails});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppColors.muted.withValues(alpha: 0.12),
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            width: 44,
+            height: 44,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.amberGold.withValues(alpha: 0.14),
+            ),
+            alignment: Alignment.center,
+            child: AppIcon(
+              AppIcons.bank,
+              size: 20,
+              color: AppColors.amberGold,
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Expanded(
+                      child: Text(
+                        bankDetails.bankName.isNotEmpty
+                            ? bankDetails.bankName
+                            : 'Linked Bank',
+                        maxLines: 1,
+                        overflow: TextOverflow.ellipsis,
+                        style: GoogleFonts.inter(
+                          fontSize: 14,
+                          fontWeight: FontWeight.w700,
+                          color: AppColors.primaryBrown,
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 6),
+                    Container(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: 7,
+                        vertical: 3,
+                      ),
+                      decoration: BoxDecoration(
+                        color: AppColors.success.withValues(alpha: 0.12),
+                        borderRadius: BorderRadius.circular(20),
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          AppIcon(
+                            AppIcons.check,
+                            size: 9,
+                            color: AppColors.success,
+                          ),
+                          const SizedBox(width: 3),
+                          Text(
+                            'Saved',
+                            style: GoogleFonts.inter(
+                              fontSize: 10,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.success,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ],
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  formatMaskedAccountNumber(bankDetails.accountNumber),
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w600,
+                    color: AppColors.deepDarkBrown,
+                    fontFeatures: const [FontFeature.tabularFigures()],
+                  ),
+                ),
+                if (bankDetails.accountHolderName.isNotEmpty) ...[
+                  const SizedBox(height: 2),
+                  Text(
+                    bankDetails.accountHolderName,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 11.5,
+                      fontWeight: FontWeight.w400,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Important Information block — sets expectations on processing
+// time and steers misuse cases to support without overwhelming the
+// priest with legalese.
+class _ImportantInfoBlock extends StatelessWidget {
+  final List<String> points;
+
+  const _ImportantInfoBlock({required this.points});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.fromLTRB(14, 12, 14, 12),
+      decoration: BoxDecoration(
+        color: AppColors.primaryBrown.withValues(alpha: 0.05),
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(
+          color: AppColors.primaryBrown.withValues(alpha: 0.12),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AppIcon(
+                AppIcons.shield,
+                size: 14,
+                color: AppColors.primaryBrown,
+              ),
+              const SizedBox(width: 8),
+              Text(
+                'Important Information',
+                style: GoogleFonts.inter(
+                  fontSize: 12.5,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.primaryBrown,
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+          ...points.map((p) => Padding(
+                padding: const EdgeInsets.only(top: 4),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Padding(
+                      padding: const EdgeInsets.only(top: 7),
+                      child: Container(
+                        width: 4,
+                        height: 4,
+                        decoration: BoxDecoration(
+                          shape: BoxShape.circle,
+                          color: AppColors.primaryBrown
+                              .withValues(alpha: 0.55),
+                        ),
+                      ),
+                    ),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        p,
+                        style: GoogleFonts.inter(
+                          fontSize: 12,
+                          fontWeight: FontWeight.w400,
+                          height: 1.45,
+                          color: AppColors.deepDarkBrown
+                              .withValues(alpha: 0.78),
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              )),
         ],
       ),
     );
@@ -1522,6 +2142,462 @@ class _SuccessSheetState extends State<_SuccessSheet> {
           ),
           SizedBox(height: paddingBottom + 12),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Linked Bank card (wallet page, below hero) ────────────────
+
+// Inline saved-bank surface. Renders the priest's linked account
+// just under the balance hero so they can verify "where does my
+// money land" without leaving the wallet page. Edit re-enters the
+// bank-details form (pre-filled); Delete kicks off the confirmation
+// dialog defined below.
+class _LinkedBankCard extends StatelessWidget {
+  final BankDetails details;
+  final VoidCallback onEdit;
+  final VoidCallback onDelete;
+
+  const _LinkedBankCard({
+    required this.details,
+    required this.onEdit,
+    required this.onDelete,
+  });
+
+  String get _accountTypeLabel {
+    switch (details.accountType) {
+      case 'savings':
+        return 'Savings';
+      case 'current':
+        return 'Current';
+      default:
+        return '';
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.fromLTRB(18, 18, 18, 16),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(20),
+        border: Border.all(
+          color: AppColors.muted.withValues(alpha: 0.10),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.03),
+            blurRadius: 14,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          // Header row — bank icon + name + Saved badge.
+          Row(
+            children: [
+              Container(
+                width: 46,
+                height: 46,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.amberGold.withValues(alpha: 0.14),
+                ),
+                alignment: Alignment.center,
+                child: AppIcon(
+                  AppIcons.bank,
+                  size: 22,
+                  color: AppColors.amberGold,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Row(
+                      children: [
+                        Expanded(
+                          child: Text(
+                            details.bankName.isNotEmpty
+                                ? details.bankName
+                                : 'Linked Bank',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              fontSize: 15,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.primaryBrown,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 8,
+                            vertical: 3,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.success.withValues(alpha: 0.12),
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              AppIcon(
+                                AppIcons.check,
+                                size: 10,
+                                color: AppColors.success,
+                              ),
+                              const SizedBox(width: 4),
+                              Text(
+                                'Saved',
+                                style: GoogleFonts.inter(
+                                  fontSize: 10.5,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.success,
+                                ),
+                              ),
+                            ],
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 3),
+                    Text(
+                      details.accountHolderName.isNotEmpty
+                          ? details.accountHolderName
+                          : '—',
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: GoogleFonts.inter(
+                        fontSize: 12.5,
+                        fontWeight: FontWeight.w500,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ],
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 14),
+
+          // Masked account number — the field the priest cross-
+          // checks against bank SMS / passbook. Grouped 4-4-4-4.
+          Text(
+            formatMaskedAccountNumber(details.accountNumber),
+            style: GoogleFonts.inter(
+              fontSize: 16,
+              fontWeight: FontWeight.w700,
+              letterSpacing: 1.2,
+              color: AppColors.deepDarkBrown,
+              fontFeatures: const [FontFeature.tabularFigures()],
+            ),
+          ),
+          const SizedBox(height: 12),
+
+          // IFSC + Branch + Account Type — small meta row. Wraps
+          // gracefully when branch name is long.
+          Wrap(
+            spacing: 18,
+            runSpacing: 6,
+            children: [
+              _MetaLabel(
+                label: 'IFSC',
+                value: details.ifscCode.isNotEmpty
+                    ? details.ifscCode
+                    : '—',
+              ),
+              if (details.branchName.isNotEmpty)
+                _MetaLabel(
+                  label: 'Branch',
+                  value: details.branchName,
+                ),
+              if (_accountTypeLabel.isNotEmpty)
+                _MetaLabel(
+                  label: 'Type',
+                  value: _accountTypeLabel,
+                ),
+            ],
+          ),
+          const SizedBox(height: 16),
+          Container(
+            height: 1,
+            color: AppColors.muted.withValues(alpha: 0.10),
+          ),
+          const SizedBox(height: 12),
+
+          // Action row — Edit (brown) + Delete (muted red). Edit
+          // gets the visual primary treatment because it's the more
+          // common action; Delete sits quiet to dampen accidental
+          // taps without hiding it.
+          Row(
+            children: [
+              Expanded(
+                child: _BankActionButton(
+                  label: 'Edit',
+                  icon: AppIcons.edit,
+                  color: AppColors.primaryBrown,
+                  onTap: onEdit,
+                ),
+              ),
+              const SizedBox(width: 10),
+              Expanded(
+                child: _BankActionButton(
+                  label: 'Delete',
+                  icon: AppIcons.delete,
+                  color: AppColors.errorRed,
+                  onTap: onDelete,
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MetaLabel extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _MetaLabel({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Text(
+          label,
+          style: GoogleFonts.inter(
+            fontSize: 10.5,
+            fontWeight: FontWeight.w500,
+            letterSpacing: 0.4,
+            color: AppColors.muted,
+          ),
+        ),
+        const SizedBox(height: 2),
+        Text(
+          value,
+          style: GoogleFonts.inter(
+            fontSize: 12.5,
+            fontWeight: FontWeight.w600,
+            color: AppColors.deepDarkBrown,
+            fontFeatures: const [FontFeature.tabularFigures()],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// Tinted outline button used for the inline Edit / Delete actions
+// on the Linked Bank card. Press-scale identical to the page's
+// other CTAs so the visual rhythm is consistent.
+class _BankActionButton extends StatefulWidget {
+  final String label;
+  final IconData icon;
+  final Color color;
+  final VoidCallback onTap;
+
+  const _BankActionButton({
+    required this.label,
+    required this.icon,
+    required this.color,
+    required this.onTap,
+  });
+
+  @override
+  State<_BankActionButton> createState() => _BankActionButtonState();
+}
+
+class _BankActionButtonState extends State<_BankActionButton> {
+  double _scale = 1.0;
+
+  @override
+  Widget build(BuildContext context) {
+    return Listener(
+      onPointerDown: (_) => setState(() => _scale = 0.97),
+      onPointerUp: (_) => setState(() => _scale = 1.0),
+      onPointerCancel: (_) => setState(() => _scale = 1.0),
+      child: GestureDetector(
+        behavior: HitTestBehavior.opaque,
+        onTap: () {
+          HapticFeedback.selectionClick();
+          widget.onTap();
+        },
+        child: AnimatedScale(
+          scale: _scale,
+          duration: const Duration(milliseconds: 120),
+          curve: Curves.easeOut,
+          child: Container(
+            height: 44,
+            decoration: BoxDecoration(
+              color: widget.color.withValues(alpha: 0.06),
+              borderRadius: BorderRadius.circular(12),
+              border: Border.all(
+                color: widget.color.withValues(alpha: 0.22),
+              ),
+            ),
+            alignment: Alignment.center,
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                AppIcon(widget.icon, size: 14, color: widget.color),
+                const SizedBox(width: 7),
+                Text(
+                  widget.label,
+                  style: GoogleFonts.inter(
+                    fontSize: 13.5,
+                    fontWeight: FontWeight.w700,
+                    color: widget.color,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Delete confirmation dialog ────────────────────────────────
+
+// Shown from the wallet page's Delete button. Adapts its body copy
+// to the pending-withdrawal count: with pending rows the priest is
+// told those will still process to the snapshotted bank, without
+// any the message is the simpler "you won't be able to withdraw
+// until you add one again". -1 means the count lookup failed and
+// the copy softens to "could not check".
+class _DeleteBankDialog extends StatelessWidget {
+  final int pendingWithdrawals;
+
+  const _DeleteBankDialog({required this.pendingWithdrawals});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasPending = pendingWithdrawals > 0;
+    final lookupFailed = pendingWithdrawals < 0;
+
+    return Dialog(
+      backgroundColor: AppColors.surfaceWhite,
+      insetPadding: const EdgeInsets.symmetric(horizontal: 32),
+      shape: RoundedRectangleBorder(
+        borderRadius: BorderRadius.circular(20),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.fromLTRB(22, 24, 22, 18),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Center(
+              child: Container(
+                width: 56,
+                height: 56,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.errorRed.withValues(alpha: 0.10),
+                ),
+                alignment: Alignment.center,
+                child: AppIcon(
+                  AppIcons.delete,
+                  size: 26,
+                  color: AppColors.errorRed,
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Remove bank account?',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 17,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Text(
+              hasPending
+                  ? 'You have $pendingWithdrawals pending withdrawal'
+                      '${pendingWithdrawals == 1 ? '' : 's'}. '
+                      'Those will still be processed to this account. '
+                      'New withdrawals will be blocked until you add an '
+                      'account again.'
+                  : lookupFailed
+                      ? 'We could not check your pending withdrawals. '
+                          'You can still remove the account — any in-flight '
+                          'payouts will use the snapshotted details.'
+                      : 'You will not be able to withdraw until you add '
+                          'a bank account again.',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w400,
+                height: 1.5,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(height: 22),
+            Row(
+              children: [
+                Expanded(
+                  child: TextButton(
+                    onPressed: () => Navigator.pop(context, false),
+                    style: TextButton.styleFrom(
+                      foregroundColor: AppColors.deepDarkBrown,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      'Cancel',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(width: 10),
+                Expanded(
+                  child: ElevatedButton(
+                    onPressed: () => Navigator.pop(context, true),
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.errorRed,
+                      foregroundColor: Colors.white,
+                      elevation: 0,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(12),
+                      ),
+                    ),
+                    child: Text(
+                      'Remove',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ],
+        ),
       ),
     );
   }

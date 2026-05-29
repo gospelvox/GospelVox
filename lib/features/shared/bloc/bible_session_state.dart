@@ -30,6 +30,12 @@ class BibleSessionLoaded extends BibleSessionState {
   // "Join Now · ₹X". Without this the list nags every paid user to
   // pay again on every refresh until auto-complete.
   final Set<String> paidSessionIds;
+  // Session ids the CURRENT user has registered for (non-cancelled).
+  // Drives the upcoming card CTA — registered sessions show
+  // "Registered ✓" outlined-green instead of the amber "Register
+  // Free" prompt that would tell an already-registered user to
+  // re-register. Empty for anonymous / signed-out users.
+  final Set<String> registeredSessionIds;
   // "upcoming" / "live" / "past" / "all" — drives which list the
   // tab renders. The bible tab will likely fold "live" into the
   // top of "upcoming" rather than render a dedicated tab; both
@@ -42,6 +48,7 @@ class BibleSessionLoaded extends BibleSessionState {
     required this.past,
     required this.all,
     this.paidSessionIds = const {},
+    this.registeredSessionIds = const {},
     this.activeTab = 'upcoming',
   });
 
@@ -66,6 +73,7 @@ class BibleSessionLoaded extends BibleSessionState {
     List<BibleSessionModel>? past,
     List<BibleSessionModel>? all,
     Set<String>? paidSessionIds,
+    Set<String>? registeredSessionIds,
     String? activeTab,
   }) {
     return BibleSessionLoaded(
@@ -74,6 +82,8 @@ class BibleSessionLoaded extends BibleSessionState {
       past: past ?? this.past,
       all: all ?? this.all,
       paidSessionIds: paidSessionIds ?? this.paidSessionIds,
+      registeredSessionIds:
+          registeredSessionIds ?? this.registeredSessionIds,
       activeTab: activeTab ?? this.activeTab,
     );
   }

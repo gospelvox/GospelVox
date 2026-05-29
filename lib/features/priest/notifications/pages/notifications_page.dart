@@ -133,6 +133,20 @@ class _NotificationsPageState extends State<NotificationsPage> {
       case 'withdrawal_sent':
         if (mounted) context.push('/priest/wallet');
         return;
+      // Call/chat review surfaces — both the per-review push fired
+      // by onSessionRated on every new rating, and the bonus
+      // milestone inbox card written when the priest's review count
+      // crosses 1 / 5 / 10 / 25 / 50 / 100 / 250 / 500. Both land on
+      // the priest's unified /priest/reviews page where call/chat
+      // and bible reviews render side-by-side. (Bible reviews go to
+      // /priest/bible/{sessionId} above — that surface has a
+      // session-specific attendee list with the rating inline, so
+      // it's a closer landing for bible. Call/chat sessions don't
+      // have an equivalent per-session detail page.)
+      case 'session_rated':
+      case 'review_milestone':
+        if (mounted) context.push('/priest/reviews');
+        return;
       // Bible session lifecycle notifications addressed to the priest.
       // Every type below has a sessionId — without one, fall through
       // to the no-op default rather than navigating to a broken
@@ -146,6 +160,11 @@ class _NotificationsPageState extends State<NotificationsPage> {
       case 'bible_session_link_urgent':
       case 'bible_session_golive':
       case 'bible_session_starting_priest':
+      // Fired by onBibleSessionRated when a paid attendee submits a
+      // rating. The detail page surfaces the rating + feedback in
+      // the completed-state attendee list, so landing there gives
+      // the priest the closest possible view of what was reviewed.
+      case 'bible_session_reviewed':
         final sessionId = notif.sessionId ?? '';
         if (sessionId.isNotEmpty && mounted) {
           context.push('/priest/bible/$sessionId');

@@ -62,7 +62,7 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
     if (d.bio.trim().isEmpty || d.bio.trim().length < 50) {
       missing.add('Bio');
     }
-    if (d.specializations.isEmpty) missing.add('Specializations');
+    // Specializations are optional — priests can submit without any.
     if (d.languages.isEmpty) missing.add('Languages');
     if (d.idProofPath == null || d.idProofPath!.isEmpty) {
       missing.add('ID Proof');

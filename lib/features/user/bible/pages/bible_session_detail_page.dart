@@ -21,9 +21,11 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:razorpay_flutter/razorpay_flutter.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
@@ -33,6 +35,7 @@ import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/features/user/bible/widgets/bible_session_rating_dialog.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for "joined / paid / registered ✓" — warmer than
@@ -72,6 +75,22 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   // rate). A passive look-and-back leaves the tab's cached list
   // untouched.
   bool _changed = false;
+
+  // Measured at runtime by the bottom sheet so the scroll body can
+  // reserve enough padding for the docked CTA without overlapping.
+  double _bottomSheetHeight = 0;
+
+  // One-shot guard for the auto-popping rating dialog. The page
+  // shows the call/chat-style BibleSessionRatingDialog the moment a
+  // paid user who hasn't rated yet sees the session flip into the
+  // effectively-completed state (priest tapped Mark Completed OR the
+  // auto-complete cron fired OR the user opened the page after the
+  // session ended). Flipping this flag to true on first show prevents
+  // a stream tick / setState rebuild from re-popping the dialog and
+  // trapping the user in an infinite modal loop. If they dismiss
+  // without rating, the in-body _RatingStateView is still rendered
+  // as the second-chance path.
+  bool _didShowRatingDialog = false;
 
   @override
   void initState() {
@@ -326,6 +345,119 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
     }
   }
 
+  Future<void> _shareSession() async {
+    final session = _latestSession;
+    if (session == null) return;
+    HapticFeedback.lightImpact();
+    final dateLine = session.scheduledAt != null
+        ? '${session.formattedDate} · ${session.formattedTime} IST'
+        : '';
+    final speakerLine = session.priestName.isNotEmpty
+        ? '\nSpeaker: ${session.priestName}'
+        : '';
+    final shareText =
+        '${session.title}\n'
+        '${dateLine.isNotEmpty ? "$dateLine\n" : ""}'
+        '$speakerLine\n\n'
+        "Join me for this Bible session on Gospel Vox 🙏";
+    try {
+      await SharePlus.instance.share(
+        ShareParams(
+          text: shareText,
+          subject: 'Bible Session: ${session.title}',
+        ),
+      );
+    } catch (_) {
+      // share_plus can throw on a build that pre-dates the native
+      // plugin. Fall back to copying the text so the user can paste
+      // it manually.
+      await Clipboard.setData(ClipboardData(text: shareText));
+      if (!mounted) return;
+      AppSnackBar.success(context, "Session details copied to clipboard.");
+    }
+  }
+
+  Future<void> _addToCalendar() async {
+    final session = _latestSession;
+    if (session == null || session.scheduledAt == null) return;
+    HapticFeedback.lightImpact();
+
+    // Google Calendar event-creation URL. Works on Android (opens the
+    // Calendar app if installed, else web) and iOS (opens Safari →
+    // Calendar import). Universal enough to avoid platform branches.
+    String fmt(DateTime dt) {
+      final u = dt.toUtc();
+      String two(int n) => n.toString().padLeft(2, '0');
+      return '${u.year}${two(u.month)}${two(u.day)}'
+          'T${two(u.hour)}${two(u.minute)}${two(u.second)}Z';
+    }
+
+    final start = session.scheduledAt!.toUtc();
+    final end = start.add(Duration(minutes: session.durationMinutes));
+    final params = <String, String>{
+      'action': 'TEMPLATE',
+      'text': session.title,
+      'dates': '${fmt(start)}/${fmt(end)}',
+      'details': session.description.isNotEmpty
+          ? '${session.description}\n\nSpeaker: ${session.priestName}'
+          : 'Bible session with ${session.priestName} on Gospel Vox',
+    };
+    final uri = Uri.https(
+      'calendar.google.com',
+      '/calendar/render',
+      params,
+    );
+    try {
+      final ok = await launchUrl(uri, mode: LaunchMode.externalApplication);
+      if (!ok && mounted) {
+        AppSnackBar.error(
+          context,
+          "Couldn't open calendar. Please add the event manually.",
+        );
+      }
+    } catch (_) {
+      if (mounted) {
+        AppSnackBar.error(
+          context,
+          "Couldn't open calendar. Please add the event manually.",
+        );
+      }
+    }
+  }
+
+  // Pops the call/chat-style rating dialog as soon as the session is
+  // effectively completed AND the current user paid AND hasn't yet
+  // rated. One-shot per page mount — _didShowRatingDialog locks it
+  // so a stream tick / setState rebuild can't re-pop. After the
+  // dialog closes we refresh the registration (if it wrote anything)
+  // so the in-body state flips to _AlreadyRatedStateView.
+  //
+  // Called from the StreamBuilder build path, but the dialog is
+  // scheduled via addPostFrameCallback so we never invoke showDialog
+  // during a build phase. Registration must be loaded — without it
+  // we can't tell isPaid / hasRated, and a premature pop would either
+  // miss eligible users or prompt non-attendees.
+  void _maybeShowRatingDialog(BibleSessionModel session) {
+    if (_didShowRatingDialog) return;
+    if (!_registrationLoaded) return;
+    final reg = _registration;
+    if (reg == null || !reg.isPaid || reg.hasRated) return;
+    if (!session.isEffectivelyCompleted) return;
+
+    _didShowRatingDialog = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) async {
+      if (!mounted) return;
+      final submitted = await BibleSessionRatingDialog.show(context, session);
+      if (!mounted) return;
+      if (submitted) {
+        _changed = true;
+        await _loadRegistration();
+        if (!mounted) return;
+        AppSnackBar.success(context, "Thank you for your review! 🙏");
+      }
+    });
+  }
+
   Future<void> _submitRating({
     required int rating,
     required String? feedback,
@@ -404,54 +536,105 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: AppColors.background,
-        elevation: 0,
-        scrolledUnderElevation: 0,
-        surfaceTintColor: Colors.transparent,
-        foregroundColor: AppColors.deepDarkBrown,
-        // Explicit leading button so we can return `_changed` to the
-        // bible tab. The default back button calls Navigator.maybePop
-        // without a result, which would force the tab to refresh on
-        // every back-tap or skip refresh entirely.
-        leading: Padding(
-          padding: const EdgeInsets.only(left: 8),
-          child: Align(
-            alignment: Alignment.center,
-            child: AppBackButton(
-              onTap: () => Navigator.of(context).pop(_changed),
+      // No AppBar — the floating back / share / calendar buttons live
+      // in the Stack overlay so the hero header reaches the top of
+      // the screen, matching the reference image.
+      body: SafeArea(
+        bottom: false,
+        child: StreamBuilder<BibleSessionModel>(
+          stream: _sessionStream,
+          builder: (context, snap) {
+            if (snap.hasError) {
+              return _withFloatingActions(
+                child: _buildError("Couldn't load session."),
+                canShare: false,
+                canCalendar: false,
+              );
+            }
+            if (!snap.hasData) {
+              return _withFloatingActions(
+                child: _buildLoading(),
+                canShare: false,
+                canCalendar: false,
+              );
+            }
+            _latestSession = snap.data;
+            // Auto-pop the call/chat-style rating dialog the moment a
+            // paid user who hasn't rated sees the session as
+            // effectively completed. Scheduled post-frame so we don't
+            // call showDialog during a build, and gated on a one-shot
+            // flag so a subsequent stream tick / setState can't re-pop.
+            _maybeShowRatingDialog(snap.data!);
+            return _withFloatingActions(
+              child: _buildLoaded(snap.data!),
+              canShare: true,
+              canCalendar: snap.data!.scheduledAt != null,
+            );
+          },
+        ),
+      ),
+    );
+  }
+
+  // Stacks the body underneath a row of floating circular buttons —
+  // back on the left, share + calendar on the right — and overlays
+  // the state-aware bottom sheet pinned to the bottom of the screen.
+  //
+  // Cancelled sessions suppress the floating share + calendar buttons
+  // entirely; sharing a cancelled session is a footgun (recipients
+  // would tap a dead listing) so we strip the affordance here and
+  // surface a muted explainer in the bottom sheet.
+  Widget _withFloatingActions({
+    required Widget child,
+    required bool canShare,
+    required bool canCalendar,
+  }) {
+    final session = _latestSession;
+    final isCancelled = session?.isCancelled ?? false;
+    final showShare = canShare && !isCancelled;
+    final showCalendar = canCalendar && !isCancelled;
+    return Stack(
+      children: [
+        Positioned.fill(child: child),
+        Positioned(
+          top: 12,
+          left: 16,
+          right: 16,
+          child: Row(
+            children: [
+              AppBackButton(
+                onTap: () => Navigator.of(context).pop(_changed),
+              ),
+              const Spacer(),
+              if (showShare)
+                _CircleIconButton(
+                  icon: AppIcons.share,
+                  onTap: _shareSession,
+                ),
+              if (showShare && showCalendar) const SizedBox(width: 10),
+              if (showCalendar)
+                _CircleIconButton(
+                  icon: AppIcons.calendar,
+                  onTap: _addToCalendar,
+                ),
+            ],
+          ),
+        ),
+        if (session != null)
+          Positioned(
+            left: 0,
+            right: 0,
+            bottom: 0,
+            child: _BottomActionRegion(
+              child: _buildBottomAction(session),
+              onMeasured: (h) {
+                if (h != _bottomSheetHeight && mounted) {
+                  setState(() => _bottomSheetHeight = h);
+                }
+              },
             ),
           ),
-        ),
-        title: Text(
-          "Bible Session",
-          style: GoogleFonts.inter(
-            fontSize: 16,
-            fontWeight: FontWeight.w700,
-            color: AppColors.deepDarkBrown,
-          ),
-        ),
-      ),
-      body: StreamBuilder<BibleSessionModel>(
-        stream: _sessionStream,
-        builder: (context, snap) {
-          if (snap.hasError) {
-            return _buildError("Couldn't load session.");
-          }
-          if (!snap.hasData) {
-            return _buildLoading();
-          }
-          // Mirror the latest session so the Razorpay handlers can
-          // read it. snap.data is non-null here.
-          _latestSession = snap.data;
-          return RefreshIndicator(
-            color: AppColors.primaryBrown,
-            backgroundColor: AppColors.surfaceWhite,
-            onRefresh: _loadRegistration,
-            child: _buildLoaded(snap.data!),
-          );
-        },
-      ),
+      ],
     );
   }
 
@@ -462,7 +645,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
       physics: const AlwaysScrollableScrollPhysics(
         parent: BouncingScrollPhysics(),
       ),
-      padding: const EdgeInsets.all(20),
+      padding: const EdgeInsets.fromLTRB(20, 72, 20, 200),
       children: [
         Shimmer.fromColors(
           baseColor: base,
@@ -480,7 +663,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
           baseColor: base,
           highlightColor: highlight,
           child: Container(
-            height: 80,
+            height: 100,
             decoration: BoxDecoration(
               color: Colors.white,
               borderRadius: BorderRadius.circular(16),
@@ -496,7 +679,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
       physics: const AlwaysScrollableScrollPhysics(
         parent: BouncingScrollPhysics(),
       ),
-      padding: const EdgeInsets.fromLTRB(32, 80, 32, 32),
+      padding: const EdgeInsets.fromLTRB(32, 120, 32, 32),
       children: [
         AppIcon(
           AppIcons.error,
@@ -518,38 +701,55 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   }
 
   Widget _buildLoaded(BibleSessionModel session) {
-    return SingleChildScrollView(
-      physics: const AlwaysScrollableScrollPhysics(
-        parent: BouncingScrollPhysics(),
-      ),
-      padding: const EdgeInsets.fromLTRB(20, 8, 20, 40),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          _SessionInfoCard(session: session),
-          const SizedBox(height: 14),
-          _PriestInfoCard(
-            session: session,
-            onTap: () {
-              if (session.priestId.isEmpty) return;
-              context.push('/user/priest/${session.priestId}');
-            },
-          ),
-          const SizedBox(height: 16),
-          _buildStateView(session),
-        ],
+    // Body padding reserves space at the bottom for the docked
+    // action sheet so the last in-body card never hides behind it.
+    final bottomReserve = _bottomSheetHeight > 0
+        ? _bottomSheetHeight + 16
+        : 180.0;
+    return RefreshIndicator(
+      color: AppColors.primaryBrown,
+      backgroundColor: AppColors.surfaceWhite,
+      onRefresh: _loadRegistration,
+      child: SingleChildScrollView(
+        physics: const AlwaysScrollableScrollPhysics(
+          parent: BouncingScrollPhysics(),
+        ),
+        padding: EdgeInsets.fromLTRB(20, 72, 20, bottomReserve),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            _HeroHeader(session: session),
+            const SizedBox(height: 20),
+            _InfoGridCard(session: session),
+            const SizedBox(height: 16),
+            _SpeakerCard(
+              session: session,
+              onTap: () {
+                if (session.priestId.isEmpty) return;
+                context.push('/user/priest/${session.priestId}');
+              },
+            ),
+            const SizedBox(height: 22),
+            if (session.description.isNotEmpty)
+              _AboutSection(text: session.description),
+            const SizedBox(height: 18),
+            _inBodyStateContent(session),
+          ],
+        ),
       ),
     );
   }
 
   // The 9-state decision tree. Order matters — terminal states first
   // (cancelled / completed) before transient ones (live / upcoming).
-  Widget _buildStateView(BibleSessionModel session) {
+  // This returns the IN-BODY content; the bottom sheet picks up the
+  // matching CTA via `_buildBottomAction`.
+  Widget _inBodyStateContent(BibleSessionModel session) {
     final reg = _registration;
     final isPaid = reg?.isPaid ?? false;
     final hasRated = reg?.hasRated ?? false;
 
-    // STATE H — Cancelled. Trumps everything else.
+    // STATE H — Cancelled.
     if (session.isCancelled) {
       return _CancelledStateView(
         wasRegistered: reg != null,
@@ -558,9 +758,15 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
     }
 
     // STATE E/F/G — Completed branch.
-    if (session.isCompleted) {
+    // isEffectivelyCompleted covers BOTH real completed docs AND a
+    // stale 'live' doc whose deadline has passed (the auto-complete
+    // cron hasn't flipped it yet). Without this, a user opening a
+    // session 20 minutes after it ended would see the broken Live
+    // branch ("session ended" with no rating prompt) for up to 5
+    // minutes while waiting for the cron — that gap was the source
+    // of the "stays live forever" complaint.
+    if (session.isEffectivelyCompleted) {
       if (isPaid && !hasRated) {
-        // STATE E — rate the session.
         return _RatingStateView(
           session: session,
           onSubmit: _submitRating,
@@ -568,248 +774,275 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
         );
       }
       if (isPaid && hasRated) {
-        // STATE F — already rated.
         return _AlreadyRatedStateView(registration: reg!);
       }
-      // STATE G — completed, didn't attend.
       return _CompletedNotAttendedStateView();
     }
 
-    // STATE C/D/I — Live branch.
-    if (session.isLive) {
-      if (!session.isJoinable) {
-        // STATE I — past deadline, auto-complete cron will catch up
-        // shortly. Don't take more money.
-        return _EndingSoonStateView(session: session);
-      }
+    // STATE C/D/I — Live branch. Only reachable now when status='live'
+    // AND we're still inside the (startedAt + duration + 15min)
+    // window — the past-deadline case falls into the Completed
+    // branch above instead of the legacy _EndingSoonStateView.
+    if (session.isEffectivelyLive) {
       if (isPaid) {
-        // STATE D — link revealed. No "copy link" affordance — the
-        // link is open-only to discourage out-of-app sharing.
-        return _LinkRevealedStateView(
-          session: session,
-          onOpen: () => _launchUrl(session.meetingLink),
+        return _LiveLinkReadyCard(session: session);
+      }
+      return _LiveLockedLinkCard(session: session);
+    }
+
+    // STATE A/B — Upcoming branch. The in-body "Registration is free"
+    // info card is the user-facing explainer; the actual CTA is in
+    // the bottom sheet.
+    if (!_registrationLoaded) return const _RegistrationShimmer();
+    if (reg != null) {
+      return _RegisteredAwaitingStateView(session: session);
+    }
+    return _RegistrationFreeInfoCard(session: session);
+  }
+
+  // The docked bottom sheet content — varies by state. For terminal
+  // / special states the bottom sheet collapses to a slim share +
+  // calendar footer so the in-body content owns the page rhythm.
+  Widget _buildBottomAction(BibleSessionModel session) {
+    final reg = _registration;
+    final isPaid = reg?.isPaid ?? false;
+    final hasRated = reg?.hasRated ?? false;
+
+    // Cancelled sessions get a faded, non-interactive footer note —
+    // sharing or scheduling a dead listing would mislead recipients,
+    // so we suppress the affordance and explain why.
+    if (session.isCancelled) {
+      return const _DisabledFooterNote(
+        message: "Sharing isn't available for cancelled sessions.",
+      );
+    }
+    // isEffectivelyCompleted — collapse to share-only footer for any
+    // session that's past its deadline (real completed OR stale-live)
+    // so we never present a payable CTA on a session that's already
+    // over.
+    if (session.isEffectivelyCompleted) {
+      if (isPaid && !hasRated) {
+        // Rating form is the focus — keep the footer minimal so the
+        // user doesn't get pulled away while writing a review.
+        return _FooterShareOnly(onShare: _shareSession);
+      }
+      return _FooterShareOnly(onShare: _shareSession);
+    }
+    if (session.isEffectivelyLive) {
+      if (isPaid) {
+        return _BottomCtaSheet(
+          primaryLabel: "Open Meeting",
+          primaryIcon: AppIcons.video,
+          primaryColor: AppColors.primaryBrown,
+          helperText: "You're in! Tap to join the live meeting.",
+          loading: false,
+          onPrimary: () => _launchUrl(session.meetingLink),
+          onShare: _shareSession,
+          onCalendar: session.scheduledAt != null
+              ? _addToCalendar
+              : null,
         );
       }
-      // STATE C — payment gate. Works whether registered or not —
-      // the CF handles both shapes.
-      return _PaymentGateStateView(
-        session: session,
-        isPaying: _isPaying,
-        onPay: _payAndJoin,
+      return _BottomCtaSheet(
+        primaryLabel: "Pay ₹${session.price} & Join",
+        primaryIcon: AppIcons.lock,
+        primaryColor: AppColors.amberGold,
+        helperText: "Payment is final and non-refundable.",
+        loading: _isPaying,
+        onPrimary: _payAndJoin,
+        onShare: _shareSession,
+        onCalendar: session.scheduledAt != null
+            ? _addToCalendar
+            : null,
       );
     }
 
-    // STATE A/B — Upcoming branch.
-    final registrationKnown = _registrationLoaded;
-    if (!registrationKnown) {
-      // Still waiting for the reg fetch — show a small shimmer
-      // instead of briefly flashing the "Register" button before
-      // the actual reg lands and replaces it with "Registered ✓".
-      return _RegistrationShimmer();
+    // Upcoming branch.
+    if (!_registrationLoaded) {
+      return _FooterShareOnly(onShare: _shareSession);
     }
-    if (reg == null) {
-      // STATE A — not registered.
-      return _RegisterForFreeStateView(
-        session: session,
-        isRegistering: _isRegistering,
-        onRegister: _register,
+    if (reg != null) {
+      // STATE B — registered. Disabled green confirmation pill so the
+      // bottom sheet's slot stays visually consistent across states.
+      return _BottomCtaSheet(
+        primaryLabel: "Registered ✓",
+        primaryIcon: AppIcons.checkCircle,
+        primaryColor: _kJoinedGreen,
+        helperText: session.startsInText.isNotEmpty
+            ? "${session.startsInText}. We'll notify you when it goes live."
+            : "We'll notify you the moment it goes live.",
+        loading: false,
+        onPrimary: null,
+        onShare: _shareSession,
+        onCalendar: session.scheduledAt != null
+            ? _addToCalendar
+            : null,
       );
     }
-    // STATE B — registered, awaiting live.
-    return _RegisteredAwaitingStateView(session: session);
+    // STATE A — not registered.
+    final isFull = session.isFull;
+    return _BottomCtaSheet(
+      primaryLabel: isFull ? "Session Full" : "Register for Free",
+      primaryIcon: AppIcons.bell,
+      primaryColor: AppColors.amberGold,
+      helperText: isFull
+          ? "You can come back later if a spot opens up."
+          : "You'll pay ₹${session.price} only when you join.",
+      loading: _isRegistering,
+      onPrimary: isFull ? null : _register,
+      onShare: _shareSession,
+      onCalendar: session.scheduledAt != null ? _addToCalendar : null,
+    );
   }
 }
 
 // ════════════════════════════════════════════════════════════════
-// COMMON CARDS (session info + priest info)
+// TOP CHROME — circular floating icon button
 // ════════════════════════════════════════════════════════════════
 
-class _SessionInfoCard extends StatelessWidget {
-  final BibleSessionModel session;
-  const _SessionInfoCard({required this.session});
+class _CircleIconButton extends StatelessWidget {
+  final IconData icon;
+  final VoidCallback onTap;
+  const _CircleIconButton({required this.icon, required this.onTap});
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(
-          color: session.isLive
-              ? _kLiveRed.withValues(alpha: 0.3)
-              : AppColors.muted.withValues(alpha: 0.08),
-          width: session.isLive ? 1.4 : 1,
-        ),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.03),
-            blurRadius: 8,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
-            children: [
-              _StateBadge(session: session),
-              const Spacer(),
-              Text(
-                "₹${session.price}",
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.amberGold,
-                ),
-              ),
-            ],
-          ),
-          const SizedBox(height: 14),
-          Text(
-            session.title,
-            style: GoogleFonts.inter(
-              fontSize: 20,
-              fontWeight: FontWeight.w700,
-              color: AppColors.deepDarkBrown,
-              height: 1.25,
-            ),
-          ),
-          if (session.description.isNotEmpty) ...[
-            const SizedBox(height: 8),
-            Text(
-              session.description,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w400,
-                color: AppColors.muted,
-                height: 1.55,
-              ),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      child: Container(
+        width: 40,
+        height: 40,
+        alignment: Alignment.center,
+        decoration: BoxDecoration(
+          shape: BoxShape.circle,
+          color: AppColors.surfaceWhite,
+          boxShadow: [
+            BoxShadow(
+              blurRadius: 8,
+              offset: const Offset(0, 2),
+              color: Colors.black.withValues(alpha: 0.04),
             ),
           ],
-          const SizedBox(height: 14),
-          Wrap(
-            spacing: 8,
-            runSpacing: 8,
-            children: [
-              _InfoChip(
-                icon: AppIcons.calendar,
-                text: session.formattedDate,
-              ),
-              _InfoChip(
-                icon: AppIcons.clock,
-                text: '${session.formattedTime} IST',
-              ),
-              _InfoChip(
-                icon: AppIcons.stopwatch,
-                text: session.formattedDuration,
-              ),
-              if (session.category.isNotEmpty)
-                _InfoChip(
-                  icon: AppIcons.tag,
-                  text: session.category,
-                ),
-            ],
-          ),
-          // Registration count intentionally not displayed on the
-          // user side — `session.isFull` still gates the Register
-          // CTA (see _RegisterForFreeStateView), but the numeric
-          // breakdown is meta noise for an end user deciding
-          // whether to join. The priest's manage page surfaces
-          // counts where they're operationally useful.
-        ],
+        ),
+        child: AppIcon(
+          icon,
+          size: 15,
+          color: AppColors.deepDarkBrown,
+        ),
       ),
     );
   }
 }
 
-class _StateBadge extends StatelessWidget {
+// ════════════════════════════════════════════════════════════════
+// HERO HEADER — status pill + price, title, attending row, blurb
+// ════════════════════════════════════════════════════════════════
+
+class _HeroHeader extends StatelessWidget {
   final BibleSessionModel session;
-  const _StateBadge({required this.session});
+  const _HeroHeader({required this.session});
 
   @override
   Widget build(BuildContext context) {
-    if (session.isLive) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
+          children: [
+            _StatusPill(session: session),
+            if (session.category.isNotEmpty)
+              _CategoryChip(label: session.category),
+          ],
+        ),
+        const SizedBox(height: 18),
+        Text(
+          session.title.isNotEmpty ? session.title : 'Bible Session',
+          style: GoogleFonts.inter(
+            fontSize: 30,
+            fontWeight: FontWeight.w800,
+            color: AppColors.deepDarkBrown,
+            height: 1.15,
+            letterSpacing: -0.5,
+          ),
+        ),
+        const SizedBox(height: 10),
+        _AttendanceRow(session: session),
+      ],
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final BibleSessionModel session;
+  const _StatusPill({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    if (session.isEffectivelyLive) {
       return Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+        padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
         decoration: BoxDecoration(
           color: _kLiveRed.withValues(alpha: 0.12),
-          borderRadius: BorderRadius.circular(7),
+          borderRadius: BorderRadius.circular(10),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
             const _PulsingDot(size: 7, color: _kLiveRed),
-            const SizedBox(width: 6),
+            const SizedBox(width: 7),
             Text(
               "LIVE NOW",
               style: GoogleFonts.inter(
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
                 color: _kLiveRed,
-                letterSpacing: 0.6,
+                letterSpacing: 0.7,
               ),
             ),
           ],
         ),
       );
     }
-    final color = session.isUpcoming
-        ? AppColors.amberGold
-        : session.isCompleted
-            ? _kJoinedGreen
-            : AppColors.muted;
-    final label = session.isUpcoming
-        ? "UPCOMING"
-        : session.isCompleted
-            ? "COMPLETED"
-            : "CANCELLED";
+    final Color color;
+    final String label;
+    final IconData? icon;
+    if (session.isUpcoming) {
+      color = AppColors.primaryBrown;
+      label = "UPCOMING";
+      icon = AppIcons.calendar;
+    } else if (session.isEffectivelyCompleted) {
+      color = _kJoinedGreen;
+      label = "COMPLETED";
+      icon = AppIcons.checkCircle;
+    } else {
+      color = AppColors.terraCotta;
+      label = "CANCELLED";
+      icon = AppIcons.cancel;
+    }
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
       decoration: BoxDecoration(
-        color: color.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(7),
-      ),
-      child: Text(
-        label,
-        style: GoogleFonts.inter(
-          fontSize: 11,
-          fontWeight: FontWeight.w700,
-          color: color,
-          letterSpacing: 0.6,
-        ),
-      ),
-    );
-  }
-}
-
-class _InfoChip extends StatelessWidget {
-  final IconData icon;
-  final String text;
-  const _InfoChip({required this.icon, required this.text});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.warmBeige,
-        borderRadius: BorderRadius.circular(8),
+        color: color.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(10),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          AppIcon(icon, size: 13, color: AppColors.primaryBrown),
+          AppIcon(icon, size: 12, color: color),
           const SizedBox(width: 6),
           Text(
-            text,
+            label,
             style: GoogleFonts.inter(
-              fontSize: 12,
-              fontWeight: FontWeight.w500,
-              color: AppColors.deepDarkBrown,
+              fontSize: 11,
+              fontWeight: FontWeight.w700,
+              color: color,
+              letterSpacing: 0.7,
             ),
           ),
         ],
@@ -818,16 +1051,270 @@ class _InfoChip extends StatelessWidget {
   }
 }
 
-class _PriestInfoCard extends StatefulWidget {
-  final BibleSessionModel session;
-  final VoidCallback onTap;
-  const _PriestInfoCard({required this.session, required this.onTap});
+// Tag-style chip used in the hero row to surface the session's
+// category alongside the status pill — secondary metadata to the
+// state pill, so it uses a softer amber tint to read as supporting
+// info rather than another status signal.
+class _CategoryChip extends StatelessWidget {
+  final String label;
+  const _CategoryChip({required this.label});
 
   @override
-  State<_PriestInfoCard> createState() => _PriestInfoCardState();
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.amberGold.withValues(alpha: 0.13),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          AppIcon(
+            AppIcons.tag,
+            size: 11,
+            color: AppColors.amberGold,
+          ),
+          const SizedBox(width: 6),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 140),
+            child: Text(
+              label.toUpperCase(),
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 11,
+                fontWeight: FontWeight.w700,
+                color: AppColors.amberGold,
+                letterSpacing: 0.7,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
 }
 
-class _PriestInfoCardState extends State<_PriestInfoCard> {
+class _AttendanceRow extends StatelessWidget {
+  final BibleSessionModel session;
+  const _AttendanceRow({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    final attending = session.registrationCount;
+    final hasCap = session.maxParticipants > 0;
+    final spotsLeft = hasCap
+        ? (session.maxParticipants - attending).clamp(0, 1 << 30)
+        : -1;
+
+    return Row(
+      children: [
+        AppIcon(
+          AppIcons.users,
+          size: 13,
+          color: AppColors.primaryBrown,
+        ),
+        const SizedBox(width: 6),
+        Text(
+          "$attending attending",
+          style: GoogleFonts.inter(
+            fontSize: 13,
+            fontWeight: FontWeight.w600,
+            color: AppColors.primaryBrown,
+          ),
+        ),
+        if (hasCap) ...[
+          const SizedBox(width: 10),
+          Container(
+            width: 3,
+            height: 3,
+            decoration: BoxDecoration(
+              color: AppColors.muted.withValues(alpha: 0.5),
+              shape: BoxShape.circle,
+            ),
+          ),
+          const SizedBox(width: 10),
+          Text(
+            spotsLeft > 0
+                ? "$spotsLeft spots left"
+                : "Session full",
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              fontWeight: FontWeight.w600,
+              color: spotsLeft > 0
+                  ? _kJoinedGreen
+                  : AppColors.terraCotta,
+            ),
+          ),
+        ],
+      ],
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// INFO GRID CARD — 4 columns separated by hairline dividers
+// ════════════════════════════════════════════════════════════════
+
+class _InfoGridCard extends StatelessWidget {
+  final BibleSessionModel session;
+  const _InfoGridCard({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    // Build the 4 column tiles. Each column has a fixed structure:
+    // icon → bold value → muted subtitle. When data is missing the
+    // subtitle is hidden but the column stays so the grid stays
+    // visually balanced.
+    // 3-column grid only — Date / Time / Duration. Category was lifted
+    // out into the hero row as a chip beside the status pill, so the
+    // grid stays focused on time-related context.
+    final dayLabel = _weekdayName(session.scheduledAt);
+    final tiles = <_InfoTile>[
+      _InfoTile(
+        icon: AppIcons.calendar,
+        value: session.formattedDate.isNotEmpty
+            ? session.formattedDate
+            : '—',
+        subtitle: dayLabel,
+      ),
+      _InfoTile(
+        icon: AppIcons.clock,
+        value: session.formattedTime.isNotEmpty
+            ? session.formattedTime
+            : '—',
+        subtitle: 'IST',
+      ),
+      _InfoTile(
+        icon: AppIcons.stopwatch,
+        value: session.formattedDuration,
+        subtitle: 'Duration',
+      ),
+    ];
+
+    return Container(
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: AppColors.borderLight,
+          width: 1,
+        ),
+      ),
+      child: IntrinsicHeight(
+        child: Row(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            for (var i = 0; i < tiles.length; i++) ...[
+              Expanded(child: tiles[i]),
+              if (i < tiles.length - 1)
+                VerticalDivider(
+                  width: 1,
+                  thickness: 1,
+                  indent: 14,
+                  endIndent: 14,
+                  color: AppColors.borderLight,
+                ),
+            ],
+          ],
+        ),
+      ),
+    );
+  }
+
+  String _weekdayName(DateTime? dt) {
+    if (dt == null) return '';
+    const names = [
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+      'Sunday',
+    ];
+    return names[(dt.toLocal().weekday - 1) % 7];
+  }
+}
+
+class _InfoTile extends StatelessWidget {
+  final IconData icon;
+  final String value;
+  final String subtitle;
+  const _InfoTile({
+    required this.icon,
+    required this.value,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    // FittedBox lets the value text shrink-to-fit instead of clipping
+    // with an ellipsis — a long date like "September 25, 2026" stays
+    // readable on a phone instead of truncating to "Septemb…". The
+    // value font caps at the design size (13) and only scales down
+    // when the column is narrower than the natural text width.
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 16, horizontal: 8),
+      child: Column(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          AppIcon(icon, size: 18, color: AppColors.primaryBrown),
+          const SizedBox(height: 10),
+          FittedBox(
+            fit: BoxFit.scaleDown,
+            alignment: Alignment.center,
+            child: Text(
+              value,
+              textAlign: TextAlign.center,
+              maxLines: 1,
+              softWrap: false,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+          if (subtitle.isNotEmpty) ...[
+            const SizedBox(height: 3),
+            FittedBox(
+              fit: BoxFit.scaleDown,
+              alignment: Alignment.center,
+              child: Text(
+                subtitle,
+                textAlign: TextAlign.center,
+                maxLines: 1,
+                softWrap: false,
+                style: GoogleFonts.inter(
+                  fontSize: 11,
+                  fontWeight: FontWeight.w500,
+                  color: AppColors.muted,
+                ),
+              ),
+            ),
+          ],
+        ],
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// SPEAKER CARD — avatar | name + verified + "Tap to view profile" | >
+// ════════════════════════════════════════════════════════════════
+
+class _SpeakerCard extends StatefulWidget {
+  final BibleSessionModel session;
+  final VoidCallback onTap;
+  const _SpeakerCard({required this.session, required this.onTap});
+
+  @override
+  State<_SpeakerCard> createState() => _SpeakerCardState();
+}
+
+class _SpeakerCardState extends State<_SpeakerCard> {
   double _scale = 1.0;
 
   @override
@@ -851,16 +1338,17 @@ class _PriestInfoCardState extends State<_PriestInfoCard> {
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.08),
+              color: AppColors.borderLight,
+              width: 1,
             ),
           ),
           child: Row(
             children: [
               Container(
-                width: 40,
-                height: 40,
+                width: 48,
+                height: 48,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
                   color: AppColors.primaryBrown.withValues(alpha: 0.1),
@@ -877,34 +1365,48 @@ class _PriestInfoCardState extends State<_PriestInfoCard> {
                         child: Text(
                           initial,
                           style: GoogleFonts.inter(
-                            fontSize: 16,
+                            fontSize: 18,
                             fontWeight: FontWeight.w700,
                             color: AppColors.primaryBrown,
                           ),
                         ),
                       ),
               ),
-              const SizedBox(width: 12),
+              const SizedBox(width: 14),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      session.priestName.isNotEmpty
-                          ? session.priestName
-                          : 'Speaker',
-                      style: GoogleFonts.inter(
-                        fontSize: 14,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.deepDarkBrown,
-                      ),
+                    Row(
+                      children: [
+                        Flexible(
+                          child: Text(
+                            session.priestName.isNotEmpty
+                                ? session.priestName
+                                : 'Speaker',
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: GoogleFonts.inter(
+                              fontSize: 16,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.deepDarkBrown,
+                            ),
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        AppIcon(
+                          AppIcons.verified,
+                          size: 14,
+                          color: AppColors.amberGold,
+                        ),
+                      ],
                     ),
-                    const SizedBox(height: 2),
+                    const SizedBox(height: 3),
                     Text(
-                      "Speaker · Tap to view profile",
+                      "Speaker",
                       style: GoogleFonts.inter(
-                        fontSize: 11,
-                        fontWeight: FontWeight.w400,
+                        fontSize: 12,
+                        fontWeight: FontWeight.w500,
                         color: AppColors.muted,
                       ),
                     ),
@@ -913,7 +1415,7 @@ class _PriestInfoCardState extends State<_PriestInfoCard> {
               ),
               AppIcon(
                 AppIcons.chevronRight,
-                size: 18,
+                size: 20,
                 color: AppColors.muted.withValues(alpha: 0.6),
               ),
             ],
@@ -925,57 +1427,103 @@ class _PriestInfoCardState extends State<_PriestInfoCard> {
 }
 
 // ════════════════════════════════════════════════════════════════
-// STATE A — UPCOMING, NOT REGISTERED
+// ABOUT SECTION — title + 3-line clamp with Read more toggle
 // ════════════════════════════════════════════════════════════════
 
-class _RegisterForFreeStateView extends StatelessWidget {
-  final BibleSessionModel session;
-  final bool isRegistering;
-  final VoidCallback onRegister;
+class _AboutSection extends StatefulWidget {
+  final String text;
+  const _AboutSection({required this.text});
 
-  const _RegisterForFreeStateView({
-    required this.session,
-    required this.isRegistering,
-    required this.onRegister,
-  });
+  @override
+  State<_AboutSection> createState() => _AboutSectionState();
+}
+
+class _AboutSectionState extends State<_AboutSection> {
+  bool _expanded = false;
 
   @override
   Widget build(BuildContext context) {
-    final isFull = session.isFull;
+    final body = widget.text;
+    final bodyStyle = GoogleFonts.inter(
+      fontSize: 14,
+      fontWeight: FontWeight.w400,
+      color: AppColors.deepDarkBrown.withValues(alpha: 0.78),
+      height: 1.55,
+    );
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _InfoBlock(
-          icon: AppIcons.bell,
-          accent: AppColors.amberGold,
-          title: "Register for free to get notified",
-          body:
-              "We'll send you a notification the moment this session "
-              "goes live. Payment is only required when you join.",
+        Text(
+          "About this session",
+          style: GoogleFonts.inter(
+            fontSize: 16,
+            fontWeight: FontWeight.w700,
+            color: AppColors.deepDarkBrown,
+          ),
         ),
-        const SizedBox(height: 16),
-        if (isFull)
-          _DisabledButton(label: "Session Full")
-        else
-          _PrimaryButton(
-            label: "Register for Free",
-            loading: isRegistering,
-            onTap: onRegister,
-            background: AppColors.amberGold,
-          ),
         const SizedBox(height: 10),
-        Center(
-          child: Text(
-            "Registration is free. You'll pay ₹${session.price} only "
-            "when you join the live session.",
-            textAlign: TextAlign.center,
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: AppColors.muted,
-              height: 1.5,
-            ),
-          ),
+        // LayoutBuilder probes whether the text actually overflows
+        // the 3-line clamp so we only show the toggle when it adds
+        // value — short blurbs don't get a misleading "Read more" tail.
+        LayoutBuilder(
+          builder: (context, constraints) {
+            final tp = TextPainter(
+              text: TextSpan(text: body, style: bodyStyle),
+              maxLines: 3,
+              textDirection: TextDirection.ltr,
+            )..layout(maxWidth: constraints.maxWidth);
+            final overflows = tp.didExceedMaxLines;
+            return Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                AnimatedSize(
+                  duration: const Duration(milliseconds: 180),
+                  curve: Curves.easeOut,
+                  alignment: Alignment.topLeft,
+                  child: Text(
+                    body,
+                    maxLines: _expanded ? null : 3,
+                    overflow: _expanded
+                        ? TextOverflow.visible
+                        : TextOverflow.ellipsis,
+                    style: bodyStyle,
+                  ),
+                ),
+                if (overflows) ...[
+                  const SizedBox(height: 6),
+                  GestureDetector(
+                    behavior: HitTestBehavior.opaque,
+                    onTap: () => setState(() => _expanded = !_expanded),
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(vertical: 4),
+                      child: Row(
+                        children: [
+                          Text(
+                            _expanded ? "Show less" : "Read more",
+                            style: GoogleFonts.inter(
+                              fontSize: 13,
+                              fontWeight: FontWeight.w700,
+                              color: AppColors.amberGold,
+                            ),
+                          ),
+                          const SizedBox(width: 4),
+                          AnimatedRotation(
+                            turns: _expanded ? 0.5 : 0,
+                            duration: const Duration(milliseconds: 180),
+                            child: AppIcon(
+                              AppIcons.chevronDown,
+                              size: 18,
+                              color: AppColors.amberGold,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                  ),
+                ],
+              ],
+            );
+          },
         ),
       ],
     );
@@ -983,12 +1531,32 @@ class _RegisterForFreeStateView extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════
-// STATE B — UPCOMING, REGISTERED
+// IN-BODY STATE VIEWS
 // ════════════════════════════════════════════════════════════════
 
+// State A — UPCOMING, NOT REGISTERED — beige "Registration is free"
+// explainer card (matches the bell-card in the reference image).
+class _RegistrationFreeInfoCard extends StatelessWidget {
+  final BibleSessionModel session;
+  const _RegistrationFreeInfoCard({required this.session});
+
+  @override
+  Widget build(BuildContext context) {
+    return _BellInfoCard(
+      title: session.price > 0
+          ? "Registration is free"
+          : "This session is free",
+      body: session.price > 0
+          ? "We'll notify you when the session goes live. "
+              "Payment is only required when you join."
+          : "We'll notify you the moment this session goes live.",
+    );
+  }
+}
+
+// State B — REGISTERED. Green confirmation banner + "Starts in …" info.
 class _RegisteredAwaitingStateView extends StatelessWidget {
   final BibleSessionModel session;
-
   const _RegisteredAwaitingStateView({required this.session});
 
   @override
@@ -996,86 +1564,44 @@ class _RegisteredAwaitingStateView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // "You're registered" green confirmation badge.
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.symmetric(vertical: 14),
-          decoration: BoxDecoration(
-            color: _kJoinedGreen.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: _kJoinedGreen.withValues(alpha: 0.2),
-            ),
-          ),
-          child: Row(
-            mainAxisAlignment: MainAxisAlignment.center,
-            children: [
-              const AppIcon(
-                AppIcons.checkCircle,
-                size: 18,
-                color: _kJoinedGreen,
-              ),
-              const SizedBox(width: 8),
-              Text(
-                "You're registered",
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w700,
-                  color: _kJoinedGreen,
-                ),
-              ),
-            ],
-          ),
+        _AccentBanner(
+          color: _kJoinedGreen,
+          icon: AppIcons.checkCircle,
+          title: "You're registered",
+          body: session.startsInText.isNotEmpty
+              ? "${session.startsInText}. We'll send you a call-like "
+                  "notification the moment the speaker starts."
+              : "We'll notify you the moment this session goes live.",
         ),
-        const SizedBox(height: 16),
-        _InfoBlock(
-          icon: AppIcons.bell,
-          accent: AppColors.amberGold,
-          title: session.startsInText.isNotEmpty
-              ? session.startsInText
-              : "We'll notify you when it starts",
-          body:
-              "We'll send you a call-like notification the moment "
-              "the speaker starts this session. Payment of "
-              "₹${session.price} is required to join the live meeting.",
+        const SizedBox(height: 12),
+        _BellInfoCard(
+          title: "Payment at join",
+          body: "₹${session.price} is required to join the live meeting. "
+              "Pay only once it's live — no money is taken now.",
         ),
-        // No cancel-registration affordance — registration is a
-        // commitment until the session completes or is cancelled
-        // by the speaker. Removed in V2 to keep attendance numbers
-        // honest for priests planning capacity.
       ],
     );
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE C — LIVE, NOT PAID (Payment Gate)
-// ════════════════════════════════════════════════════════════════
-
-class _PaymentGateStateView extends StatelessWidget {
+// State C — LIVE, NOT PAID. Big live banner + locked-link teaser. The
+// "Pay & Join" CTA itself lives in the bottom sheet so the visual
+// weight matches the rest of the state-aware flow.
+class _LiveLockedLinkCard extends StatelessWidget {
   final BibleSessionModel session;
-  final bool isPaying;
-  final VoidCallback onPay;
-
-  const _PaymentGateStateView({
-    required this.session,
-    required this.isPaying,
-    required this.onPay,
-  });
+  const _LiveLockedLinkCard({required this.session});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        // Live banner — pulsing dot + countdown so the urgency is
-        // obvious even on a long page.
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(14),
           decoration: BoxDecoration(
             color: _kLiveRed.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: _kLiveRed.withValues(alpha: 0.25),
             ),
@@ -1106,20 +1632,13 @@ class _PaymentGateStateView extends StatelessWidget {
           ),
         ),
         const SizedBox(height: 14),
-
-        // The locked link surface — a real-looking placeholder behind
-        // an ImageFilter blur. The "ghost" of a meet URL is visible
-        // through the blur so the user understands what's gated, but
-        // they can't read it.
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(18),
+          padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.08),
-            ),
+            border: Border.all(color: AppColors.borderLight),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1128,7 +1647,7 @@ class _PaymentGateStateView extends StatelessWidget {
                 children: [
                   AppIcon(
                     AppIcons.lock,
-                    size: 16,
+                    size: 14,
                     color: AppColors.muted,
                   ),
                   const SizedBox(width: 8),
@@ -1136,7 +1655,7 @@ class _PaymentGateStateView extends StatelessWidget {
                     "MEETING LINK",
                     style: GoogleFonts.inter(
                       fontSize: 11,
-                      fontWeight: FontWeight.w600,
+                      fontWeight: FontWeight.w700,
                       color: AppColors.muted,
                       letterSpacing: 0.8,
                     ),
@@ -1168,8 +1687,8 @@ class _PaymentGateStateView extends StatelessWidget {
               ),
               const SizedBox(height: 12),
               Text(
-                "Pay ₹${session.price} to unlock the meeting link and "
-                "join this live session.",
+                "Pay ₹${session.price} from the button below to unlock "
+                "the meeting link and join this live session.",
                 style: GoogleFonts.inter(
                   fontSize: 12,
                   fontWeight: FontWeight.w400,
@@ -1177,25 +1696,7 @@ class _PaymentGateStateView extends StatelessWidget {
                   height: 1.5,
                 ),
               ),
-              const SizedBox(height: 16),
-              _PrimaryButton(
-                label: "Pay ₹${session.price} & Join",
-                loading: isPaying,
-                onTap: onPay,
-                background: AppColors.amberGold,
-              ),
             ],
-          ),
-        ),
-        const SizedBox(height: 10),
-        Center(
-          child: Text(
-            "Payment is final and non-refundable.",
-            style: GoogleFonts.inter(
-              fontSize: 11,
-              fontWeight: FontWeight.w500,
-              color: AppColors.muted.withValues(alpha: 0.8),
-            ),
           ),
         ),
       ],
@@ -1203,139 +1704,54 @@ class _PaymentGateStateView extends StatelessWidget {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE D — LIVE, PAID (Link Revealed)
-// ════════════════════════════════════════════════════════════════
-
-class _LinkRevealedStateView extends StatelessWidget {
+// State D — LIVE, PAID. Show a "Meeting link ready" green confirmation;
+// the actual launch lives in the bottom sheet's primary CTA.
+class _LiveLinkReadyCard extends StatelessWidget {
   final BibleSessionModel session;
-  final VoidCallback onOpen;
-
-  const _LinkRevealedStateView({
-    required this.session,
-    required this.onOpen,
-  });
+  const _LiveLinkReadyCard({required this.session});
 
   @override
   Widget build(BuildContext context) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
+        _AccentBanner(
+          color: _kJoinedGreen,
+          icon: AppIcons.checkCircle,
+          title: "You're in! Session is live",
+          body: session.remainingTimeText,
+        ),
+        const SizedBox(height: 14),
         Container(
           width: double.infinity,
-          padding: const EdgeInsets.all(14),
+          padding: const EdgeInsets.symmetric(
+            horizontal: 14,
+            vertical: 12,
+          ),
           decoration: BoxDecoration(
             color: _kJoinedGreen.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(12),
             border: Border.all(
-              color: _kJoinedGreen.withValues(alpha: 0.25),
+              color: _kJoinedGreen.withValues(alpha: 0.18),
             ),
           ),
           child: Row(
             children: [
               const AppIcon(
-                AppIcons.checkCircle,
-                size: 18,
+                AppIcons.video,
+                size: 14,
                 color: _kJoinedGreen,
               ),
-              const SizedBox(width: 8),
+              const SizedBox(width: 10),
               Expanded(
                 child: Text(
-                  "You're in! Session is happening now.",
+                  "Meeting link unlocked — tap Open Meeting to join.",
                   style: GoogleFonts.inter(
                     fontSize: 13,
-                    fontWeight: FontWeight.w700,
+                    fontWeight: FontWeight.w600,
                     color: _kJoinedGreen,
                   ),
                 ),
-              ),
-              Text(
-                session.remainingTimeText,
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w700,
-                  color: _kJoinedGreen,
-                ),
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(height: 14),
-        Container(
-          width: double.infinity,
-          padding: const EdgeInsets.all(16),
-          decoration: BoxDecoration(
-            color: AppColors.surfaceWhite,
-            borderRadius: BorderRadius.circular(14),
-            border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.08),
-            ),
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  const AppIcon(
-                    AppIcons.video,
-                    size: 16,
-                    color: _kJoinedGreen,
-                  ),
-                  const SizedBox(width: 8),
-                  Text(
-                    "MEETING LINK",
-                    style: GoogleFonts.inter(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w600,
-                      color: _kJoinedGreen,
-                      letterSpacing: 0.8,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 10),
-              // The link itself is deliberately NOT shown as readable
-              // text — the user opens it via the Open Meeting button,
-              // which launches the OS browser/app handler. Hiding the
-              // URL prevents copy-paste sharing outside the session
-              // (the whole point of paywalling per-attendee is to keep
-              // the link single-use-ish; an attendee who pastes the
-              // URL into WhatsApp would invite free riders).
-              Container(
-                width: double.infinity,
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 12,
-                  vertical: 10,
-                ),
-                decoration: BoxDecoration(
-                  color: _kJoinedGreen.withValues(alpha: 0.08),
-                  borderRadius: BorderRadius.circular(10),
-                ),
-                child: Row(
-                  children: [
-                    const AppIcon(
-                      AppIcons.checkCircle,
-                      size: 14,
-                      color: _kJoinedGreen,
-                    ),
-                    const SizedBox(width: 8),
-                    Text(
-                      "Meeting link ready",
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w600,
-                        color: _kJoinedGreen,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 14),
-              _PrimaryButton(
-                label: "Open Meeting",
-                loading: false,
-                onTap: onOpen,
-                background: AppColors.primaryBrown,
               ),
             ],
           ),
@@ -1345,10 +1761,7 @@ class _LinkRevealedStateView extends StatelessWidget {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE E — COMPLETED, PAID, NOT RATED (Rating form)
-// ════════════════════════════════════════════════════════════════
-
+// State E — COMPLETED, PAID, NOT RATED — rating form in-body.
 class _RatingStateView extends StatefulWidget {
   final BibleSessionModel session;
   final Future<void> Function({
@@ -1397,17 +1810,20 @@ class _RatingStateViewState extends State<_RatingStateView> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _CompletedHeader(message: "Session Completed"),
-        const SizedBox(height: 16),
+        _AccentBanner(
+          color: _kJoinedGreen,
+          icon: AppIcons.checkCircle,
+          title: "Session Completed",
+          body: "Share a quick review to help the speaker grow.",
+        ),
+        const SizedBox(height: 14),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.08),
-            ),
+            border: Border.all(color: AppColors.borderLight),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1555,10 +1971,7 @@ class _StarRow extends StatelessWidget {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE F — COMPLETED, ALREADY RATED
-// ════════════════════════════════════════════════════════════════
-
+// State F — COMPLETED, ALREADY RATED.
 class _AlreadyRatedStateView extends StatelessWidget {
   final BibleRegistration registration;
   const _AlreadyRatedStateView({required this.registration});
@@ -1569,17 +1982,20 @@ class _AlreadyRatedStateView extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        _CompletedHeader(message: "Session Completed"),
-        const SizedBox(height: 16),
+        _AccentBanner(
+          color: _kJoinedGreen,
+          icon: AppIcons.checkCircle,
+          title: "Session Completed",
+          body: "Thanks for joining and sharing your review.",
+        ),
+        const SizedBox(height: 14),
         Container(
           width: double.infinity,
           padding: const EdgeInsets.all(18),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
             borderRadius: BorderRadius.circular(16),
-            border: Border.all(
-              color: AppColors.muted.withValues(alpha: 0.08),
-            ),
+            border: Border.all(color: AppColors.borderLight),
           ),
           child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
@@ -1588,7 +2004,7 @@ class _AlreadyRatedStateView extends StatelessWidget {
                 "Your Review",
                 style: GoogleFonts.inter(
                   fontSize: 13,
-                  fontWeight: FontWeight.w600,
+                  fontWeight: FontWeight.w700,
                   color: AppColors.muted,
                   letterSpacing: 0.3,
                 ),
@@ -1619,21 +2035,12 @@ class _AlreadyRatedStateView extends StatelessWidget {
                     fontSize: 13,
                     fontWeight: FontWeight.w400,
                     fontStyle: FontStyle.italic,
-                    color: AppColors.deepDarkBrown.withValues(alpha: 0.85),
+                    color:
+                        AppColors.deepDarkBrown.withValues(alpha: 0.85),
                     height: 1.5,
                   ),
                 ),
               ],
-              const SizedBox(height: 12),
-              Text(
-                "Thank you for sharing — your review helps speakers grow. 🙏",
-                style: GoogleFonts.inter(
-                  fontSize: 12,
-                  fontWeight: FontWeight.w400,
-                  color: AppColors.muted,
-                  height: 1.5,
-                ),
-              ),
             ],
           ),
         ),
@@ -1642,35 +2049,20 @@ class _AlreadyRatedStateView extends StatelessWidget {
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE G — COMPLETED, NOT PAID
-// ════════════════════════════════════════════════════════════════
-
+// State G — COMPLETED, NOT PAID.
 class _CompletedNotAttendedStateView extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        _CompletedHeader(message: "Session Completed"),
-        const SizedBox(height: 14),
-        _InfoBlock(
-          icon: AppIcons.eventBusy,
-          accent: AppColors.muted,
-          title: "This session has ended",
-          body:
-              "You can browse other upcoming Bible sessions from the "
-              "Bible tab.",
-        ),
-      ],
+    return _AccentBanner(
+      color: AppColors.muted,
+      icon: AppIcons.eventBusy,
+      title: "This session has ended",
+      body: "Browse other upcoming Bible sessions from the Bible tab.",
     );
   }
 }
 
-// ════════════════════════════════════════════════════════════════
-// STATE H — CANCELLED
-// ════════════════════════════════════════════════════════════════
-
+// State H — CANCELLED.
 class _CancelledStateView extends StatelessWidget {
   final bool wasRegistered;
   final bool wasPaid;
@@ -1686,7 +2078,6 @@ class _CancelledStateView extends StatelessWidget {
       if (wasRegistered && !wasPaid)
         "Your registration has been cancelled automatically.",
     ];
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -1695,7 +2086,7 @@ class _CancelledStateView extends StatelessWidget {
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             color: AppColors.errorRed.withValues(alpha: 0.06),
-            borderRadius: BorderRadius.circular(14),
+            borderRadius: BorderRadius.circular(16),
             border: Border.all(
               color: AppColors.errorRed.withValues(alpha: 0.18),
             ),
@@ -1707,7 +2098,7 @@ class _CancelledStateView extends StatelessWidget {
                 children: [
                   AppIcon(
                     AppIcons.cancel,
-                    size: 18,
+                    size: 16,
                     color: AppColors.errorRed,
                   ),
                   const SizedBox(width: 8),
@@ -1717,7 +2108,7 @@ class _CancelledStateView extends StatelessWidget {
                       fontSize: 11,
                       fontWeight: FontWeight.w700,
                       color: AppColors.errorRed,
-                      letterSpacing: 0.6,
+                      letterSpacing: 0.7,
                     ),
                   ),
                 ],
@@ -1740,44 +2131,13 @@ class _CancelledStateView extends StatelessWidget {
             ],
           ),
         ),
-        // Paid users from the old flow get a contact-support footer.
-        // New-flow users can't reach this branch (live sessions don't
-        // transition to cancelled), but the safety net stays.
         if (wasPaid) ...[
           const SizedBox(height: 12),
-          Container(
-            width: double.infinity,
-            padding: const EdgeInsets.all(14),
-            decoration: BoxDecoration(
-              color: AppColors.amberGold.withValues(alpha: 0.08),
-              borderRadius: BorderRadius.circular(12),
-              border: Border.all(
-                color: AppColors.amberGold.withValues(alpha: 0.2),
-              ),
-            ),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                AppIcon(
-                  AppIcons.info,
-                  size: 16,
-                  color: AppColors.amberGold,
-                ),
-                const SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    "If you made a payment, please contact support "
-                    "for a refund.",
-                    style: GoogleFonts.inter(
-                      fontSize: 13,
-                      fontWeight: FontWeight.w500,
-                      color: AppColors.amberGold.withValues(alpha: 0.95),
-                      height: 1.4,
-                    ),
-                  ),
-                ),
-              ],
-            ),
+          _BellInfoCard(
+            title: "Need a refund?",
+            body: "Please contact support if you paid for this session.",
+            accent: AppColors.amberGold,
+            icon: AppIcons.info,
           ),
         ],
       ],
@@ -1786,80 +2146,21 @@ class _CancelledStateView extends StatelessWidget {
 }
 
 // ════════════════════════════════════════════════════════════════
-// STATE I — LIVE BUT PAST DEADLINE
-// ════════════════════════════════════════════════════════════════
-
-class _EndingSoonStateView extends StatelessWidget {
-  final BibleSessionModel session;
-  const _EndingSoonStateView({required this.session});
-
-  @override
-  Widget build(BuildContext context) {
-    return _InfoBlock(
-      icon: AppIcons.hourglass,
-      accent: AppColors.muted,
-      title: "Session Ending Soon",
-      body:
-          "This session is past its scheduled duration. The speaker "
-          "is wrapping up — it will be marked complete shortly.",
-    );
-  }
-}
-
-// ════════════════════════════════════════════════════════════════
 // COMMON HELPERS
 // ════════════════════════════════════════════════════════════════
 
-class _CompletedHeader extends StatelessWidget {
-  final String message;
-  const _CompletedHeader({required this.message});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.symmetric(vertical: 14),
-      decoration: BoxDecoration(
-        color: _kJoinedGreen.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: _kJoinedGreen.withValues(alpha: 0.2),
-        ),
-      ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.center,
-        children: [
-          const AppIcon(
-            AppIcons.checkCircle,
-            size: 18,
-            color: _kJoinedGreen,
-          ),
-          const SizedBox(width: 8),
-          Text(
-            message,
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: _kJoinedGreen,
-            ),
-          ),
-        ],
-      ),
-    );
-  }
-}
-
-class _InfoBlock extends StatelessWidget {
-  final IconData icon;
-  final Color accent;
+// "Registration is free" style card — bell-in-circle + bold title +
+// muted body. Mirrors the reference image's notification card.
+class _BellInfoCard extends StatelessWidget {
   final String title;
   final String body;
-
-  const _InfoBlock({
-    required this.icon,
-    required this.accent,
+  final Color accent;
+  final IconData icon;
+  const _BellInfoCard({
     required this.title,
     required this.body,
+    this.accent = AppColors.primaryBrown,
+    this.icon = AppIcons.bell,
   });
 
   @override
@@ -1868,14 +2169,91 @@ class _InfoBlock extends StatelessWidget {
       width: double.infinity,
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
-        color: accent.withValues(alpha: 0.06),
+        color: AppColors.warmBeige.withValues(alpha: 0.5),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.center,
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.surfaceWhite,
+              boxShadow: [
+                BoxShadow(
+                  color: Colors.black.withValues(alpha: 0.03),
+                  blurRadius: 6,
+                  offset: const Offset(0, 1),
+                ),
+              ],
+            ),
+            child: Center(
+              child: AppIcon(icon, size: 16, color: accent),
+            ),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  title,
+                  style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 3),
+                Text(
+                  body,
+                  style: GoogleFonts.inter(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted,
+                    height: 1.45,
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Tinted accent banner used for state confirmations.
+class _AccentBanner extends StatelessWidget {
+  final Color color;
+  final IconData icon;
+  final String title;
+  final String body;
+
+  const _AccentBanner({
+    required this.color,
+    required this.icon,
+    required this.title,
+    required this.body,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: color.withValues(alpha: 0.08),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(color: accent.withValues(alpha: 0.18)),
+        border: Border.all(color: color.withValues(alpha: 0.22)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          AppIcon(icon, size: 18, color: accent),
+          AppIcon(icon, size: 18, color: color),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -1884,21 +2262,24 @@ class _InfoBlock extends StatelessWidget {
                 Text(
                   title,
                   style: GoogleFonts.inter(
-                    fontSize: 13,
+                    fontSize: 14,
                     fontWeight: FontWeight.w700,
-                    color: AppColors.deepDarkBrown,
+                    color: color,
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  body,
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.muted,
-                    height: 1.5,
+                if (body.isNotEmpty) ...[
+                  const SizedBox(height: 3),
+                  Text(
+                    body,
+                    style: GoogleFonts.inter(
+                      fontSize: 12.5,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.deepDarkBrown
+                          .withValues(alpha: 0.75),
+                      height: 1.45,
+                    ),
                   ),
-                ),
+                ],
               ],
             ),
           ),
@@ -1909,6 +2290,8 @@ class _InfoBlock extends StatelessWidget {
 }
 
 class _RegistrationShimmer extends StatelessWidget {
+  const _RegistrationShimmer();
+
   @override
   Widget build(BuildContext context) {
     final base = AppColors.muted.withValues(alpha: 0.14);
@@ -1920,7 +2303,261 @@ class _RegistrationShimmer extends StatelessWidget {
         height: 80,
         decoration: BoxDecoration(
           color: Colors.white,
-          borderRadius: BorderRadius.circular(14),
+          borderRadius: BorderRadius.circular(16),
+        ),
+      ),
+    );
+  }
+}
+
+// ════════════════════════════════════════════════════════════════
+// BOTTOM ACTION REGION — pinned docked sheet
+// ════════════════════════════════════════════════════════════════
+
+// Measures its child so the scroll body can reserve enough bottom
+// padding to never hide content behind the docked sheet.
+class _BottomActionRegion extends StatefulWidget {
+  final Widget child;
+  final ValueChanged<double> onMeasured;
+  const _BottomActionRegion({
+    required this.child,
+    required this.onMeasured,
+  });
+
+  @override
+  State<_BottomActionRegion> createState() => _BottomActionRegionState();
+}
+
+class _BottomActionRegionState extends State<_BottomActionRegion> {
+  final GlobalKey _key = GlobalKey();
+
+  @override
+  Widget build(BuildContext context) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      final ctx = _key.currentContext;
+      if (ctx == null) return;
+      final box = ctx.findRenderObject();
+      if (box is RenderBox && box.hasSize) {
+        widget.onMeasured(box.size.height);
+      }
+    });
+    return Container(
+      key: _key,
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: const BorderRadius.vertical(
+          top: Radius.circular(22),
+        ),
+        boxShadow: [
+          BoxShadow(
+            color: AppColors.shadowWarm.withValues(alpha: 0.08),
+            blurRadius: 24,
+            offset: const Offset(0, -6),
+          ),
+        ],
+      ),
+      child: SafeArea(
+        top: false,
+        child: Padding(
+          padding: const EdgeInsets.fromLTRB(20, 10, 20, 12),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              // Drag handle pill — purely decorative; matches the
+              // reference image's grabber affordance.
+              Container(
+                width: 38,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.22),
+                  borderRadius: BorderRadius.circular(2),
+                ),
+              ),
+              const SizedBox(height: 14),
+              widget.child,
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+}
+
+// The full bottom-sheet content: wide primary CTA + helper text +
+// share / calendar bottom row.
+class _BottomCtaSheet extends StatelessWidget {
+  final String primaryLabel;
+  final IconData primaryIcon;
+  final Color primaryColor;
+  final String helperText;
+  final bool loading;
+  final VoidCallback? onPrimary;
+  final VoidCallback onShare;
+  final VoidCallback? onCalendar;
+
+  const _BottomCtaSheet({
+    required this.primaryLabel,
+    required this.primaryIcon,
+    required this.primaryColor,
+    required this.helperText,
+    required this.loading,
+    required this.onPrimary,
+    required this.onShare,
+    required this.onCalendar,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        _PrimaryButton(
+          label: primaryLabel,
+          loading: loading,
+          onTap: onPrimary,
+          background: primaryColor,
+          leadingIcon: primaryIcon,
+        ),
+        const SizedBox(height: 10),
+        Text(
+          helperText,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: AppColors.muted,
+            height: 1.4,
+          ),
+        ),
+        const SizedBox(height: 12),
+        Container(
+          height: 1,
+          color: AppColors.borderLight,
+        ),
+        const SizedBox(height: 4),
+        Row(
+          children: [
+            Expanded(
+              child: _BottomActionItem(
+                icon: AppIcons.share,
+                label: "Share this session",
+                onTap: onShare,
+              ),
+            ),
+            if (onCalendar != null)
+              Expanded(
+                child: _BottomActionItem(
+                  icon: AppIcons.calendar,
+                  label: "Add to calendar",
+                  onTap: onCalendar!,
+                ),
+              ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+// Minimal bottom sheet for terminal / non-actionable states. The
+// share button is still useful (a completed session can be shared
+// as social proof), but the calendar button doesn't make sense
+// anymore.
+// Faded, non-interactive footer note for cancelled sessions. The
+// share + calendar affordances are stripped (both at the top of the
+// page and here) and replaced with a muted explainer so the user
+// knows why those actions are gone — silently disappearing controls
+// is more confusing than a one-line caption.
+class _DisabledFooterNote extends StatelessWidget {
+  final String message;
+  const _DisabledFooterNote({required this.message});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 14),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.center,
+        children: [
+          AppIcon(
+            AppIcons.lock,
+            size: 13,
+            color: AppColors.muted.withValues(alpha: 0.55),
+          ),
+          const SizedBox(width: 8),
+          Flexible(
+            child: Text(
+              message,
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w500,
+                color: AppColors.muted.withValues(alpha: 0.75),
+                height: 1.4,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _FooterShareOnly extends StatelessWidget {
+  final VoidCallback onShare;
+  const _FooterShareOnly({required this.onShare});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 2),
+      child: _BottomActionItem(
+        icon: AppIcons.share,
+        label: "Share this session",
+        onTap: onShare,
+      ),
+    );
+  }
+}
+
+class _BottomActionItem extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final VoidCallback onTap;
+  const _BottomActionItem({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () {
+        HapticFeedback.lightImpact();
+        onTap();
+      },
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            AppIcon(
+              icon,
+              size: 14,
+              color: AppColors.deepDarkBrown,
+            ),
+            const SizedBox(width: 8),
+            Text(
+              label,
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w600,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ],
         ),
       ),
     );
@@ -1934,12 +2571,14 @@ class _PrimaryButton extends StatelessWidget {
   final bool loading;
   final VoidCallback? onTap;
   final Color background;
+  final IconData? leadingIcon;
 
   const _PrimaryButton({
     required this.label,
     required this.loading,
     required this.onTap,
     required this.background,
+    this.leadingIcon,
   });
 
   @override
@@ -1949,7 +2588,7 @@ class _PrimaryButton extends StatelessWidget {
       onTap: loading ? null : onTap,
       child: Container(
         width: double.infinity,
-        height: 52,
+        height: 54,
         decoration: BoxDecoration(
           color: disabled
               ? AppColors.muted.withValues(alpha: 0.2)
@@ -1977,42 +2616,30 @@ class _PrimaryButton extends StatelessWidget {
                     ),
                   ),
                 )
-              : Text(
-                  label,
-                  style: GoogleFonts.inter(
-                    fontSize: 15,
-                    fontWeight: FontWeight.w700,
-                    color: disabled ? AppColors.muted : Colors.white,
-                  ),
+              : Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    if (leadingIcon != null) ...[
+                      AppIcon(
+                        leadingIcon!,
+                        size: 16,
+                        color: disabled
+                            ? AppColors.muted
+                            : Colors.white,
+                      ),
+                      const SizedBox(width: 10),
+                    ],
+                    Text(
+                      label,
+                      style: GoogleFonts.inter(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color:
+                            disabled ? AppColors.muted : Colors.white,
+                      ),
+                    ),
+                  ],
                 ),
-        ),
-      ),
-    );
-  }
-}
-
-class _DisabledButton extends StatelessWidget {
-  final String label;
-  const _DisabledButton({required this.label});
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      height: 52,
-      decoration: BoxDecoration(
-        color: AppColors.muted.withValues(alpha: 0.1),
-        borderRadius: BorderRadius.circular(14),
-      ),
-      child: Center(
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: GoogleFonts.inter(
-            fontSize: 13,
-            fontWeight: FontWeight.w600,
-            color: AppColors.muted,
-          ),
         ),
       ),
     );

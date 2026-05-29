@@ -115,6 +115,22 @@
                 <action android:name="android.intent.action.MAIN"/>
                 <category android:name="android.intent.category.LAUNCHER"/>
             </intent-filter>
+
+            <!-- Custom-scheme deep link for shared priest profiles.
+                 A URL like gospelvox://priest/<uid> opens the app
+                 straight to that priest's profile page (handled in
+                 lib/core/services/deep_link_service.dart). This is
+                 the dummy scheme — when we get the gospelvox.app
+                 domain set up with assetlinks.json, add a parallel
+                 intent-filter for `android:scheme="https"
+                 android:host="gospelvox.app"` with autoVerify="true"
+                 and the same paths. The two can coexist. -->
+            <intent-filter android:autoVerify="false">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="gospelvox"/>
+            </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.
              This is used by the Flutter tool to generate GeneratedPluginRegistrant.java -->

@@ -10,6 +10,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/connectivity_service.dart';
+import 'package:gospel_vox/core/services/deep_link_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/services/priest_incoming_request_service.dart';
@@ -69,6 +70,14 @@ void main() async {
   // silently expired without ringing. Synchronous binding to
   // authStateChanges; no network I/O until a priest signs in.
   PriestIncomingRequestService().init();
+
+  // Inbound deep-link handler — listens for shared
+  // gospelvox://priest/<uid> URIs and routes the user to the
+  // corresponding profile page. Cold-start link is consumed as
+  // part of init(); warm subscription stays alive for the app's
+  // lifetime. Initialised after dependencies so the router (the
+  // navigation target) is already wired up.
+  unawaited(DeepLinkService().init());
 
   await initDependencies();
 

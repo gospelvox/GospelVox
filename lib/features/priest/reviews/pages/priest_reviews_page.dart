@@ -48,6 +48,128 @@ import 'package:gospel_vox/features/priest/reviews/widgets/review_reply_sheet.da
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
+// Unified view-model for a single review on the priest's reviews page.
+//
+// Reviews come from TWO sources:
+//   • chat/voice — `sessions/{id}` (source-of-truth for the reply too).
+//   • bible — `bible_sessions/{sid}/registrations/{regId}` for the
+//     write; the priest reads it via the denormalised mirror on
+//     `priests/{uid}.recentReviews` (with source == "bible").
+//
+// We wrap both into PriestReviewItem so the card + reply sheet render
+// uniformly. The `source` discriminator routes the reply call to the
+// right CF parameters.
+enum ReviewSource { session, bible }
+
+class PriestReviewItem {
+  // For session reviews this is the flat sessionId. For bible reviews
+  // it's the sentinel "bible_<sid>_<regId>" that matches the entry's
+  // sessionId field in priests/{uid}.recentReviews — used as a stable
+  // key for ListView keys and for the reply mirror.
+  final String id;
+  final ReviewSource source;
+  // Only populated for bible reviews. The CF reply path needs both
+  // to address the source-of-truth registration doc.
+  final String? bibleSessionId;
+  final String? regId;
+  final String userName;
+  final String userPhotoUrl;
+  final double rating;
+  final String feedback;
+  final DateTime? endedAt;
+  final ReviewReply? priestReply;
+
+  const PriestReviewItem({
+    required this.id,
+    required this.source,
+    this.bibleSessionId,
+    this.regId,
+    required this.userName,
+    required this.userPhotoUrl,
+    required this.rating,
+    required this.feedback,
+    required this.endedAt,
+    required this.priestReply,
+  });
+
+  bool get hasFeedback => feedback.trim().isNotEmpty;
+  int get stars {
+    final r = rating.round();
+    if (r < 0) return 0;
+    if (r > 5) return 5;
+    return r;
+  }
+
+  factory PriestReviewItem.fromSession(SessionModel s) {
+    return PriestReviewItem(
+      id: s.id,
+      source: ReviewSource.session,
+      bibleSessionId: null,
+      regId: null,
+      userName: s.userName,
+      userPhotoUrl: s.userPhotoUrl,
+      rating: s.userRating ?? 0,
+      feedback: s.userFeedback ?? '',
+      endedAt: s.endedAt ?? s.createdAt,
+      priestReply: s.priestReply,
+    );
+  }
+
+  // Build from a `recentReviews` array entry written by the
+  // onBibleSessionRated CF (and updated by replyToReview when the
+  // priest replies). Tolerant of missing fields — older mirror
+  // entries pre-deploy may not carry every field.
+  static PriestReviewItem? tryFromBibleRecentEntry(Map<String, dynamic> e) {
+    final src = e['source'];
+    if (src != 'bible') return null;
+    final bibleSessionId = e['bibleSessionId'] as String?;
+    final sentinelId = e['sessionId'] as String?;
+    if (bibleSessionId == null || sentinelId == null) return null;
+
+    // The sentinel is "bible_<sid>_<regId>" — last segment is regId
+    // (== user uid per the rules). Parsed defensively so a malformed
+    // entry simply skips its reply support rather than crashing.
+    String? regId;
+    if (sentinelId.startsWith('bible_${bibleSessionId}_')) {
+      regId = sentinelId.substring('bible_${bibleSessionId}_'.length);
+      if (regId.isEmpty) regId = null;
+    }
+
+    DateTime? parseTime(dynamic v) {
+      if (v is Timestamp) return v.toDate();
+      if (v is String) return DateTime.tryParse(v);
+      return null;
+    }
+
+    final replyText = ((e['priestReply'] as String?) ?? '').trim();
+    ReviewReply? reply;
+    if (replyText.isNotEmpty) {
+      reply = ReviewReply(
+        text: replyText,
+        createdAt: parseTime(e['priestReplyCreatedAt']) ??
+            parseTime(e['priestReplyAt']),
+        updatedAt: parseTime(e['priestReplyAt']),
+      );
+    }
+
+    final ratingNum = e['rating'];
+    final rating = ratingNum is num ? ratingNum.toDouble() : 0.0;
+
+    return PriestReviewItem(
+      id: sentinelId,
+      source: ReviewSource.bible,
+      bibleSessionId: bibleSessionId,
+      regId: regId,
+      userName: (e['userName'] as String?) ?? '',
+      userPhotoUrl: (e['userPhotoUrl'] as String?) ?? '',
+      rating: rating,
+      feedback: (e['feedback'] as String?) ?? '',
+      endedAt: parseTime(e['endedAt']),
+      priestReply: reply,
+    );
+  }
+}
+
 class PriestReviewsPage extends StatefulWidget {
   const PriestReviewsPage({super.key});
 
@@ -59,7 +181,7 @@ enum _Filter { all, withFeedback }
 
 class _PriestReviewsPageState extends State<PriestReviewsPage> {
   bool _loading = true;
-  List<SessionModel> _reviews = const [];
+  List<PriestReviewItem> _reviews = const [];
   double _avg = 0;
   int _count = 0;
   // Distribution: index 0 = 1-star count, index 4 = 5-star count.
@@ -85,6 +207,12 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
     }
 
     try {
+      // We need TWO sources to render every review the priest has:
+      //   1. chat/voice — read directly from `sessions/{id}` so we
+      //      get full reply timestamps for the 24h Edit gate.
+      //   2. bible — denormalised onto `priests/{uid}.recentReviews`
+      //      by the onBibleSessionRated CF. Read it from the SAME
+      //      priest-doc fetch we already do for the aggregate.
       final snapFuture = FirebaseFirestore.instance
           .collection('sessions')
           .where('priestId', isEqualTo: uid)
@@ -102,18 +230,29 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
       final priestSnap =
           results[1] as DocumentSnapshot<Map<String, dynamic>>;
 
-      final reviews = snap.docs
-          .map(
-            (d) => SessionModel.fromFirestore(d.id, d.data()),
-          )
+      final sessionReviews = snap.docs
+          .map((d) => SessionModel.fromFirestore(d.id, d.data()))
           .where((s) => s.userRating != null)
+          .map(PriestReviewItem.fromSession)
           .toList();
 
-      // Newest-first by endedAt, falling back to createdAt so a
-      // session whose endedAt didn't land doesn't vanish off-screen.
+      final priestData = priestSnap.data() ?? const <String, dynamic>{};
+      final recentReviews =
+          (priestData['recentReviews'] as List?) ?? const [];
+      final bibleReviews = recentReviews
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .map(PriestReviewItem.tryFromBibleRecentEntry)
+          .whereType<PriestReviewItem>()
+          .toList();
+
+      final reviews = [...sessionReviews, ...bibleReviews];
+
+      // Newest-first by endedAt. Items with no timestamp drop to the
+      // bottom so a partial doc doesn't visually disappear.
       reviews.sort((a, b) {
-        final ta = a.endedAt ?? a.createdAt;
-        final tb = b.endedAt ?? b.createdAt;
+        final ta = a.endedAt;
+        final tb = b.endedAt;
         if (ta == null && tb == null) return 0;
         if (ta == null) return 1;
         if (tb == null) return -1;
@@ -122,15 +261,15 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
 
       final dist = <int>[0, 0, 0, 0, 0];
       for (final r in reviews) {
-        final stars = r.userRating?.round() ?? 0;
-        if (stars >= 1 && stars <= 5) dist[stars - 1] += 1;
+        final s = r.stars;
+        if (s >= 1 && s <= 5) dist[s - 1] += 1;
       }
 
-      final priestData = priestSnap.data() ?? const <String, dynamic>{};
-      // Prefer the server-aggregated values — they cover sessions
-      // older than our 500-doc window — but fall back to a fresh
-      // local computation if the priest doc is missing them (very
-      // first review just landed and the trigger hasn't run yet).
+      // Prefer the server-aggregated values — they cover reviews older
+      // than our 500-doc window AND include bible sessions counted by
+      // the onBibleSessionRated CF. Fall back to a fresh local
+      // computation if the priest doc is missing them (very first
+      // review just landed and the trigger hasn't run yet).
       final docAvg =
           (priestData['rating'] as num?)?.toDouble() ?? 0;
       final docCount =
@@ -139,15 +278,15 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
       final localCount = reviews.length;
       final localAvg = localCount == 0
           ? 0.0
-          : reviews
-                  .map((r) => r.userRating ?? 0)
-                  .reduce((a, b) => a + b) /
+          : reviews.map((r) => r.rating).reduce((a, b) => a + b) /
               localCount;
 
       if (!mounted) return;
       setState(() {
         _reviews = reviews;
-        _avg = docCount > 0 ? docAvg : double.parse(localAvg.toStringAsFixed(1));
+        _avg = docCount > 0
+            ? docAvg
+            : double.parse(localAvg.toStringAsFixed(1));
         _count = docCount > 0 ? docCount : localCount;
         _distribution = dist;
         _loading = false;
@@ -168,26 +307,22 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
     }
   }
 
-  List<SessionModel> get _visible {
+  List<PriestReviewItem> get _visible {
     switch (_filter) {
       case _Filter.all:
         return _reviews;
       case _Filter.withFeedback:
-        return _reviews
-            .where(
-              (r) => (r.userFeedback ?? '').trim().isNotEmpty,
-            )
-            .toList();
+        return _reviews.where((r) => r.hasFeedback).toList();
     }
   }
 
-  Future<void> _openReplySheet(SessionModel session) async {
+  Future<void> _openReplySheet(PriestReviewItem review) async {
     HapticFeedback.lightImpact();
     final result = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (sheetCtx) => ReviewReplySheet(session: session),
+      builder: (sheetCtx) => ReviewReplySheet(review: review),
     );
     if (result == true && mounted) {
       // Re-fetch so the new reply renders in place. A targeted single
@@ -309,11 +444,8 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
             _FilterRow(
               current: _filter,
               total: _reviews.length,
-              withFeedback: _reviews
-                  .where(
-                    (r) => (r.userFeedback ?? '').trim().isNotEmpty,
-                  )
-                  .length,
+              withFeedback:
+                  _reviews.where((r) => r.hasFeedback).length,
               onChanged: (f) => setState(() => _filter = f),
             ),
             const SizedBox(height: 14),
@@ -340,7 +472,7 @@ class _PriestReviewsPageState extends State<PriestReviewsPage> {
           else
             for (final r in _visible) ...[
               _ReviewCard(
-                session: r,
+                review: r,
                 onReplyTap: () => _openReplySheet(r),
               ),
               const SizedBox(height: 12),
@@ -651,20 +783,20 @@ class _FilterChip extends StatelessWidget {
 // ─── Review card ─────────────────────────────────────────
 
 class _ReviewCard extends StatelessWidget {
-  final SessionModel session;
+  final PriestReviewItem review;
   final VoidCallback onReplyTap;
 
   const _ReviewCard({
-    required this.session,
+    required this.review,
     required this.onReplyTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final stars = session.userRating?.round() ?? 0;
-    final feedback = (session.userFeedback ?? '').trim();
-    final date = _fmtDate(session.endedAt ?? session.createdAt);
-    final reply = session.priestReply;
+    final stars = review.stars;
+    final feedback = review.feedback.trim();
+    final date = _fmtDate(review.endedAt);
+    final reply = review.priestReply;
 
     return Container(
       width: double.infinity,
@@ -690,8 +822,8 @@ class _ReviewCard extends StatelessWidget {
             crossAxisAlignment: CrossAxisAlignment.center,
             children: [
               _UserAvatar(
-                photoUrl: session.userPhotoUrl,
-                name: session.userName,
+                photoUrl: review.userPhotoUrl,
+                name: review.userName,
               ),
               const SizedBox(width: 12),
               Expanded(
@@ -700,7 +832,7 @@ class _ReviewCard extends StatelessWidget {
                   mainAxisSize: MainAxisSize.min,
                   children: [
                     Text(
-                      _firstName(session.userName),
+                      _firstName(review.userName),
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(
@@ -1098,19 +1230,41 @@ class _ReviewsShimmer extends StatelessWidget {
 // sheet doesn't import cloud_functions itself. Keeps the sheet file
 // pure UI + state; networking lives here next to the page that
 // orchestrates the refresh.
+//
+// Dispatch by review source:
+//   • session — pass {sessionId, text}. Unchanged from before.
+//   • bible   — pass {source: "bible", bibleSessionId, regId, text}.
+// The replyToReview CF reads `source` (defaults to "session") and
+// routes to the right doc.
 class ReplyToReviewService {
   static Future<void> submit({
-    required String sessionId,
+    required PriestReviewItem review,
     required String text,
   }) async {
     final functions =
         FirebaseFunctions.instanceFor(region: 'asia-south1');
+    final payload = <String, dynamic>{'text': text};
+    if (review.source == ReviewSource.bible) {
+      final bsid = review.bibleSessionId;
+      final reg = review.regId;
+      if (bsid == null || reg == null) {
+        // Defensive — shouldn't reach the UI if either is missing
+        // because the chip wouldn't have shown a Reply CTA. Throw a
+        // clear error so the sheet surfaces something useful instead
+        // of an opaque CF invalid-argument later.
+        throw ArgumentError(
+          'Cannot reply to bible review — missing bibleSessionId or regId',
+        );
+      }
+      payload['source'] = 'bible';
+      payload['bibleSessionId'] = bsid;
+      payload['regId'] = reg;
+    } else {
+      payload['sessionId'] = review.id;
+    }
     await functions
         .httpsCallable('replyToReview')
-        .call<Map<String, dynamic>>({
-      'sessionId': sessionId,
-      'text': text,
-    });
+        .call<Map<String, dynamic>>(payload);
   }
 }
 

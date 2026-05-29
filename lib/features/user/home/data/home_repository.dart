@@ -11,8 +11,12 @@
 // Without this filter the user sees a ghost card on day one.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:cloud_functions/cloud_functions.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
+
+const String _kFunctionsRegion = 'asia-south1';
 
 class HomeRepository {
   FirebaseFirestore get _db => FirebaseFirestore.instance;
@@ -132,64 +136,194 @@ class HomeRepository {
   }
 
   // Recent written reviews for a priest, used by the profile page's
-  // Reviews preview. Single-`where` query (priestId == X) with
-  // client-side filtering + sorting to avoid a composite index — same
-  // pattern as PriestReviewsPage. Returns at most [limit] entries
-  // that have BOTH a rating and a non-empty written feedback (a
-  // star-only review is useless as a preview).
+  // Reviews are read by trying three sources in order:
   //
-  // Any failure (index missing, permission denied, timeout) returns
-  // an empty list so the Reviews section just hides on the profile
-  // instead of breaking the whole page.
+  //   1. PRIMARY: the `getPublicPriestReviews` callable CF. Reads
+  //      sessions with admin privileges (bypassing the rules that
+  //      block other users from reading another priest's sessions
+  //      directly) and returns a sanitised projection. This is the
+  //      path that just works after a single function deploy — no
+  //      data backfill required.
+  //
+  //   2. FALLBACK: the denormalized `recentReviews` array on
+  //      priests/{id}, maintained by onSessionRated + replyToReview.
+  //      Used when the CF call fails for any reason.
+  //
+  //   3. LAST RESORT: direct sessions query. Works if the rules are
+  //      permissive enough OR if the caller is the priest themself.
+  //      Otherwise returns empty (logged, never throws).
   Future<List<PriestReview>> getRecentReviews(
     String priestId, {
-    int limit = 3,
+    int limit = 200,
   }) async {
+    // --- 1. callable CF (primary) ---
+    try {
+      final callable = FirebaseFunctions.instanceFor(
+        region: _kFunctionsRegion,
+      ).httpsCallable('getPublicPriestReviews');
+      final result = await callable
+          .call<Map<String, dynamic>>({
+            'priestId': priestId,
+            'limit': limit,
+          })
+          .timeout(const Duration(seconds: 10));
+      final list = (result.data['reviews'] as List?) ?? const [];
+      final reviews = list
+          .whereType<Map>()
+          .map((m) => Map<String, dynamic>.from(m))
+          .map(_parseCallableReview)
+          .toList();
+      debugPrint(
+        'getRecentReviews($priestId): callable returned '
+        '${reviews.length} reviews',
+      );
+      // Empty list from the callable is a valid result (the priest
+      // simply has no rated sessions yet) — return it instead of
+      // falling through to other paths that won't find anything
+      // either.
+      return reviews;
+    } catch (e) {
+      debugPrint('getRecentReviews callable failed for $priestId: $e');
+    }
+
+    // --- 2. priest-doc array fallback ---
+    try {
+      final snap = await _db
+          .doc('priests/$priestId')
+          .get()
+          .timeout(const Duration(seconds: 6));
+
+      final raw = snap.data()?['recentReviews'] as List? ?? const [];
+      if (raw.isNotEmpty) {
+        final reviews = _parsePriestDocReviews(raw, limit);
+        debugPrint(
+          'getRecentReviews($priestId): array fallback returned '
+          '${reviews.length} reviews',
+        );
+        return reviews;
+      }
+    } catch (e) {
+      debugPrint('getRecentReviews array path failed for $priestId: $e');
+    }
+
+    // --- 3. direct sessions query (last resort) ---
     try {
       final snap = await _db
           .collection('sessions')
           .where('priestId', isEqualTo: priestId)
-          .limit(80)
+          .limit(250)
           .get()
           .timeout(const Duration(seconds: 8));
 
-      final rows = snap.docs
-          .map((d) => d.data())
-          .where((d) {
-            final rating = (d['userRating'] as num?)?.toDouble();
-            final feedback =
-                (d['userFeedback'] as String?)?.trim() ?? '';
-            return rating != null && feedback.isNotEmpty;
-          })
-          .toList();
-
-      rows.sort((a, b) {
-        final ta = a['endedAt'] is Timestamp
-            ? (a['endedAt'] as Timestamp).toDate()
-            : null;
-        final tb = b['endedAt'] is Timestamp
-            ? (b['endedAt'] as Timestamp).toDate()
-            : null;
-        if (ta == null && tb == null) return 0;
-        if (ta == null) return 1;
-        if (tb == null) return -1;
-        return tb.compareTo(ta);
-      });
-
-      return rows.take(limit).map((d) {
-        return PriestReview(
-          userName: (d['userName'] as String?) ?? '',
-          userPhotoUrl: (d['userPhotoUrl'] as String?) ?? '',
-          rating: (d['userRating'] as num?)?.toDouble() ?? 0,
-          feedback: (d['userFeedback'] as String?) ?? '',
-          at: d['endedAt'] is Timestamp
-              ? (d['endedAt'] as Timestamp).toDate()
-              : null,
-        );
-      }).toList();
-    } catch (_) {
+      final reviews = _parseSessionRows(snap.docs, limit);
+      debugPrint(
+        'getRecentReviews($priestId): sessions last-resort returned '
+        '${reviews.length} reviews',
+      );
+      return reviews;
+    } catch (e, st) {
+      debugPrint(
+        'getRecentReviews sessions last-resort failed for $priestId: '
+        '$e\n$st',
+      );
       return const [];
     }
+  }
+
+  // Parser for the callable's response. Shape matches the
+  // getPublicPriestReviews TS interface: flat fields, endedAt as
+  // ISO string, priestReply as nullable plain string.
+  PriestReview _parseCallableReview(Map<String, dynamic> m) {
+    final reply = (m['priestReply'] as String?)?.trim() ?? '';
+    final endedRaw = m['endedAt'];
+    return PriestReview(
+      userName: (m['userName'] as String?) ?? '',
+      userPhotoUrl: (m['userPhotoUrl'] as String?) ?? '',
+      rating: (m['rating'] as num?)?.toDouble() ?? 0,
+      feedback: (m['feedback'] as String?) ?? '',
+      at: endedRaw is String ? DateTime.tryParse(endedRaw) : null,
+      priestReply: reply.isEmpty ? null : reply,
+    );
+  }
+
+  // Parser shared between the two paths. Handles both the array shape
+  // (fields: rating, feedback, endedAt, priestReply) AND the session
+  // shape (fields: userRating, userFeedback, endedAt, priestReply).
+  List<PriestReview> _parsePriestDocReviews(List raw, int limit) {
+    final rows = raw
+        .whereType<Map>()
+        .map((m) => Map<String, dynamic>.from(m))
+        .toList();
+    _sortReviews(rows, ratingKey: 'rating', feedbackKey: 'feedback');
+    return rows.take(limit).map((d) {
+      final reply = (d['priestReply'] as String?)?.trim() ?? '';
+      return PriestReview(
+        userName: (d['userName'] as String?) ?? '',
+        userPhotoUrl: (d['userPhotoUrl'] as String?) ?? '',
+        rating: (d['rating'] as num?)?.toDouble() ?? 0,
+        feedback: (d['feedback'] as String?) ?? '',
+        at: _readAt(d['endedAt']),
+        priestReply: reply.isEmpty ? null : reply,
+      );
+    }).toList();
+  }
+
+  List<PriestReview> _parseSessionRows(
+    List<QueryDocumentSnapshot<Map<String, dynamic>>> docs,
+    int limit,
+  ) {
+    final rows = docs
+        .map((d) => d.data())
+        .where((d) => (d['userRating'] as num?) != null)
+        .toList();
+    _sortReviews(
+      rows,
+      ratingKey: 'userRating',
+      feedbackKey: 'userFeedback',
+    );
+    return rows.take(limit).map((d) {
+      final replyMap = d['priestReply'] is Map
+          ? Map<String, dynamic>.from(d['priestReply'] as Map)
+          : null;
+      final replyText =
+          (replyMap?['text'] as String?)?.trim() ?? '';
+      return PriestReview(
+        userName: (d['userName'] as String?) ?? '',
+        userPhotoUrl: (d['userPhotoUrl'] as String?) ?? '',
+        rating: (d['userRating'] as num?)?.toDouble() ?? 0,
+        feedback: (d['userFeedback'] as String?) ?? '',
+        at: _readAt(d['endedAt']),
+        priestReply: replyText.isEmpty ? null : replyText,
+      );
+    }).toList();
+  }
+
+  DateTime? _readAt(dynamic v) {
+    if (v is Timestamp) return v.toDate();
+    if (v is String) return DateTime.tryParse(v);
+    return null;
+  }
+
+  void _sortReviews(
+    List<Map<String, dynamic>> rows, {
+    required String ratingKey,
+    required String feedbackKey,
+  }) {
+    bool hasText(Map<String, dynamic> d) =>
+        ((d[feedbackKey] as String?)?.trim() ?? '').isNotEmpty;
+    rows.sort((a, b) {
+      // Written reviews first.
+      final wa = hasText(a) ? 0 : 1;
+      final wb = hasText(b) ? 0 : 1;
+      if (wa != wb) return wa.compareTo(wb);
+      // Then newest first.
+      final ta = _readAt(a['endedAt']);
+      final tb = _readAt(b['endedAt']);
+      if (ta == null && tb == null) return 0;
+      if (ta == null) return 1;
+      if (tb == null) return -1;
+      return tb.compareTo(ta);
+    });
   }
 }
 
@@ -204,6 +338,11 @@ class PriestReview {
   final double rating;
   final String feedback;
   final DateTime? at;
+  // Priest's public reply text if they replied to this review.
+  // Stored flat (just the text) because the profile preview never
+  // needs the createdAt / edit-window metadata that the priest-side
+  // ReviewReply carries.
+  final String? priestReply;
 
   const PriestReview({
     required this.userName,
@@ -211,5 +350,6 @@ class PriestReview {
     required this.rating,
     required this.feedback,
     required this.at,
+    this.priestReply,
   });
 }

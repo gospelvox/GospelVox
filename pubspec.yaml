@@ -70,6 +70,21 @@ dependencies:
   uuid: any
   url_launcher: any
   flutter_local_notifications: ^21.0.0
+  # Native share-sheet integration. Used to share priest profiles
+  # out to WhatsApp, Mail, Telegram, etc. — both image + text in a
+  # single sheet, so the recipient sees a rich preview rather than
+  # a bare URL.
+  share_plus: any
+  # Cache-aware file fetcher. Already pulled in transitively by
+  # cached_network_image; declared explicitly because the share
+  # flow imports DefaultCacheManager directly to grab the already-
+  # downloaded priest photo without re-fetching the network bytes.
+  flutter_cache_manager: any
+  # Inbound deep-link handling. Listens for OS-routed URIs (cold-
+  # start via getInitialAppLink, warm via uriLinkStream) so a
+  # shared gospelvox://priest/<uid> link opens the profile page
+  # straight away inside the running app.
+  app_links: any
 
   # Audio playback for incoming/outgoing ringtones.
   #

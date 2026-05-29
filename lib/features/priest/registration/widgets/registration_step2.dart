@@ -46,6 +46,7 @@ const List<String> _kSpecializations = [
   'Evangelism',
   'Worship Leading',
   "Children's Ministry",
+  'Other',
 ];
 
 const List<String> _kLanguages = [
@@ -119,6 +120,8 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
   late final TextEditingController _locationController;
   late final TextEditingController _yearsController;
   late final TextEditingController _bioController;
+  late final TextEditingController _otherSpecController;
+  late final TextEditingController _otherLanguageController;
 
   final FocusNode _churchFocus = FocusNode();
   final FocusNode _yearsFocus = FocusNode();
@@ -128,13 +131,17 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
   String? _denomination;
   late final Set<String> _selectedLanguages;
   late final Set<String> _selectedSpecializations;
+  // Toggled when the priest taps the "Other" chip in either group.
+  // The typed value is merged into the list on Continue so the
+  // collection stays clean (no literal "Other" tokens leak through).
+  bool _otherSpecSelected = false;
+  bool _otherLanguageSelected = false;
 
   String? _denominationError;
   String? _churchError;
   String? _yearsError;
   String? _locationError;
   String? _bioError;
-  String? _specializationsError;
   String? _languagesError;
 
   @override
@@ -155,8 +162,31 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
       text: widget.initialYears > 0 ? widget.initialYears.toString() : '',
     );
     _bioController = TextEditingController(text: widget.initialBio);
-    _selectedLanguages = {...widget.initialLanguages};
-    _selectedSpecializations = {...widget.initialSpecializations};
+
+    // Split initial values into known chips + a free-text Other tail.
+    // Anything missing from the canonical list is treated as the
+    // priest's earlier custom Other entry so navigating back to this
+    // step doesn't drop it.
+    final knownSpecs = _kSpecializations.toSet();
+    final knownLangs = _kLanguages.toSet();
+    final specCustom = widget.initialSpecializations
+        .where((s) => !knownSpecs.contains(s))
+        .toList();
+    final langCustom = widget.initialLanguages
+        .where((l) => !knownLangs.contains(l))
+        .toList();
+    _selectedSpecializations = {
+      ...widget.initialSpecializations.where(knownSpecs.contains),
+    };
+    _selectedLanguages = {
+      ...widget.initialLanguages.where(knownLangs.contains),
+    };
+    _otherSpecController =
+        TextEditingController(text: specCustom.join(', '));
+    _otherLanguageController =
+        TextEditingController(text: langCustom.join(', '));
+    _otherSpecSelected = specCustom.isNotEmpty;
+    _otherLanguageSelected = langCustom.isNotEmpty;
 
     _bioController.addListener(_onBioChanged);
 
@@ -188,6 +218,8 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
     _locationController.dispose();
     _yearsController.dispose();
     _bioController.dispose();
+    _otherSpecController.dispose();
+    _otherLanguageController.dispose();
     _churchFocus.dispose();
     _yearsFocus.dispose();
     _locationFocus.dispose();
@@ -373,19 +405,30 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
   // ── Chip toggles ──
 
   void _toggleSpecialization(String item) {
+    if (item == 'Other') {
+      setState(() {
+        _otherSpecSelected = !_otherSpecSelected;
+        if (!_otherSpecSelected) _otherSpecController.clear();
+      });
+      return;
+    }
     setState(() {
       if (_selectedSpecializations.contains(item)) {
         _selectedSpecializations.remove(item);
       } else {
         _selectedSpecializations.add(item);
       }
-      if (_selectedSpecializations.isNotEmpty) {
-        _specializationsError = null;
-      }
     });
   }
 
   void _toggleLanguage(String item) {
+    if (item == 'Other') {
+      setState(() {
+        _otherLanguageSelected = !_otherLanguageSelected;
+        if (!_otherLanguageSelected) _otherLanguageController.clear();
+      });
+      return;
+    }
     setState(() {
       if (_selectedLanguages.contains(item)) {
         _selectedLanguages.remove(item);
@@ -394,6 +437,34 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
       }
       if (_selectedLanguages.isNotEmpty) _languagesError = null;
     });
+  }
+
+  // Strip the 'Other' marker chip and substitute the typed values
+  // before handing the list to onNext. Comma- or newline-separated
+  // entries are split; duplicates and empties are removed.
+  List<String> _mergeOther({
+    required Set<String> selected,
+    required bool otherSelected,
+    required String otherText,
+  }) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final item in selected) {
+      if (item == 'Other') continue;
+      final v = item.trim();
+      if (v.isEmpty || !seen.add(v.toLowerCase())) continue;
+      out.add(v);
+    }
+    if (otherSelected) {
+      final pieces = otherText
+          .split(RegExp(r'[,\n]'))
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty);
+      for (final p in pieces) {
+        if (seen.add(p.toLowerCase())) out.add(p);
+      }
+    }
+    return out;
   }
 
   // ── AI bio generator (string interpolation under the hood) ──
@@ -449,21 +520,23 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
     final locErr = _validateLocation();
     final bioErr = _validateBio();
 
-    String? specErr;
+    final mergedLangs = _mergeOther(
+      selected: _selectedLanguages,
+      otherSelected: _otherLanguageSelected,
+      otherText: _otherLanguageController.text,
+    );
+    final mergedSpecs = _mergeOther(
+      selected: _selectedSpecializations,
+      otherSelected: _otherSpecSelected,
+      otherText: _otherSpecController.text,
+    );
+
     String? langErr;
-    if (_selectedSpecializations.isEmpty) {
-      specErr = 'Please select at least one specialization';
-    }
-    if (_selectedLanguages.isEmpty) {
+    if (mergedLangs.isEmpty) {
       langErr = 'Please select at least one language';
     }
-    if ((specErr != _specializationsError ||
-            langErr != _languagesError) &&
-        mounted) {
-      setState(() {
-        _specializationsError = specErr;
-        _languagesError = langErr;
-      });
+    if (langErr != _languagesError && mounted) {
+      setState(() => _languagesError = langErr);
     }
 
     if (denomErr != null ||
@@ -471,7 +544,6 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
         yearsErr != null ||
         locErr != null ||
         bioErr != null ||
-        specErr != null ||
         langErr != null) {
       return;
     }
@@ -484,8 +556,8 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
       _locationController.text.trim(),
       int.parse(_yearsController.text.trim()),
       _bioController.text.trim(),
-      _selectedLanguages.toList(),
-      _selectedSpecializations.toList(),
+      mergedLangs,
+      mergedSpecs,
     );
   }
 
@@ -610,7 +682,7 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
             label: 'SPECIALIZATIONS',
             children: [
               Text(
-                'Select areas you specialize in',
+                'Select areas you specialize in (optional)',
                 style: GoogleFonts.inter(
                   fontSize: 12,
                   fontWeight: FontWeight.w400,
@@ -622,22 +694,21 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                 spacing: 8,
                 runSpacing: 8,
                 children: _kSpecializations.map((item) {
+                  final selected = item == 'Other'
+                      ? _otherSpecSelected
+                      : _selectedSpecializations.contains(item);
                   return _ChoiceChipTile(
                     label: item,
-                    selected: _selectedSpecializations.contains(item),
+                    selected: selected,
                     onTap: () => _toggleSpecialization(item),
                   );
                 }).toList(),
               ),
-              if (_specializationsError != null) ...[
-                const SizedBox(height: 10),
-                Text(
-                  _specializationsError!,
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.errorRed,
-                  ),
+              if (_otherSpecSelected) ...[
+                const SizedBox(height: 12),
+                _OtherInputField(
+                  controller: _otherSpecController,
+                  hint: 'Type your specialization',
                 ),
               ],
             ],
@@ -660,13 +731,23 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                 spacing: 8,
                 runSpacing: 8,
                 children: _kLanguages.map((lang) {
+                  final selected = lang == 'Other'
+                      ? _otherLanguageSelected
+                      : _selectedLanguages.contains(lang);
                   return _ChoiceChipTile(
                     label: lang,
-                    selected: _selectedLanguages.contains(lang),
+                    selected: selected,
                     onTap: () => _toggleLanguage(lang),
                   );
                 }).toList(),
               ),
+              if (_otherLanguageSelected) ...[
+                const SizedBox(height: 12),
+                _OtherInputField(
+                  controller: _otherLanguageController,
+                  hint: 'Type the language you speak',
+                ),
+              ],
               if (_languagesError != null) ...[
                 const SizedBox(height: 10),
                 Text(
@@ -1042,6 +1123,78 @@ class _DropdownField extends StatelessWidget {
             ),
           ],
         ],
+      ),
+    );
+  }
+}
+
+class _OtherInputField extends StatefulWidget {
+  final TextEditingController controller;
+  final String hint;
+
+  const _OtherInputField({
+    required this.controller,
+    required this.hint,
+  });
+
+  @override
+  State<_OtherInputField> createState() => _OtherInputFieldState();
+}
+
+class _OtherInputFieldState extends State<_OtherInputField> {
+  final FocusNode _focusNode = FocusNode();
+  bool _focused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(() {
+      if (mounted) setState(() => _focused = _focusNode.hasFocus);
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return TextField(
+      controller: widget.controller,
+      focusNode: _focusNode,
+      textInputAction: TextInputAction.done,
+      maxLength: 80,
+      cursorColor: AppColors.primaryBrown,
+      cursorWidth: 1.6,
+      style: GoogleFonts.inter(
+        fontSize: 15,
+        fontWeight: FontWeight.w400,
+        color: AppColors.deepDarkBrown,
+      ),
+      decoration: InputDecoration(
+        hintText: widget.hint,
+        hintStyle: GoogleFonts.inter(
+          fontSize: 14,
+          fontWeight: FontWeight.w400,
+          color: AppColors.muted.withValues(alpha: 0.5),
+        ),
+        filled: true,
+        fillColor: const Color(0xFFF7F5F2),
+        isDense: true,
+        counterText: '',
+        border: _fieldBorder(AppColors.muted.withValues(alpha: 0.2)),
+        enabledBorder: _fieldBorder(
+          _focused
+              ? AppColors.primaryBrown
+              : AppColors.muted.withValues(alpha: 0.2),
+        ),
+        focusedBorder: _fieldBorder(AppColors.primaryBrown, width: 1.5),
+        contentPadding: const EdgeInsets.symmetric(
+          horizontal: 16,
+          vertical: 14,
+        ),
       ),
     );
   }

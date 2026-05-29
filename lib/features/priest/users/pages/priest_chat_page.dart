@@ -165,14 +165,28 @@ class _PriestChatPageState extends State<PriestChatPage> {
     });
   }
 
+  // Tracks whether the page has performed its initial land-on-bottom
+  // jump. First call uses jumpTo (no animation — animating from
+  // offset 0 through every old bubble feels janky and showed the
+  // top message before settling at the bottom). Subsequent calls
+  // (live free-message arrivals, successful sends) animate so the
+  // motion reads as "new message appearing".
+  bool _hasJumpedToBottom = false;
+
   // Posts a frame callback so the scroll happens after the new row
-  // has been laid out — otherwise we're animating to maxScrollExtent
+  // has been laid out — otherwise we're targeting maxScrollExtent
   // before the new content has been measured.
   void _scheduleScrollToBottom() {
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!_scrollController.hasClients) return;
+      final target = _scrollController.position.maxScrollExtent;
+      if (!_hasJumpedToBottom) {
+        _scrollController.jumpTo(target);
+        _hasJumpedToBottom = true;
+        return;
+      }
       _scrollController.animateTo(
-        _scrollController.position.maxScrollExtent,
+        target,
         duration: const Duration(milliseconds: 240),
         curve: Curves.easeOutCubic,
       );

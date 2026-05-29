@@ -1,85 +1,79 @@
-// Modal rating dialog shown to the user immediately after a chat or
-// voice session ends. Replaces the previous full PostSessionPage —
-// the user no longer sees a dedicated screen with duration / coins /
-// rate, just an inline ask-for-rating sheet that lets them either
-// submit or dismiss.
+// Modal rating dialog for bible sessions — mirrors the SessionRatingDialog
+// used after a chat/voice call so users get the SAME UX after every
+// session type. Routed through BibleSessionRepository.rateBibleSession
+// (which writes to `bible_sessions/{sid}/registrations/{uid}`) instead
+// of the chat/voice path that updates a sessions/{id} doc.
 //
-// Always-enabled-submit UX:
-//   • No backdrop dismiss. No hardware-back dismiss
-//     (PopScope.canPop=false).
-//   • Submit is ALWAYS visible and tappable. A small hint line
-//     above the button reads "Tap a star or share a note" — it
-//     fades out the moment the user interacts (taps a star OR
-//     types a character). So the surface is honest: the button
-//     is always there, the nudge appears only when the user
-//     hasn't engaged yet, and disappears once they have.
-//   • The dismiss affordance is a deliberately-subtle close icon
-//     pinned to the top-right corner: low-opacity muted glyph,
-//     small hit-area-but-visible-enough-to-find.
-//   • If Submit is tapped with nothing filled, it closes silently
-//     — equivalent to dismissing. If anything (star OR text) is
-//     filled, _submit writes whatever's there. No data is lost,
-//     no validation blocks the user.
+// Behaviour parity with SessionRatingDialog:
+//   • No backdrop or hardware-back dismiss.
+//   • Submit is always visible. Empty-submit triggers a nudge instead
+//     of closing — only the subtle top-right X dismisses without
+//     writing.
+//   • If the user fills anything (star OR text), Submit writes whichever
+//     fields are populated.
 //
-// The session is already settled on the server by the time this
-// dialog opens — endSession returned a SessionSummary up-stack and
-// the cubit emitted VoiceCallEnded / ChatSessionEnded. So nothing
-// in the app is blocked on this modal; whether the user taps
-// Submit or the close icon, they go home.
+// Caller flow: bible_session_detail_page auto-shows this the moment the
+// session flips effectively-completed for a paid + not-yet-rated user.
+// After submit/dismiss the page rebuilds — if the user rated, it shows
+// the AlreadyRated view; if they dismissed empty, the in-body rating
+// form remains visible as the second-chance path.
 
-import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 
-class SessionRatingDialog extends StatefulWidget {
-  final SessionModel session;
+class BibleSessionRatingDialog extends StatefulWidget {
+  final BibleSessionModel session;
 
-  const SessionRatingDialog({super.key, required this.session});
+  const BibleSessionRatingDialog({super.key, required this.session});
 
-  // Convenience launcher. Returns when the dialog is dismissed
-  // (Submit or Maybe later — both pop). Caller awaits and then
-  // navigates home.
-  static Future<void> show(BuildContext context, SessionModel session) {
-    return showDialog<void>(
+  // Convenience launcher. Resolves to `true` when the user actually
+  // submitted a rating, `false` when they dismissed without writing.
+  // Caller uses this to decide whether to refresh the registration
+  // before rebuilding the body state.
+  static Future<bool> show(
+    BuildContext context,
+    BibleSessionModel session,
+  ) async {
+    final result = await showDialog<bool>(
       context: context,
       barrierDismissible: false,
-      builder: (_) => SessionRatingDialog(session: session),
+      builder: (_) => BibleSessionRatingDialog(session: session),
     );
+    return result == true;
   }
 
   @override
-  State<SessionRatingDialog> createState() => _SessionRatingDialogState();
+  State<BibleSessionRatingDialog> createState() =>
+      _BibleSessionRatingDialogState();
 }
 
-class _SessionRatingDialogState extends State<SessionRatingDialog> {
+class _BibleSessionRatingDialogState
+    extends State<BibleSessionRatingDialog> {
+  final BibleSessionRepository _repository = BibleSessionRepository();
   final TextEditingController _feedbackController = TextEditingController();
   int _rating = 0;
   bool _saving = false;
-  // Flips to true the FIRST time the user taps Submit without
-  // picking a star. Drives the "Tap a star to rate…" nudge that
-  // appears below the button — only after an empty submit attempt,
-  // not on first open. Resets implicitly: once a star is picked,
-  // the nudge fades out regardless of this flag.
+  // Flips to true after the first Submit attempt without a star —
+  // drives the "Tap a star to rate…" nudge that fades in below the
+  // button. Once the user picks a star the nudge fades out
+  // (feedback text is independent — optional, doesn't suppress the
+  // nudge on its own).
   bool _emptySubmitAttempted = false;
 
   // Star rating is the mandatory gate — submit is blocked without
   // one. Feedback text remains optional. Used to drive the nudge
-  // visibility below. Mirrors the bible-session dialog so both
-  // surfaces enforce the same contract: every review carries an
-  // explicit star, and silent rating defaults are never written
-  // on the user's behalf.
+  // visibility below.
   bool get _hasRating => _rating > 0;
 
   @override
   void initState() {
     super.initState();
-    // Rebuild on every keystroke so the nudge fade-out + Submit
-    // behaviour react to the very first character.
     _feedbackController.addListener(_onInputChanged);
   }
 
@@ -101,12 +95,9 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
 
     // Star rating is mandatory. Submitting without a star — even
     // with feedback text typed — triggers a nudge instead of a
-    // write. Previously the dialog wrote whichever fields the user
-    // filled (text-only was a valid submit) but those text-only
-    // reviews never reached the priest: onSessionRated early-returns
-    // when userRating is absent, so the feedback sat orphaned on
-    // the session doc with no aggregation and no notification. The
-    // star gate guarantees every review is observable end-to-end.
+    // write. The previous implementation silently defaulted to
+    // rating=5 for feedback-only submissions, which produced an
+    // unconsented 5-star review on the priest's profile.
     if (_rating == 0) {
       HapticFeedback.lightImpact();
       if (!_emptySubmitAttempted) {
@@ -118,28 +109,24 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
     setState(() => _saving = true);
 
     try {
-      // userRating always present (the gate above guarantees it).
-      // userFeedback stays optional — only written when the user
-      // typed something — so the aggregator's recentReviews entry
-      // doesn't carry an empty `feedback: ""` for star-only reviews.
-      final update = <String, dynamic>{'userRating': _rating};
-      if (feedback.isNotEmpty) update['userFeedback'] = feedback;
-      await FirebaseFirestore.instance
-          .doc('sessions/${widget.session.id}')
-          .update(update)
-          .timeout(const Duration(seconds: 6));
+      await _repository.rateBibleSession(
+        sessionId: widget.session.id,
+        rating: _rating,
+        feedback: feedback.isEmpty ? null : feedback,
+      );
     } catch (_) {
-      // Swallow — blocking the user on a metric-write failure
-      // would feel worse than silently losing one rating.
+      // Swallow — blocking the user on a metric-write failure feels
+      // worse than silently losing one rating. Matches the call/chat
+      // dialog's failure posture.
     }
 
     if (!mounted) return;
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(true);
   }
 
   void _skip() {
     if (_saving) return;
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(false);
   }
 
   @override
@@ -148,11 +135,9 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
     final headline = priestName.isNotEmpty
         ? 'How was your session with $priestName?'
         : 'How was your session?';
-    // Nudge appears only AFTER a submit attempt without a star,
-    // never on first open. Fades back out the moment the user
-    // picks a star (feedback text is independent — typing does not
-    // suppress the nudge). Wrapped in AnimatedOpacity so the layout
-    // slot stays reserved and the button below never shifts position.
+    // Nudge surfaces only when the priest tapped Submit without
+    // picking a star. Once they tap a star it fades out — even if
+    // they haven't typed feedback (text remains optional).
     final showNudge = _emptySubmitAttempted && !_hasRating;
 
     return PopScope(
@@ -162,9 +147,6 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
         shape: RoundedRectangleBorder(
           borderRadius: BorderRadius.circular(22),
         ),
-        // Wider horizontal inset = visually smaller dialog. Premium
-        // minimal apps use generous outside breathing room rather
-        // than packing the dialog edge-to-edge.
         insetPadding: const EdgeInsets.symmetric(horizontal: 36),
         child: Padding(
           padding: const EdgeInsets.fromLTRB(20, 8, 10, 14),
@@ -173,9 +155,6 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
               mainAxisSize: MainAxisSize.min,
               crossAxisAlignment: CrossAxisAlignment.stretch,
               children: [
-                // Subtle close icon — top-right. Low-opacity muted
-                // glyph; users who want out can find it without
-                // being shouted at.
                 Align(
                   alignment: Alignment.centerRight,
                   child: SizedBox(
@@ -194,10 +173,6 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                     ),
                   ),
                 ),
-                // Personal headline — names the priest so the
-                // question feels like it's about THAT conversation,
-                // not a generic rating prompt. Compact font size
-                // for the smaller dialog footprint.
                 Padding(
                   padding: const EdgeInsets.fromLTRB(4, 0, 4, 0),
                   child: Text(
@@ -253,9 +228,6 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                   ),
                 ),
                 const SizedBox(height: 10),
-                // Friendly nudge — only after the user tapped
-                // Submit without filling anything. Opacity-only
-                // fade so the button below never shifts position.
                 AnimatedOpacity(
                   duration: const Duration(milliseconds: 220),
                   curve: Curves.easeOutCubic,
@@ -277,11 +249,6 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                   ),
                 ),
                 const SizedBox(height: 6),
-                // Submit is always visible. If pressed empty, the
-                // handler triggers a haptic nudge + the message
-                // above; it does NOT close. If anything is filled,
-                // writes and closes. X corner is the unconditional
-                // escape.
                 _SubmitButton(saving: _saving, onTap: _submit),
               ],
             ),
@@ -314,9 +281,7 @@ class _StarRow extends StatelessWidget {
               duration: const Duration(milliseconds: 140),
               curve: Curves.easeOut,
               child: AppIcon(
-                filled
-                    ? AppIcons.starFilled
-                    : AppIcons.starOutline,
+                filled ? AppIcons.starFilled : AppIcons.starOutline,
                 size: 36,
                 color: filled
                     ? AppColors.amberGold
@@ -370,8 +335,7 @@ class _SubmitButtonState extends State<_SubmitButton> {
                   ? null
                   : [
                       BoxShadow(
-                        color:
-                            AppColors.primaryBrown.withValues(alpha: 0.18),
+                        color: AppColors.primaryBrown.withValues(alpha: 0.18),
                         blurRadius: 10,
                         offset: const Offset(0, 3),
                       ),

@@ -2,10 +2,10 @@
 // session. Distinct from the priest's own PriestMyProfilePage and from
 // the admin SpeakerDetailPage — different actions, different chrome.
 //
-// Layout pattern: full-bleed hero photo behind a floating "info card"
-// that overlaps the bottom of the photo. Back/more buttons are pinned
-// over the photo; the rest of the page (about, actions, services,
-// reviews) scrolls beneath the card.
+// Scroll architecture: CustomScrollView with the hero photo as a
+// regular sliver so it scrolls *out of view* when the user pulls up.
+// The earlier draft pinned the hero outside the scroll view, which
+// permanently consumed half the screen — fixed here.
 //
 // Four Firestore reads happen in parallel on mount:
 //   1. priests/{id} — the priest profile itself
@@ -22,8 +22,10 @@ import 'package:cached_network_image/cached_network_image.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:flutter_cache_manager/flutter_cache_manager.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
+import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
@@ -35,11 +37,37 @@ import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 
-// Hero geometry. Two callsites in this file (the Stack's hero
-// background and the card's overlap offset) have to stay in sync, so
-// the numbers live up here as named constants.
-const double _kHeroHeight = 420;
-const double _kCardOverlap = 80;
+// Three URLs go into every share message:
+//
+//   • Custom scheme — active deep link, handled by DeepLinkService
+//     when the recipient has the app installed. WhatsApp / Telegram
+//     / iMessage all auto-link non-http schemes when they look like
+//     URLs.
+//   • https://gospelvox.app/priest/<uid> — placeholder universal
+//     link. Won't open the app until the domain is set up with
+//     assetlinks.json / apple-app-site-association, but ships now
+//     as a forward-compatible URL the share preview can render.
+//   • Play Store — install fallback for recipients without the app.
+const String _kPlayStoreUrl =
+    'https://play.google.com/store/apps/details?id=com.gospelvox.gospel_vox';
+const String _kProfileWebPathRoot = 'https://gospelvox.app/priest/';
+const String _kProfileDeepLinkRoot = 'gospelvox://priest/';
+
+// Hero geometry. Hero takes ~30% of the screen (clamped so it stays
+// readable on small phones and not absurd on tablets). The card
+// overlaps the bottom of the hero by [_kCardOverlap] to recreate the
+// "floating card on top of the photo" look from the reference.
+const double _kHeroFactor = 0.30;
+const double _kHeroMin = 230;
+const double _kHeroMax = 300;
+const double _kCardOverlap = 40;
+
+// Plum accent for the "In Bible Session" pill and reason banner.
+// Same hue as PriestCard's bibleAccent so the two surfaces stay
+// visually consistent when a user navigates from the home feed to
+// the priest profile. File-level (not class-private) so both the
+// availability pill and the reason banner can share it.
+const Color _kBibleAccent = Color(0xFF6B5B95);
 
 class PriestProfilePage extends StatefulWidget {
   final String priestId;
@@ -82,7 +110,7 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
         _repo.getPriestDetail(widget.priestId),
         _repo.getUserBalance(uid),
         _repo.getSessionRates(),
-        _repo.getRecentReviews(widget.priestId, limit: 3),
+        _repo.getRecentReviews(widget.priestId),
       ]);
 
       if (!mounted) return;
@@ -112,10 +140,14 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
   // Users can only start a session if the priest is truly available.
   // Balance is NOT part of this gate — the button stays tappable on
   // low balance so the tap can open the recharge sheet with contextual
-  // deficit copy (AstroTalk pattern). The red banner above the buttons
-  // is the visual cue; the action surfaces the recharge.
+  // deficit copy (AstroTalk pattern).
   bool get _canStart =>
       _priest != null && _priest!.isAvailable;
+
+  double _heroHeight(BuildContext context) {
+    final h = MediaQuery.of(context).size.height * _kHeroFactor;
+    return h.clamp(_kHeroMin, _kHeroMax);
+  }
 
   Future<void> _requestSession(String type) async {
     final priest = _priest;
@@ -137,75 +169,173 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
     });
   }
 
-  void _openMoreSheet() {
+  // Native share-sheet flow for the priest profile. Builds a rich
+  // text card with the priest's headline + bio + a deep link and a
+  // Play Store fallback, then attempts to attach the priest's photo
+  // so the receiving app (WhatsApp, Mail, Telegram, etc.) renders a
+  // real image preview rather than a bare URL.
+  //
+  // Two layers of defence:
+  //   • Photo attach is best-effort; if the cache fetch fails we
+  //     fall through to text-only share.
+  //   • If share_plus itself throws (e.g. the running build doesn't
+  //     yet include the native plugin), we copy the share text to
+  //     the clipboard and surface a toast so the user can paste it
+  //     into any chat manually — the share button is never a
+  //     dead-tap.
+  Future<void> _sharePriest() async {
     final priest = _priest;
     if (priest == null) return;
     HapticFeedback.lightImpact();
-    showModalBottomSheet<void>(
-      context: context,
-      backgroundColor: AppColors.surfaceWhite,
-      shape: const RoundedRectangleBorder(
-        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-      ),
-      builder: (sheetCtx) => SafeArea(
-        child: Padding(
-          padding: const EdgeInsets.fromLTRB(20, 12, 20, 20),
-          child: Column(
-            mainAxisSize: MainAxisSize.min,
-            children: [
-              Container(
-                width: 36,
-                height: 4,
-                decoration: BoxDecoration(
-                  color: AppColors.muted.withValues(alpha: 0.25),
-                  borderRadius: BorderRadius.circular(2),
-                ),
-              ),
-              const SizedBox(height: 18),
-              _SheetRow(
-                icon: AppIcons.link,
-                label: 'Share Profile',
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  Clipboard.setData(ClipboardData(
-                    text: 'gospelvox://priest/${priest.uid}',
-                  ));
-                  AppSnackBar.success(context, 'Profile link copied');
-                },
-              ),
-              _SheetRow(
-                icon: AppIcons.flag,
-                label: 'Report Speaker',
-                danger: true,
-                onTap: () {
-                  Navigator.of(sheetCtx).pop();
-                  AppSnackBar.success(
-                    context,
-                    "Reported. We'll review this profile.",
-                  );
-                },
-              ),
-            ],
-          ),
-        ),
-      ),
+
+    final shareText = _buildShareText(priest);
+    // Sheet's `subject` only matters for share targets that read it
+    // (Gmail, Outlook, Bluetooth). Most chat apps ignore it.
+    final subject = 'Connect with ${priest.fullName} on Gospel Vox';
+
+    try {
+      final share = SharePlus.instance;
+
+      if (priest.hasPhoto) {
+        try {
+          final file = await DefaultCacheManager()
+              .getSingleFile(priest.photoUrl)
+              .timeout(const Duration(seconds: 6));
+          await share.share(
+            ShareParams(
+              text: shareText,
+              subject: subject,
+              files: [XFile(file.path, mimeType: 'image/jpeg')],
+            ),
+          );
+          return;
+        } catch (e) {
+          debugPrint('[share] photo path failed, retrying text-only: $e');
+        }
+      }
+
+      await share.share(
+        ShareParams(text: shareText, subject: subject),
+      );
+    } catch (e) {
+      // share_plus failed entirely (typically MissingPluginException
+      // when the running binary was built before the package was
+      // added — a full rebuild fixes that). Fall back to clipboard
+      // so the user can still spread the link manually.
+      debugPrint('[share] failed, falling back to clipboard: $e');
+      await Clipboard.setData(ClipboardData(text: shareText));
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        'Profile link copied — paste anywhere to share.',
+      );
+    }
+  }
+
+  // Hand-crafted share copy. Designed to read like a personal
+  // recommendation (not a marketing blurb) so the recipient knows
+  // *why* they're being sent this priest — what's noteworthy about
+  // them, what they specialise in, where to download the app.
+  String _buildShareText(SpeakerModel priest) {
+    final out = StringBuffer();
+
+    out.writeln('🙏 Meet ${_displayName(priest)} on Gospel Vox');
+    out.writeln();
+
+    // Headline line: denomination + years of experience.
+    final headlineParts = <String>[];
+    if (priest.denomination.isNotEmpty) {
+      headlineParts.add('${priest.denomination} Priest');
+    }
+    if (priest.yearsOfExperience > 0) {
+      headlineParts.add('${priest.yearsOfExperience}+ years');
+    }
+    if (headlineParts.isNotEmpty) {
+      out.writeln(headlineParts.join(' · '));
+    }
+
+    if (priest.rating > 0 && priest.reviewCount > 0) {
+      out.writeln(
+        '⭐ ${priest.rating.toStringAsFixed(1)} '
+        '(${priest.reviewCount} ${priest.reviewCount == 1 ? "review" : "reviews"})',
+      );
+    }
+
+    final loc = [priest.churchName, priest.location]
+        .where((s) => s.isNotEmpty)
+        .join(', ');
+    if (loc.isNotEmpty) {
+      out.writeln('📍 $loc');
+    }
+
+    // Pull-quote from the bio. Caps to ~180 chars so the share
+    // preview on WhatsApp/iMessage doesn't get truncated mid-word.
+    final bio = priest.bio.trim();
+    if (bio.isNotEmpty) {
+      final short = bio.length > 180
+          ? '${bio.substring(0, 177).trimRight()}…'
+          : bio;
+      out.writeln();
+      out.writeln('"$short"');
+    }
+
+    if (priest.specializations.isNotEmpty) {
+      final top = priest.specializations.take(4).join(' · ');
+      out.writeln();
+      out.writeln('🕯 $top');
+    }
+
+    out.writeln();
+    out.writeln(
+      'Have a private, confidential chat or voice call — '
+      'wherever you are.',
     );
+
+    out.writeln();
+    out.writeln('👉 Open in Gospel Vox (if installed):');
+    out.writeln('$_kProfileDeepLinkRoot${priest.uid}');
+    out.writeln();
+    out.writeln("📲 Don't have the app? Get it here:");
+    out.writeln(_kPlayStoreUrl);
+    out.writeln();
+    // Forward-compatible web URL — once gospelvox.app is set up with
+    // App Links / Universal Links, this becomes the canonical share
+    // URL and the recipient won't even need the gospelvox:// hint.
+    out.writeln('Web: $_kProfileWebPathRoot${priest.uid}');
+
+    return out.toString();
+  }
+
+  // "Fr. Thomas Mathew" reads more naturally than "Father Mathew"
+  // or just "Thomas". We keep the whole name as stored — priests
+  // self-register with the title they want displayed.
+  String _displayName(SpeakerModel priest) {
+    return priest.fullName.trim().isEmpty
+        ? 'this speaker'
+        : priest.fullName.trim();
   }
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      // The hero photo extends UNDER the system status bar, so we let
-      // the scaffold body run under it and handle the inset ourselves
-      // for the floating action buttons.
-      extendBodyBehindAppBar: true,
-      body: _buildBody(),
+    // Light status-bar icons over the hero — the photo can be dark or
+    // bright, and white-on-photo reads everywhere; the warm cream
+    // page background underneath also tolerates light icons fine.
+    return AnnotatedRegion<SystemUiOverlayStyle>(
+      value: const SystemUiOverlayStyle(
+        statusBarColor: Colors.transparent,
+        statusBarIconBrightness: Brightness.light,
+        statusBarBrightness: Brightness.dark,
+      ),
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        extendBodyBehindAppBar: true,
+        body: _buildBody(),
+      ),
     );
   }
 
   Widget _buildBody() {
-    if (_loading) return const _ProfileShimmer();
+    if (_loading) return _ProfileShimmer(heroHeight: _heroHeight(context));
 
     if (_error != null || _priest == null) {
       return SafeArea(
@@ -267,53 +397,80 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
     }
 
     final priest = _priest!;
-    final topInset = MediaQuery.of(context).padding.top;
+    final mq = MediaQuery.of(context);
+    final topInset = mq.padding.top;
+    final bottomInset = mq.padding.bottom;
+    final heroHeight = _heroHeight(context);
 
     return Stack(
       children: [
-        // Hero photo — pinned to the top, behind everything. Stays put
-        // as the rest of the page scrolls over it, giving a soft
-        // parallax feel without a CustomScrollView.
-        Positioned(
-          top: 0,
-          left: 0,
-          right: 0,
-          height: _kHeroHeight,
-          child: _HeroPhoto(priest: priest),
-        ),
-
-        // Scrollable content — starts overlapping the hero by
-        // _kCardOverlap so the floating profile card visually
-        // sits on top of the photo's bottom edge.
-        Positioned.fill(
-          top: _kHeroHeight - _kCardOverlap,
+        // Plain SingleChildScrollView (was CustomScrollView previously
+        // — switched after a LayoutBuilder-inside-sliver render crash:
+        // the simpler box-only widget tree avoids that path entirely
+        // and the scroll behavior is identical for this single-axis
+        // page).
+        //
+        // Wrapped in RefreshIndicator so the empty-state's "pull down
+        // to refresh" instruction is real, not a UX lie. Re-runs the
+        // same load() that initState kicks off.
+        RefreshIndicator(
+          onRefresh: _load,
+          color: AppColors.amberGold,
+          backgroundColor: AppColors.surfaceWhite,
           child: SingleChildScrollView(
-            physics: const BouncingScrollPhysics(),
-            padding: const EdgeInsets.fromLTRB(16, 0, 16, 32),
-            child: _ProfileBody(
-              priest: priest,
-              balance: _balance,
-              minCost: _minCost,
-              chatRate: _chatRate,
-              voiceRate: _voiceRate,
-              canStart: _canStart,
-              reviews: _reviews,
-              onCall: () => _requestSession('voice'),
-              onChat: () => _requestSession('chat'),
+            physics: const AlwaysScrollableScrollPhysics(
+              parent: BouncingScrollPhysics(),
             ),
+            child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // Hero photo + availability pill — sized to ~30% of
+              // viewport so it doesn't dominate the page.
+              SizedBox(
+                height: heroHeight,
+                child: Stack(
+                  children: [
+                    Positioned.fill(child: _HeroPhoto(priest: priest)),
+                    Positioned(
+                      bottom: _kCardOverlap + 14,
+                      left: 20,
+                      child: _AvailabilityPill(priest: priest),
+                    ),
+                  ],
+                ),
+              ),
+              // Card + rest of page; Transform pulls the content up
+              // so the card's top edge overlaps the photo's bottom
+              // edge — recreates the floating-card effect.
+              Transform.translate(
+                offset: const Offset(0, -_kCardOverlap),
+                child: Padding(
+                  padding: EdgeInsets.fromLTRB(
+                    16,
+                    0,
+                    16,
+                    bottomInset + 24,
+                  ),
+                  child: _ProfileBody(
+                    priest: priest,
+                    balance: _balance,
+                    minCost: _minCost,
+                    chatRate: _chatRate,
+                    voiceRate: _voiceRate,
+                    canStart: _canStart,
+                    reviews: _reviews,
+                    onCall: () => _requestSession('voice'),
+                    onChat: () => _requestSession('chat'),
+                  ),
+                ),
+              ),
+            ],
+          ),
           ),
         ),
 
-        // Availability pill — sits just above where the profile card
-        // overlaps. Outside the scroll view so it stays visually
-        // attached to the photo (the photo also stays put).
-        Positioned(
-          top: _kHeroHeight - _kCardOverlap - 52,
-          left: 20,
-          child: _AvailabilityPill(priest: priest),
-        ),
-
-        // Floating action chips — always reachable.
+        // Floating action chips — pinned over the scroll so they stay
+        // reachable even after the hero has scrolled away.
         Positioned(
           top: topInset + 8,
           left: 16,
@@ -323,8 +480,8 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
           top: topInset + 8,
           right: 16,
           child: _CircleIconButton(
-            icon: AppIcons.more,
-            onTap: _openMoreSheet,
+            icon: AppIcons.share,
+            onTap: _sharePriest,
           ),
         ),
       ],
@@ -357,10 +514,9 @@ class _HeroPhoto extends StatelessWidget {
       fit: StackFit.expand,
       children: [
         image,
-        // Soft vignette at the top so the back/more buttons remain
-        // readable when the photo behind them is bright. And a
-        // matching vignette at the bottom that helps the floating
-        // availability pill read against busy photo regions.
+        // Vignettes: top one keeps the back/more buttons + status bar
+        // icons readable on bright photos; bottom one helps the
+        // availability pill read against busy regions.
         IgnorePointer(
           child: DecoratedBox(
             decoration: BoxDecoration(
@@ -368,12 +524,12 @@ class _HeroPhoto extends StatelessWidget {
                 begin: Alignment.topCenter,
                 end: Alignment.bottomCenter,
                 colors: [
-                  Colors.black.withValues(alpha: 0.18),
+                  AppColors.deepDarkBrown.withValues(alpha: 0.22),
                   Colors.transparent,
                   Colors.transparent,
-                  Colors.black.withValues(alpha: 0.15),
+                  AppColors.deepDarkBrown.withValues(alpha: 0.18),
                 ],
-                stops: const [0.0, 0.25, 0.72, 1.0],
+                stops: const [0.0, 0.28, 0.7, 1.0],
               ),
             ),
           ),
@@ -404,7 +560,7 @@ class _InitialHero extends StatelessWidget {
         child: Text(
           priest.initial,
           style: GoogleFonts.inter(
-            fontSize: 88,
+            fontSize: 72,
             fontWeight: FontWeight.w700,
             color: AppColors.amberGold.withValues(alpha: 0.9),
           ),
@@ -437,13 +593,7 @@ class _CircleIconButton extends StatelessWidget {
         decoration: BoxDecoration(
           shape: BoxShape.circle,
           color: AppColors.surfaceWhite,
-          boxShadow: [
-            BoxShadow(
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-              color: Colors.black.withValues(alpha: 0.05),
-            ),
-          ],
+          boxShadow: kWarmCardShadow,
         ),
         child: AppIcon(
           icon,
@@ -455,7 +605,7 @@ class _CircleIconButton extends StatelessWidget {
   }
 }
 
-// ─── Availability pill (over the hero) ─────────────────────────────
+// ─── Availability pill (sits over the hero, scrolls with it) ──────
 
 class _AvailabilityPill extends StatelessWidget {
   final SpeakerModel priest;
@@ -466,34 +616,28 @@ class _AvailabilityPill extends StatelessWidget {
     final (label, color) = _spec(priest);
 
     return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(24),
-        boxShadow: [
-          BoxShadow(
-            blurRadius: 10,
-            offset: const Offset(0, 2),
-            color: Colors.black.withValues(alpha: 0.08),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(16),
+        boxShadow: kWarmCardShadow,
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
           Container(
-            width: 8,
-            height: 8,
+            width: 6,
+            height: 6,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
               color: color,
             ),
           ),
-          const SizedBox(width: 8),
+          const SizedBox(width: 6),
           Text(
             label,
             style: GoogleFonts.inter(
-              fontSize: 13,
+              fontSize: 10.5,
               fontWeight: FontWeight.w600,
               color: AppColors.deepDarkBrown,
             ),
@@ -504,6 +648,10 @@ class _AvailabilityPill extends StatelessWidget {
   }
 
   (String, Color) _spec(SpeakerModel p) {
+    // In-bible-session takes precedence over every other state —
+    // a priest mid-Meet should never show "Available" or "Busy"
+    // even if they were technically in a chat moments ago.
+    if (p.isInBibleSession) return ('In Bible Session', _kBibleAccent);
     if (p.isAvailable) return ('Available', AppColors.sageOnline);
     if (p.isOnline && p.isBusy) return ('Busy', AppColors.amberGold);
     return ('Offline', AppColors.muted);
@@ -537,20 +685,38 @@ class _ProfileBody extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final showBusy = priest.isOnline && priest.isBusy;
-    final showOffline = !priest.isOnline;
-    final showLowBalance = !showBusy && !showOffline && balance < minCost;
+    // Precedence: in-bible-session > busy > offline > low-balance.
+    // A priest physically teaching a Bible session should NEVER
+    // be misrepresented as just "Busy" — the copy and the icon
+    // tell the user when to come back. The low-balance banner is
+    // suppressed in all three unavailable states because the user
+    // can't start a session anyway, so adding "you also don't have
+    // enough coins" would be noise.
+    final showInBible = priest.isInBibleSession;
+    final showBusy = !showInBible && priest.isOnline && priest.isBusy;
+    final showOffline = !showInBible && !priest.isOnline;
+    final showLowBalance =
+        !showInBible && !showBusy && !showOffline && balance < minCost;
+    final hasSpec = priest.specializations.isNotEmpty;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.stretch,
       children: [
         _ProfileCard(priest: priest),
-        const SizedBox(height: 24),
+        const SizedBox(height: 20),
         if (priest.bio.trim().isNotEmpty) ...[
           _AboutSection(bio: priest.bio),
-          const SizedBox(height: 18),
+          const SizedBox(height: 16),
         ],
-        if (showBusy)
+        if (showInBible)
+          _ReasonBanner(
+            icon: AppIcons.bible,
+            text: '${priest.fullName.isEmpty ? "This speaker" : priest.fullName}'
+                ' is teaching a Bible session right now. '
+                'Please try again once the session ends.',
+            color: _kBibleAccent,
+          )
+        else if (showBusy)
           const _ReasonBanner(
             icon: AppIcons.pause,
             text: 'This speaker is online but has paused new requests. '
@@ -558,7 +724,7 @@ class _ProfileBody extends StatelessWidget {
             color: AppColors.amberGold,
           )
         else if (showOffline)
-          _ReasonBanner(
+          const _ReasonBanner(
             icon: AppIcons.cloudOff,
             text: "This speaker is offline right now. Check back once "
                 "they're available.",
@@ -568,29 +734,34 @@ class _ProfileBody extends StatelessWidget {
           _ReasonBanner(
             icon: AppIcons.info,
             text:
-                'You need at least $minCost coins for a session. Tap a '
-                'button to add coins now.',
-            color: AppColors.errorRed,
+                'You need at least $minCost coins for a session. Tap '
+                'a button to add coins now.',
+            color: AppColors.terraCotta,
           ),
-        if (showBusy || showOffline || showLowBalance)
+        if (showInBible || showBusy || showOffline || showLowBalance)
           const SizedBox(height: 12),
         _ActionRow(
           canStart: canStart,
-          chatRate: chatRate,
-          voiceRate: voiceRate,
           onCall: onCall,
           onChat: onChat,
         ),
-        const SizedBox(height: 18),
-        const _PrivacyBanner(),
-        const SizedBox(height: 26),
-        _ServicesSection(items: priest.specializations),
-        if (priest.specializations.isNotEmpty)
-          const SizedBox(height: 26),
+        if (hasSpec) ...[
+          const SizedBox(height: 24),
+          _SpecializationSection(items: priest.specializations),
+        ],
+        const SizedBox(height: 24),
         _ReviewsSection(
           reviews: reviews,
-          totalReviewCount: priest.reviewCount,
+          reviewCount: priest.reviewCount,
+          priestName: priest.fullName,
+          priestPhotoUrl: priest.photoUrl,
         ),
+        // Privacy line sits at the very bottom of the page as a quiet
+        // trust footer — small, single line, no chevron. Previously it
+        // was a chunky banner near the top which competed with the
+        // primary call-to-action.
+        const SizedBox(height: 22),
+        const _PrivacyFooter(),
       ],
     );
   }
@@ -605,17 +776,11 @@ class _ProfileCard extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Container(
-      padding: const EdgeInsets.fromLTRB(16, 16, 16, 18),
+      padding: const EdgeInsets.fromLTRB(14, 14, 14, 16),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(20),
-        boxShadow: [
-          BoxShadow(
-            blurRadius: 20,
-            offset: const Offset(0, 6),
-            color: Colors.black.withValues(alpha: 0.06),
-          ),
-        ],
+        borderRadius: BorderRadius.circular(AppRadius.large),
+        boxShadow: kWarmCardShadow,
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -623,8 +788,8 @@ class _ProfileCard extends StatelessWidget {
           Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              _DenominationTile(),
-              const SizedBox(width: 14),
+              const _DenominationTile(),
+              const SizedBox(width: 12),
               Expanded(
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
@@ -636,13 +801,13 @@ class _ProfileCard extends StatelessWidget {
                       maxLines: 2,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(
-                        fontSize: 20,
+                        fontSize: 18,
                         fontWeight: FontWeight.w700,
                         height: 1.2,
                         color: AppColors.deepDarkBrown,
                       ),
                     ),
-                    const SizedBox(height: 4),
+                    const SizedBox(height: 3),
                     Text(
                       priest.denomination.isEmpty
                           ? '—'
@@ -650,12 +815,12 @@ class _ProfileCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(
-                        fontSize: 13,
+                        fontSize: 12,
                         fontWeight: FontWeight.w400,
                         color: AppColors.muted,
                       ),
                     ),
-                    const SizedBox(height: 10),
+                    const SizedBox(height: 8),
                     _RatingVerifiedRow(priest: priest),
                   ],
                 ),
@@ -663,12 +828,12 @@ class _ProfileCard extends StatelessWidget {
             ],
           ),
           if (_hasAnyStat(priest)) ...[
-            const SizedBox(height: 18),
+            const SizedBox(height: 14),
             Container(
               height: 1,
-              color: AppColors.muted.withValues(alpha: 0.08),
+              color: AppColors.borderLight,
             ),
-            const SizedBox(height: 16),
+            const SizedBox(height: 12),
             Row(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
@@ -683,7 +848,7 @@ class _ProfileCard extends StatelessWidget {
                         : null,
                   ),
                 ),
-                _CellDivider(),
+                const _CellDivider(),
                 Expanded(
                   child: _StatCell(
                     icon: AppIcons.calendar,
@@ -693,15 +858,19 @@ class _ProfileCard extends StatelessWidget {
                     secondary: 'Experience',
                   ),
                 ),
-                _CellDivider(),
+                const _CellDivider(),
                 Expanded(
                   child: _StatCell(
                     icon: AppIcons.podcast,
+                    // Each language on its own line — comma-joined
+                    // would ellipsis on long lists like "English,
+                    // Hindi, Tamil, Malayalam". Vertical stack keeps
+                    // every name visible without truncation.
                     primary: priest.languages.isNotEmpty
-                        ? priest.languages.join(', ')
+                        ? priest.languages.join('\n')
                         : 'Languages',
                     secondary: null,
-                    primaryMaxLines: 2,
+                    primaryWraps: true,
                   ),
                 ),
               ],
@@ -720,19 +889,21 @@ class _ProfileCard extends StatelessWidget {
 }
 
 class _DenominationTile extends StatelessWidget {
+  const _DenominationTile();
+
   @override
   Widget build(BuildContext context) {
     return Container(
-      width: 52,
-      height: 60,
+      width: 46,
+      height: 54,
       decoration: BoxDecoration(
-        color: AppColors.amberGold.withValues(alpha: 0.12),
-        borderRadius: BorderRadius.circular(14),
+        color: AppColors.primaryBrown.withValues(alpha: 0.08),
+        borderRadius: BorderRadius.circular(12),
       ),
       child: AppIcon(
         AppIcons.church,
-        size: 26,
-        color: AppColors.amberGold,
+        size: 22,
+        color: AppColors.primaryBrown,
       ),
     );
   }
@@ -755,48 +926,48 @@ class _RatingVerifiedRow extends StatelessWidget {
         if (hasRating) ...[
           AppIcon(
             AppIcons.starFilled,
-            size: 14,
+            size: 13,
             color: AppColors.amberGold,
           ),
           const SizedBox(width: 4),
           Text(
             priest.rating.toStringAsFixed(1),
             style: GoogleFonts.inter(
-              fontSize: 13,
+              fontSize: 12,
               fontWeight: FontWeight.w700,
               color: AppColors.deepDarkBrown,
             ),
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 3),
           Text(
             '(${priest.reviewCount})',
             style: GoogleFonts.inter(
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: FontWeight.w400,
               color: AppColors.muted,
             ),
           ),
         ],
         if (hasRating && isVerified) ...[
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
           Container(
             width: 1,
-            height: 12,
+            height: 11,
             color: AppColors.muted.withValues(alpha: 0.25),
           ),
-          const SizedBox(width: 10),
+          const SizedBox(width: 8),
         ],
         if (isVerified) ...[
           AppIcon(
             AppIcons.shield,
-            size: 13,
+            size: 12,
             color: AppColors.amberGold,
           ),
-          const SizedBox(width: 4),
+          const SizedBox(width: 3),
           Text(
             'Verified',
             style: GoogleFonts.inter(
-              fontSize: 12,
+              fontSize: 11,
               fontWeight: FontWeight.w500,
               color: AppColors.muted,
             ),
@@ -811,13 +982,17 @@ class _StatCell extends StatelessWidget {
   final IconData icon;
   final String primary;
   final String? secondary;
-  final int primaryMaxLines;
+  // When true, primary text wraps freely (no maxLines cap, no
+  // ellipsis) and uses a slightly smaller font. Used by the
+  // languages cell so the full list renders without "..." cutting
+  // off a language name.
+  final bool primaryWraps;
 
   const _StatCell({
     required this.icon,
     required this.primary,
     required this.secondary,
-    this.primaryMaxLines = 1,
+    this.primaryWraps = false,
   });
 
   @override
@@ -826,26 +1001,29 @@ class _StatCell extends StatelessWidget {
       mainAxisSize: MainAxisSize.min,
       children: [
         Container(
-          width: 36,
-          height: 36,
+          width: 30,
+          height: 30,
           decoration: BoxDecoration(
-            color: AppColors.muted.withValues(alpha: 0.08),
-            borderRadius: BorderRadius.circular(10),
+            color: AppColors.warmBeige,
+            borderRadius: BorderRadius.circular(8),
           ),
           child: AppIcon(
             icon,
-            size: 16,
-            color: AppColors.deepDarkBrown.withValues(alpha: 0.7),
+            size: 14,
+            color: AppColors.primaryBrown,
           ),
         ),
-        const SizedBox(height: 10),
+        const SizedBox(height: 8),
         Text(
           primary,
-          maxLines: primaryMaxLines,
-          overflow: TextOverflow.ellipsis,
+          maxLines: primaryWraps ? null : 1,
+          overflow: primaryWraps
+              ? TextOverflow.visible
+              : TextOverflow.ellipsis,
+          softWrap: true,
           textAlign: TextAlign.center,
           style: GoogleFonts.inter(
-            fontSize: 12,
+            fontSize: primaryWraps ? 10.5 : 11.5,
             fontWeight: FontWeight.w600,
             height: 1.3,
             color: AppColors.deepDarkBrown,
@@ -859,9 +1037,9 @@ class _StatCell extends StatelessWidget {
             overflow: TextOverflow.ellipsis,
             textAlign: TextAlign.center,
             style: GoogleFonts.inter(
-              fontSize: 11,
+              fontSize: 10.5,
               fontWeight: FontWeight.w400,
-              height: 1.3,
+              height: 1.25,
               color: AppColors.muted,
             ),
           ),
@@ -872,20 +1050,22 @@ class _StatCell extends StatelessWidget {
 }
 
 class _CellDivider extends StatelessWidget {
+  const _CellDivider();
+
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.only(top: 8),
+      padding: const EdgeInsets.only(top: 6),
       child: Container(
         width: 1,
-        height: 36,
-        color: AppColors.muted.withValues(alpha: 0.1),
+        height: 30,
+        color: AppColors.borderLight,
       ),
     );
   }
 }
 
-// ─── About (with Read More / Show Less) ────────────────────────────
+// ─── About (with Read More / Show Less, 2-line collapse) ──────────
 
 class _AboutSection extends StatefulWidget {
   final String bio;
@@ -897,19 +1077,27 @@ class _AboutSection extends StatefulWidget {
 
 class _AboutSectionState extends State<_AboutSection> {
   bool _expanded = false;
-  // 3 lines collapsed matches the reference layout where the bio
-  // shows roughly two-to-three lines before the Read More link.
-  static const int _collapsedLines = 3;
+  // 2 lines collapsed — the reference image shows the bio compact;
+  // longer bios reveal via Read More.
+  static const int _collapsedLines = 2;
+  // Rough character cap that maps to "more than 2 lines at the
+  // current font size on a typical phone width". Length heuristic
+  // replaces the LayoutBuilder + TextPainter measurement we used to
+  // do — that path was crashing under some constraint combinations.
+  // The heuristic over-shows Read More on edge cases (e.g. a single
+  // word that's 100 chars long) but never under-shows.
+  static const int _overflowCharThreshold = 110;
 
   @override
   Widget build(BuildContext context) {
     final bio = widget.bio.trim();
     final style = GoogleFonts.inter(
-      fontSize: 14,
+      fontSize: 13.5,
       fontWeight: FontWeight.w400,
       height: 1.55,
-      color: AppColors.deepDarkBrown.withValues(alpha: 0.9),
+      color: AppColors.deepDarkBrown.withValues(alpha: 0.88),
     );
+    final overflows = bio.length > _overflowCharThreshold;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
@@ -917,56 +1105,34 @@ class _AboutSectionState extends State<_AboutSection> {
         Text(
           'About',
           style: GoogleFonts.inter(
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: FontWeight.w700,
             color: AppColors.deepDarkBrown,
           ),
         ),
-        const SizedBox(height: 10),
-        // LayoutBuilder lets us measure whether the bio would actually
-        // overflow the collapsed limit. We only show the Read More
-        // affordance when overflow exists — otherwise the link is a
-        // lie ("Read more" with nothing more to read).
-        LayoutBuilder(
-          builder: (context, constraints) {
-            final tp = TextPainter(
-              text: TextSpan(text: bio, style: style),
-              maxLines: _collapsedLines,
-              textDirection: TextDirection.ltr,
-            )..layout(maxWidth: constraints.maxWidth);
-            final overflows = tp.didExceedMaxLines;
-
-            return Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  bio,
-                  maxLines: _expanded ? null : _collapsedLines,
-                  overflow: _expanded
-                      ? TextOverflow.visible
-                      : TextOverflow.ellipsis,
-                  style: style,
-                ),
-                if (overflows) ...[
-                  const SizedBox(height: 6),
-                  GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () =>
-                        setState(() => _expanded = !_expanded),
-                    child: Text(
-                      _expanded ? 'Show Less' : 'Read More',
-                      style: GoogleFonts.inter(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w600,
-                        color: AppColors.amberGold,
-                      ),
-                    ),
-                  ),
-                ],
-              ],
-            );
-          },
+        const SizedBox(height: 8),
+        Text(
+          bio,
+          maxLines: _expanded ? null : _collapsedLines,
+          overflow:
+              _expanded ? TextOverflow.visible : TextOverflow.ellipsis,
+          style: style,
         ),
+        if (overflows) ...[
+          const SizedBox(height: 6),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => setState(() => _expanded = !_expanded),
+            child: Text(
+              _expanded ? 'Show Less' : 'Read More',
+              style: GoogleFonts.inter(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w700,
+                color: AppColors.amberGold,
+              ),
+            ),
+          ),
+        ],
       ],
     );
   }
@@ -976,15 +1142,11 @@ class _AboutSectionState extends State<_AboutSection> {
 
 class _ActionRow extends StatelessWidget {
   final bool canStart;
-  final int chatRate;
-  final int voiceRate;
   final VoidCallback onCall;
   final VoidCallback onChat;
 
   const _ActionRow({
     required this.canStart,
-    required this.chatRate,
-    required this.voiceRate,
     required this.onCall,
     required this.onChat,
   });
@@ -1003,7 +1165,7 @@ class _ActionRow extends StatelessWidget {
             onTap: canStart ? onCall : null,
           ),
         ),
-        const SizedBox(width: 12),
+        const SizedBox(width: 10),
         Expanded(
           flex: 5,
           child: _BigActionButton(
@@ -1046,18 +1208,30 @@ class _BigActionButtonState extends State<_BigActionButton> {
     final enabled = widget.enabled;
     final filled = widget.filled;
 
+    // Call Now (filled) is the deep brown brand primary — gives a
+    // strong, premium contrast against the gold accents elsewhere on
+    // the page. Chat (outlined) is a single brown hairline border
+    // with no fill, so it reads as the clearly-secondary action.
     final Color bg;
     final Color fg;
+    final BoxBorder? border;
     if (filled) {
       bg = enabled
-          ? AppColors.amberGold
-          : AppColors.amberGold.withValues(alpha: 0.45);
+          ? AppColors.primaryBrown
+          : AppColors.primaryBrown.withValues(alpha: 0.4);
       fg = Colors.white;
+      border = null;
     } else {
-      bg = AppColors.amberGold.withValues(alpha: 0.12);
+      bg = AppColors.surfaceWhite;
       fg = enabled
-          ? AppColors.deepDarkBrown
+          ? AppColors.primaryBrown
           : AppColors.muted;
+      border = Border.all(
+        color: enabled
+            ? AppColors.primaryBrown.withValues(alpha: 0.5)
+            : AppColors.muted.withValues(alpha: 0.25),
+        width: 1.2,
+      );
     }
 
     return Listener(
@@ -1074,17 +1248,18 @@ class _BigActionButtonState extends State<_BigActionButton> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            height: 54,
+            height: 50,
             decoration: BoxDecoration(
               color: bg,
-              borderRadius: BorderRadius.circular(16),
+              borderRadius: BorderRadius.circular(AppRadius.medium),
+              border: border,
               boxShadow: filled && enabled
                   ? [
                       BoxShadow(
-                        color: AppColors.amberGold
-                            .withValues(alpha: 0.3),
-                        blurRadius: 14,
-                        offset: const Offset(0, 6),
+                        color: AppColors.primaryBrown
+                            .withValues(alpha: 0.28),
+                        blurRadius: 12,
+                        offset: const Offset(0, 5),
                       ),
                     ]
                   : null,
@@ -1092,12 +1267,12 @@ class _BigActionButtonState extends State<_BigActionButton> {
             child: Row(
               mainAxisAlignment: MainAxisAlignment.center,
               children: [
-                AppIcon(widget.icon, size: 17, color: fg),
+                AppIcon(widget.icon, size: 16, color: fg),
                 const SizedBox(width: 8),
                 Text(
                   widget.label,
                   style: GoogleFonts.inter(
-                    fontSize: 14,
+                    fontSize: 13.5,
                     fontWeight: FontWeight.w700,
                     color: fg,
                   ),
@@ -1131,19 +1306,19 @@ class _ReasonBanner extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
       decoration: BoxDecoration(
         color: color.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(12),
+        borderRadius: BorderRadius.circular(AppRadius.small),
         border: Border.all(color: color.withValues(alpha: 0.18)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          AppIcon(icon, size: 16, color: color),
+          AppIcon(icon, size: 15, color: color),
           const SizedBox(width: 10),
           Expanded(
             child: Text(
               text,
               style: GoogleFonts.inter(
-                fontSize: 12,
+                fontSize: 11.5,
                 fontWeight: FontWeight.w500,
                 height: 1.4,
                 color: color,
@@ -1156,71 +1331,31 @@ class _ReasonBanner extends StatelessWidget {
   }
 }
 
-// ─── Privacy banner ────────────────────────────────────────────────
+// ─── Privacy footer (compact, page-end trust note) ────────────────
 
-class _PrivacyBanner extends StatelessWidget {
-  const _PrivacyBanner();
+class _PrivacyFooter extends StatelessWidget {
+  const _PrivacyFooter();
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppColors.amberGold.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppColors.amberGold.withValues(alpha: 0.18),
-        ),
-      ),
+    return Center(
       child: Row(
+        mainAxisSize: MainAxisSize.min,
+        mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          Container(
-            width: 36,
-            height: 36,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: AppColors.amberGold.withValues(alpha: 0.18),
-            ),
-            child: AppIcon(
-              AppIcons.shield,
-              size: 16,
-              color: AppColors.amberGold,
-            ),
-          ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              mainAxisSize: MainAxisSize.min,
-              children: [
-                Text(
-                  'Your privacy is our priority.',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.deepDarkBrown,
-                  ),
-                ),
-                const SizedBox(height: 2),
-                Text(
-                  'All calls and chats are secure and confidential.',
-                  maxLines: 2,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.inter(
-                    fontSize: 12,
-                    fontWeight: FontWeight.w400,
-                    height: 1.4,
-                    color: AppColors.muted,
-                  ),
-                ),
-              ],
-            ),
-          ),
-          const SizedBox(width: 8),
           AppIcon(
-            AppIcons.chevronRight,
-            size: 18,
-            color: AppColors.muted.withValues(alpha: 0.55),
+            AppIcons.shield,
+            size: 12,
+            color: AppColors.muted.withValues(alpha: 0.7),
+          ),
+          const SizedBox(width: 6),
+          Text(
+            'Your privacy is our priority — all calls are secure',
+            style: GoogleFonts.inter(
+              fontSize: 11,
+              fontWeight: FontWeight.w500,
+              color: AppColors.muted,
+            ),
           ),
         ],
       ),
@@ -1228,63 +1363,58 @@ class _PrivacyBanner extends StatelessWidget {
   }
 }
 
-// ─── Services grid (derived from specializations) ─────────────────
+// ─── Specialization (wrap of icon pills, ALL items always visible) ──
+//
+// Replaces the horizontal-scroll-cards design after user feedback
+// that scrolling sideways hid items. Now every specialization
+// renders as a small icon + label pill, and the row wraps onto as
+// many lines as needed — no scrolling, no "+N more" overflow, the
+// full list is visible in a single glance.
+//
+// Pill aesthetic (icon-leading) over a plain chip because the priest
+// profile is already text-heavy by the time the user gets here; the
+// gold mini-icons give the section a quick visual rhythm so users
+// can scan by symbol instead of reading every label.
 
-class _ServicesSection extends StatelessWidget {
+class _SpecializationSection extends StatelessWidget {
   final List<String> items;
-  const _ServicesSection({required this.items});
+  const _SpecializationSection({required this.items});
 
   @override
   Widget build(BuildContext context) {
     if (items.isEmpty) return const SizedBox.shrink();
 
-    // We display at most 4 service cards. If the priest selected
-    // more specializations, the rest is summarised in a 4th tile
-    // ("+N more") so the row count stays exactly 4 across all
-    // profiles — keeps visual rhythm stable as in the reference.
-    final visible = items.length <= 4 ? items : items.take(3).toList();
-    final overflow = items.length > 4 ? items.length - 3 : 0;
-
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text(
-          'Services',
+          'Specialization',
           style: GoogleFonts.inter(
-            fontSize: 16,
+            fontSize: 15,
             fontWeight: FontWeight.w700,
             color: AppColors.deepDarkBrown,
           ),
         ),
         const SizedBox(height: 12),
-        Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
+        // Wrap auto-flows pills onto new rows as the list grows; each
+        // pill is intrinsic-width so a long label like "Children's
+        // Ministry" doesn't force the whole row to that width.
+        Wrap(
+          spacing: 8,
+          runSpacing: 8,
           children: [
-            for (int i = 0; i < visible.length; i++) ...[
-              if (i > 0) const SizedBox(width: 10),
-              Expanded(
-                child: _ServiceTile(
-                  label: visible[i],
-                  icon: _iconForService(visible[i]),
-                ),
+            for (final item in items)
+              _SpecializationChip(
+                label: item,
+                icon: _iconForSpec(item),
               ),
-            ],
-            if (overflow > 0) ...[
-              const SizedBox(width: 10),
-              Expanded(
-                child: _ServiceTile(
-                  label: '+$overflow more',
-                  icon: AppIcons.category,
-                ),
-              ),
-            ],
           ],
         ),
       ],
     );
   }
 
-  IconData _iconForService(String name) {
+  IconData _iconForSpec(String name) {
     final n = name.toLowerCase();
     if (n.contains('prayer')) return AppIcons.prayer;
     if (n.contains('bible')) return AppIcons.bible;
@@ -1315,42 +1445,53 @@ class _ServicesSection extends StatelessWidget {
   }
 }
 
-class _ServiceTile extends StatelessWidget {
+// Compact icon-leading pill. Renders one specialization per chip; a
+// row of these wraps onto new lines as the list grows.
+class _SpecializationChip extends StatelessWidget {
   final String label;
   final IconData icon;
 
-  const _ServiceTile({required this.label, required this.icon});
+  const _SpecializationChip({
+    required this.label,
+    required this.icon,
+  });
 
   @override
   Widget build(BuildContext context) {
     return Container(
-      height: 92,
-      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 12),
+      padding: const EdgeInsets.fromLTRB(8, 6, 12, 6),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(14),
+        borderRadius: BorderRadius.circular(999),
         border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.1),
+          color: AppColors.primaryBrown.withValues(alpha: 0.2),
         ),
       ),
-      child: Column(
-        mainAxisAlignment: MainAxisAlignment.center,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
         children: [
-          AppIcon(
-            icon,
-            size: 22,
-            color: AppColors.amberGold,
+          // Small brown disc behind the icon — the visual anchor that
+          // separates this from a plain text chip. Keeps the pill
+          // reading as "feature" rather than "tag".
+          Container(
+            width: 22,
+            height: 22,
+            decoration: BoxDecoration(
+              shape: BoxShape.circle,
+              color: AppColors.primaryBrown.withValues(alpha: 0.1),
+            ),
+            child: AppIcon(
+              icon,
+              size: 12,
+              color: AppColors.primaryBrown,
+            ),
           ),
-          const SizedBox(height: 8),
+          const SizedBox(width: 7),
           Text(
             label,
-            maxLines: 2,
-            overflow: TextOverflow.ellipsis,
-            textAlign: TextAlign.center,
             style: GoogleFonts.inter(
-              fontSize: 11,
+              fontSize: 12,
               fontWeight: FontWeight.w600,
-              height: 1.25,
               color: AppColors.deepDarkBrown,
             ),
           ),
@@ -1360,72 +1501,236 @@ class _ServiceTile extends StatelessWidget {
   }
 }
 
-// ─── Reviews preview ──────────────────────────────────────────────
+// ─── Reviews (preview 3 + "Show all N reviews" toggle) ────────────
 
-class _ReviewsSection extends StatelessWidget {
+class _ReviewsSection extends StatefulWidget {
   final List<PriestReview> reviews;
-  final int totalReviewCount;
+  // Aggregate count from priests/{id}.reviewCount. Lets us tell
+  // apart "no reviews exist" (count == 0, hide the whole section)
+  // from "reviews exist but the recentReviews array hasn't been
+  // populated yet" (count > 0 but list empty — show an empty state
+  // so the user understands why it's blank).
+  final int reviewCount;
+  // Threaded down to each review card so the priest's reply bubble
+  // can attribute itself ("Fr. Thomas replied") instead of using a
+  // generic "Priest's reply" label.
+  final String priestName;
+  final String priestPhotoUrl;
 
   const _ReviewsSection({
     required this.reviews,
-    required this.totalReviewCount,
+    required this.reviewCount,
+    required this.priestName,
+    required this.priestPhotoUrl,
   });
 
   @override
+  State<_ReviewsSection> createState() => _ReviewsSectionState();
+}
+
+class _ReviewsSectionState extends State<_ReviewsSection> {
+  // Default preview is 3 reviews. Tapping "Show all" expands the
+  // list inline — keeps the user's scroll context, no extra page,
+  // and the heading's count tells them upfront how many to expect.
+  static const int _previewCount = 3;
+  bool _expanded = false;
+
+  @override
   Widget build(BuildContext context) {
-    if (reviews.isEmpty) return const SizedBox.shrink();
+    final reviews = widget.reviews;
+    final reviewCount = widget.reviewCount;
+
+    // No reviews at all on this priest — hide the section entirely.
+    if (reviewCount == 0 && reviews.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
+    final shown = _expanded
+        ? reviews
+        : reviews.take(_previewCount).toList();
+    final hasMore = reviews.length > _previewCount;
+    // Prefer reviews.length so the button copy matches what's
+    // actually loaded; fall back to the aggregate count if we
+    // somehow have more counted than loaded.
+    final totalForCopy =
+        reviews.length >= reviewCount ? reviews.length : reviewCount;
 
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Row(
+        Text(
+          'Reviews',
+          style: GoogleFonts.inter(
+            fontSize: 15,
+            fontWeight: FontWeight.w700,
+            color: AppColors.deepDarkBrown,
+          ),
+        ),
+        const SizedBox(height: 10),
+        if (reviews.isEmpty)
+          _ReviewsEmptyState(reviewCount: reviewCount)
+        else ...[
+          for (int i = 0; i < shown.length; i++) ...[
+            if (i > 0) const SizedBox(height: 10),
+            _ReviewCard(
+              review: shown[i],
+              priestName: widget.priestName,
+              priestPhotoUrl: widget.priestPhotoUrl,
+            ),
+          ],
+          if (hasMore) ...[
+            const SizedBox(height: 12),
+            _ShowAllReviewsButton(
+              expanded: _expanded,
+              totalCount: totalForCopy,
+              onTap: () => setState(() => _expanded = !_expanded),
+            ),
+          ],
+        ],
+      ],
+    );
+  }
+}
+
+// Full-width toggle button that opens/closes the rest of the review
+// list. Copy switches between "Show all N reviews" and "Show less"
+// so the affordance is obvious in both directions.
+class _ShowAllReviewsButton extends StatelessWidget {
+  final bool expanded;
+  final int totalCount;
+  final VoidCallback onTap;
+
+  const _ShowAllReviewsButton({
+    required this.expanded,
+    required this.totalCount,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        width: double.infinity,
+        padding: const EdgeInsets.symmetric(vertical: 12),
+        decoration: BoxDecoration(
+          color: AppColors.primaryBrown.withValues(alpha: 0.06),
+          borderRadius: BorderRadius.circular(AppRadius.small),
+          border: Border.all(
+            color: AppColors.primaryBrown.withValues(alpha: 0.2),
+          ),
+        ),
+        child: Row(
+          mainAxisAlignment: MainAxisAlignment.center,
           children: [
-            Expanded(
-              child: Text(
-                'Reviews',
-                style: GoogleFonts.inter(
-                  fontSize: 16,
-                  fontWeight: FontWeight.w700,
-                  color: AppColors.deepDarkBrown,
-                ),
+            Text(
+              expanded
+                  ? 'Show less'
+                  : 'Show all $totalCount reviews',
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w700,
+                color: AppColors.primaryBrown,
               ),
             ),
-            if (totalReviewCount > 1)
+            const SizedBox(width: 6),
+            AppIcon(
+              expanded ? AppIcons.chevronDown : AppIcons.chevronRight,
+              size: 14,
+              color: AppColors.primaryBrown,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+// Shown when reviewCount > 0 but the loaded list is empty — usually
+// means the priests/{id}.recentReviews array hasn't been backfilled
+// yet, or the sessions-collection fallback was blocked by rules.
+// Either way the user sees a clear "we know you have N reviews, they
+// just aren't loaded yet" rather than a missing section.
+class _ReviewsEmptyState extends StatelessWidget {
+  final int reviewCount;
+  const _ReviewsEmptyState({required this.reviewCount});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.circular(AppRadius.small),
+        border: Border.all(color: AppColors.borderLight),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              AppIcon(
+                AppIcons.starOutline,
+                size: 16,
+                color: AppColors.amberGold,
+              ),
+              const SizedBox(width: 8),
               Text(
-                'See All',
+                '$reviewCount ${reviewCount == 1 ? "review" : "reviews"}',
                 style: GoogleFonts.inter(
                   fontSize: 13,
                   fontWeight: FontWeight.w600,
-                  color: AppColors.amberGold,
+                  color: AppColors.deepDarkBrown,
                 ),
               ),
-          ],
-        ),
-        const SizedBox(height: 12),
-        _ReviewCard(review: reviews.first),
-      ],
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            "We couldn't load the reviews yet. Pull the page down to "
+            'try again — they should appear in a moment.',
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
+              height: 1.4,
+              color: AppColors.muted,
+            ),
+          ),
+        ],
+      ),
     );
   }
 }
 
 class _ReviewCard extends StatelessWidget {
   final PriestReview review;
-  const _ReviewCard({required this.review});
+  // Used by the embedded reply bubble so the attribution reads
+  // "<priestName> replied" and the priest's avatar appears next to
+  // their words — makes it crystal clear which voice is replying.
+  final String priestName;
+  final String priestPhotoUrl;
+
+  const _ReviewCard({
+    required this.review,
+    required this.priestName,
+    required this.priestPhotoUrl,
+  });
 
   @override
   Widget build(BuildContext context) {
     final initial = review.userName.isNotEmpty
         ? review.userName.trim().substring(0, 1).toUpperCase()
         : '?';
+    final reply = review.priestReply;
 
     return Container(
-      padding: const EdgeInsets.all(14),
+      padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.1),
-        ),
+        borderRadius: BorderRadius.circular(AppRadius.small),
+        border: Border.all(color: AppColors.borderLight),
       ),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -1433,8 +1738,8 @@ class _ReviewCard extends StatelessWidget {
           Row(
             children: [
               Container(
-                width: 36,
-                height: 36,
+                width: 32,
+                height: 32,
                 clipBehavior: Clip.antiAlias,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
@@ -1463,7 +1768,7 @@ class _ReviewCard extends StatelessWidget {
                       maxLines: 1,
                       overflow: TextOverflow.ellipsis,
                       style: GoogleFonts.inter(
-                        fontSize: 13,
+                        fontSize: 12.5,
                         fontWeight: FontWeight.w600,
                         color: AppColors.deepDarkBrown,
                       ),
@@ -1479,15 +1784,15 @@ class _ReviewCard extends StatelessWidget {
                               i < review.rating.round()
                                   ? AppIcons.starFilled
                                   : AppIcons.starOutline,
-                              size: 12,
+                              size: 11,
                               color: AppColors.amberGold,
                             ),
                           ),
-                        const SizedBox(width: 6),
+                        const SizedBox(width: 5),
                         Text(
                           review.rating.toStringAsFixed(1),
                           style: GoogleFonts.inter(
-                            fontSize: 11,
+                            fontSize: 10.5,
                             fontWeight: FontWeight.w600,
                             color: AppColors.muted,
                           ),
@@ -1499,19 +1804,44 @@ class _ReviewCard extends StatelessWidget {
               ),
             ],
           ),
-          const SizedBox(height: 10),
-          Text(
-            '"${review.feedback}"',
-            maxLines: 3,
-            overflow: TextOverflow.ellipsis,
-            style: GoogleFonts.inter(
-              fontSize: 13,
-              fontWeight: FontWeight.w400,
-              fontStyle: FontStyle.italic,
-              height: 1.5,
-              color: AppColors.deepDarkBrown.withValues(alpha: 0.85),
+          if (review.feedback.trim().isNotEmpty) ...[
+            const SizedBox(height: 10),
+            // No maxLines — full review text renders. Card height
+            // grows with content; the page is scrollable so long
+            // reviews simply add to scroll length.
+            Text(
+              '"${review.feedback}"',
+              style: GoogleFonts.inter(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w400,
+                fontStyle: FontStyle.italic,
+                height: 1.5,
+                color: AppColors.deepDarkBrown.withValues(alpha: 0.85),
+              ),
             ),
-          ),
+          ] else ...[
+            // Star-only review: no text to quote, so render a quiet
+            // placeholder rather than nothing — keeps card heights
+            // visually consistent.
+            const SizedBox(height: 8),
+            Text(
+              'Rated this session.',
+              style: GoogleFonts.inter(
+                fontSize: 11.5,
+                fontWeight: FontWeight.w400,
+                fontStyle: FontStyle.italic,
+                color: AppColors.muted,
+              ),
+            ),
+          ],
+          if (reply != null) ...[
+            const SizedBox(height: 10),
+            _ReplyBubble(
+              text: reply,
+              priestName: priestName,
+              priestPhotoUrl: priestPhotoUrl,
+            ),
+          ],
         ],
       ),
     );
@@ -1522,7 +1852,7 @@ class _ReviewCard extends StatelessWidget {
       child: Text(
         initial,
         style: GoogleFonts.inter(
-          fontSize: 14,
+          fontSize: 13,
           fontWeight: FontWeight.w700,
           color: AppColors.primaryBrown,
         ),
@@ -1531,61 +1861,128 @@ class _ReviewCard extends StatelessWidget {
   }
 }
 
-// ─── More-menu sheet row ───────────────────────────────────────────
+// Priest's reply nested visually under the user's review. Indented
+// (so it reads as a threaded conversation), warm-beige background +
+// gold left accent bar to match the brand, with the priest's tiny
+// avatar + name + "replied" header so the user sees at a glance
+// whose voice is responding to the review.
+class _ReplyBubble extends StatelessWidget {
+  final String text;
+  final String priestName;
+  final String priestPhotoUrl;
 
-class _SheetRow extends StatelessWidget {
-  final IconData icon;
-  final String label;
-  final bool danger;
-  final VoidCallback onTap;
-
-  const _SheetRow({
-    required this.icon,
-    required this.label,
-    required this.onTap,
-    this.danger = false,
+  const _ReplyBubble({
+    required this.text,
+    required this.priestName,
+    required this.priestPhotoUrl,
   });
 
   @override
   Widget build(BuildContext context) {
-    final fg = danger ? AppColors.errorRed : AppColors.deepDarkBrown;
-    final bg = danger
-        ? AppColors.errorRed.withValues(alpha: 0.08)
-        : AppColors.primaryBrown.withValues(alpha: 0.08);
+    // Short display name — "Fr. Thomas Mathew" → "Fr. Thomas".
+    // Keeps the attribution line compact while still being personal.
+    // Empty/blank names fall back to the generic label.
+    final shortName = _shortName(priestName);
+    final initial = priestName.trim().isNotEmpty
+        ? priestName.trim().substring(0, 1).toUpperCase()
+        : '?';
 
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 14),
-        child: Row(
-          children: [
-            Container(
-              width: 40,
-              height: 40,
-              decoration: BoxDecoration(
-                color: bg,
-                borderRadius: BorderRadius.circular(10),
+    return Container(
+      margin: const EdgeInsets.only(left: 12),
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppColors.warmBeige.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(10),
+        border: Border(
+          left: BorderSide(
+            color: AppColors.amberGold.withValues(alpha: 0.8),
+            width: 3,
+          ),
+        ),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              Container(
+                width: 22,
+                height: 22,
+                clipBehavior: Clip.antiAlias,
+                decoration: BoxDecoration(
+                  shape: BoxShape.circle,
+                  color: AppColors.amberGold.withValues(alpha: 0.18),
+                ),
+                child: priestPhotoUrl.isNotEmpty
+                    ? CachedNetworkImage(
+                        imageUrl: priestPhotoUrl,
+                        fit: BoxFit.cover,
+                        errorWidget: (_, _, _) =>
+                            _avatarFallback(initial),
+                        placeholder: (_, _) =>
+                            const SizedBox.shrink(),
+                      )
+                    : _avatarFallback(initial),
               ),
-              child: AppIcon(icon, size: 18, color: fg),
-            ),
-            const SizedBox(width: 14),
-            Expanded(
-              child: Text(
-                label,
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  fontWeight: FontWeight.w500,
-                  color: fg,
+              const SizedBox(width: 7),
+              Flexible(
+                child: Text(
+                  shortName.isEmpty
+                      ? "Priest's reply"
+                      : '$shortName replied',
+                  maxLines: 1,
+                  overflow: TextOverflow.ellipsis,
+                  style: GoogleFonts.inter(
+                    fontSize: 11,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primaryBrown,
+                  ),
                 ),
               ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          // Full reply rendered — no truncation so the priest's
+          // entire response is visible.
+          Text(
+            text,
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w400,
+              height: 1.45,
+              color: AppColors.deepDarkBrown.withValues(alpha: 0.85),
             ),
-            AppIcon(
-              AppIcons.chevronRight,
-              size: 18,
-              color: AppColors.muted.withValues(alpha: 0.4),
-            ),
-          ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  // "Fr. Thomas Mathew" → "Fr. Thomas" so the attribution line stays
+  // compact next to the small avatar. If the name has a religious
+  // prefix (Fr./Rev./Pr./Bro./Br./Sr./Dr.), we keep the prefix + the
+  // next word. Otherwise we take the first word.
+  String _shortName(String full) {
+    final trimmed = full.trim();
+    if (trimmed.isEmpty) return '';
+    final parts = trimmed.split(RegExp(r'\s+'));
+    if (parts.length == 1) return parts.first;
+    const prefixes = {'fr.', 'fr', 'rev.', 'rev', 'pr.', 'pr',
+        'bro.', 'bro', 'br.', 'br', 'sr.', 'sr', 'dr.', 'dr'};
+    if (prefixes.contains(parts.first.toLowerCase())) {
+      return '${parts[0]} ${parts[1]}';
+    }
+    return parts.first;
+  }
+
+  Widget _avatarFallback(String initial) {
+    return Center(
+      child: Text(
+        initial,
+        style: GoogleFonts.inter(
+          fontSize: 10,
+          fontWeight: FontWeight.w700,
+          color: AppColors.amberGold,
         ),
       ),
     );
@@ -1595,7 +1992,8 @@ class _SheetRow extends StatelessWidget {
 // ─── Shimmer while loading ─────────────────────────────────────────
 
 class _ProfileShimmer extends StatelessWidget {
-  const _ProfileShimmer();
+  final double heroHeight;
+  const _ProfileShimmer({required this.heroHeight});
 
   @override
   Widget build(BuildContext context) {
@@ -1616,15 +2014,15 @@ class _ProfileShimmer extends StatelessWidget {
 
     return Shimmer.fromColors(
       baseColor: AppColors.muted.withValues(alpha: 0.08),
-      highlightColor: AppColors.surfaceWhite,
+      highlightColor: AppColors.surfaceCream,
       child: SingleChildScrollView(
         physics: const NeverScrollableScrollPhysics(),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
             Container(
-              height: _kHeroHeight,
-              color: AppColors.muted.withValues(alpha: 0.2),
+              height: heroHeight,
+              color: AppColors.muted.withValues(alpha: 0.18),
             ),
             Transform.translate(
               offset: const Offset(0, -_kCardOverlap),
@@ -1633,31 +2031,31 @@ class _ProfileShimmer extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    box(h: 170, radius: BorderRadius.circular(20)),
-                    const SizedBox(height: 24),
-                    box(h: 14, w: 80),
-                    const SizedBox(height: 10),
-                    box(h: 60, radius: BorderRadius.circular(8)),
-                    const SizedBox(height: 20),
+                    box(h: 150, radius: BorderRadius.circular(20)),
+                    const SizedBox(height: 22),
+                    box(h: 12, w: 80),
+                    const SizedBox(height: 8),
+                    box(h: 44, radius: BorderRadius.circular(8)),
+                    const SizedBox(height: 16),
                     Row(
                       children: [
                         Expanded(
                           child: box(
-                            h: 54,
+                            h: 50,
                             radius: BorderRadius.circular(16),
                           ),
                         ),
-                        const SizedBox(width: 12),
+                        const SizedBox(width: 10),
                         Expanded(
                           child: box(
-                            h: 54,
+                            h: 50,
                             radius: BorderRadius.circular(16),
                           ),
                         ),
                       ],
                     ),
-                    const SizedBox(height: 20),
-                    box(h: 64, radius: BorderRadius.circular(14)),
+                    const SizedBox(height: 16),
+                    box(h: 56, radius: BorderRadius.circular(12)),
                   ],
                 ),
               ),

@@ -420,11 +420,25 @@ class _ChatSessionViewState extends State<ChatSessionView> {
       HapticFeedback.selectionClick();
     }
 
+    // First message-id transition (null → real id) is the chat
+    // opening with existing history. Chat convention says land on
+    // the latest bubble — `wasOurs || atBottom` would leave a user
+    // who last *received* a message stranded at the oldest message.
+    // Jump (not animate) so we don't flash through old content.
+    final isFirstOpen = !hadPrevious;
     _lastMessageId = latestId;
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
       if (!mounted) return;
       if (!_scrollController.hasClients) return;
+
+      if (isFirstOpen) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        if (_showNewMessagePill) {
+          setState(() => _showNewMessagePill = false);
+        }
+        return;
+      }
 
       // Auto-follow only when (a) the message is ours — sending
       // implies "show me what I just said" — or (b) we were

@@ -18,7 +18,27 @@ import 'package:flutter_image_compress/flutter_image_compress.dart';
 class ImageUtils {
   ImageUtils._();
 
+  // Target post-compression size. The pipeline iterates quality steps
+  // until the file fits under this, then uploads. Profile / ID / cert
+  // photos are rendered at thumbnail-to-mid-size on phones, so this
+  // is visually indistinguishable from the source while being ~16×
+  // cheaper to serve on Firebase Storage.
   static const int maxFileSizeBytes = 500 * 1024;
+
+  // Hard reject for the SOURCE file. The image_picker pre-shrink
+  // already downscales typical phone photos well under this, so the
+  // cap only trips on absurd uploads (multi-megapixel PNGs, raw
+  // camera roll exports through the system picker) — exactly the
+  // ones that bloat Storage costs without giving us anything in
+  // return. 2 MB is generous enough that no legitimate user hits it
+  // by accident and tight enough that the per-upload bill is bounded.
+  static const int maxSourceBytes = 2 * 1024 * 1024;
+
+  // Human-readable equivalent, used in UI hints next to the picker
+  // so the user is told the cap up front instead of finding out via
+  // an error toast.
+  static const String maxSourceLabel = '2 MB';
+
   static const int maxDimension = 800;
 
   // Compresses only if the source exceeds the target size. We drop
@@ -78,14 +98,16 @@ class ImageUtils {
 
   // Returns null if the file is acceptable, else a human-readable
   // reason we can surface via the snackbar. Called before compression
-  // so the user hears about absurd files right away.
+  // so the user hears about an oversized source right away — the
+  // compressor only kicks in if we make it past this gate.
   static Future<String?> validateImage(String filePath) async {
     final file = File(filePath);
     if (!await file.exists()) return 'File not found';
 
     final bytes = await file.length();
-    if (bytes > 10 * 1024 * 1024) {
-      return 'Image too large. Please choose a photo under 10MB.';
+    if (bytes > maxSourceBytes) {
+      return 'Photo cannot be uploaded — please choose an image '
+          'under $maxSourceLabel.';
     }
 
     final dot = filePath.lastIndexOf('.');

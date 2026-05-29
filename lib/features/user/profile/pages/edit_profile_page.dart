@@ -247,9 +247,28 @@ class _EditProfilePageState extends State<EditProfilePage> {
       if (_newPhotoPath != null) {
         final compressed =
             await ImageUtils.compressImage(_newPhotoPath!);
+        // Defense in depth: even though validateImage rejected
+        // anything over 2 MB at pick time and compressImage targets
+        // 500 KB, an edge case (plugin returns the source path on
+        // codec failure, exotic format, etc.) could let an oversized
+        // file slip through. Re-checking the bytes about to hit
+        // Storage keeps the bill bounded no matter what upstream
+        // does.
+        final compressedFile = File(compressed);
+        final compressedSize = await compressedFile.length();
+        if (compressedSize > ImageUtils.maxSourceBytes) {
+          if (!mounted) return;
+          setState(() => _isSaving = false);
+          AppSnackBar.error(
+            context,
+            'Photo cannot be uploaded — please choose an image '
+            'under ${ImageUtils.maxSourceLabel}.',
+          );
+          return;
+        }
         final ref = FirebaseStorage.instance
             .ref('users/$uid/profile.jpg');
-        await ref.putFile(File(compressed));
+        await ref.putFile(compressedFile);
         newPhotoUrl = await ref.getDownloadURL();
       }
 
@@ -387,6 +406,17 @@ class _EditProfilePageState extends State<EditProfilePage> {
                         fontSize: 12,
                         fontWeight: FontWeight.w400,
                         color: AppColors.muted,
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 4),
+                  Center(
+                    child: Text(
+                      'Max ${ImageUtils.maxSourceLabel}',
+                      style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                        color: AppColors.muted.withValues(alpha: 0.6),
                       ),
                     ),
                   ),

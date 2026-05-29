@@ -45,6 +45,10 @@ import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
     show CallEntryBubble;
 
 const Color _kOnlineGreen = Color(0xFF059669);
+// Plum accent for the "In Bible Session" status pill — mirrors the
+// hue used on PriestCard and the priest profile page so the same
+// state reads the same way everywhere a priest is shown.
+const Color _kBibleAccent = Color(0xFF6B5B95);
 const int _kFallbackChatRate = 10;
 // Same cap the live chat uses for prefetched history. Keeps both
 // surfaces aligned on what "your conversation" means and prevents
@@ -99,9 +103,26 @@ class _CallEntry extends _Item {
 }
 
 class _ChatHistoryPageState extends State<ChatHistoryPage> {
+  // Drives the message list. We jump to maxScrollExtent the first
+  // time the list paints with content so the user lands on the
+  // latest bubble (chat convention), and only auto-follow on later
+  // free-message arrivals if they were already near the bottom —
+  // otherwise we'd yank them out of older content they're reading.
+  final ScrollController _scrollController = ScrollController();
+  bool _hasJumpedToBottom = false;
+
   bool _isLoading = true;
   bool _isOnline = false;
   bool _isBusy = false;
+  // Mirrors the SpeakerModel.isInBibleSession lock — flipped true
+  // when the priest doc has a non-empty liveBibleSessionId whose
+  // deadline (bibleSessionLockedUntil) is still in the future.
+  // Without this guard the "Start session" footer button would
+  // render as enabled while the priest is teaching a Bible session;
+  // the server CF would still block the call (priest-in-bible-session
+  // error), but the misleading UI would frustrate the user with a
+  // click-fail loop.
+  bool _isInBibleSession = false;
   int _chatRatePerMinute = _kFallbackChatRate;
   List<_Item> _items = const [];
   // Fallback name + photo, populated from priests/{id} when the
@@ -145,7 +166,45 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
   void dispose() {
     _muteSub?.cancel();
     _freeMessagesSub?.cancel();
+    _scrollController.dispose();
     super.dispose();
+  }
+
+  // True when the user is within 100px of the bottom — the same
+  // threshold the live chat view uses. We treat "no clients yet"
+  // as at-bottom so the first paint follows new content instead
+  // of stranding the user mid-list.
+  bool _isNearBottom() {
+    if (!_scrollController.hasClients) return true;
+    final pos = _scrollController.position;
+    return pos.maxScrollExtent - pos.pixels <= 100;
+  }
+
+  // First successful paint with content: jump straight to the
+  // bottom (no animation — animating from offset 0 would flash
+  // the oldest bubble through the viewport). Subsequent rebuilds
+  // (free-message arrivals, mute toggles) only follow if the user
+  // was already at the bottom, otherwise they stay where they
+  // were reading.
+  void _scheduleScrollAfterRebuild() {
+    if (_items.isEmpty) return;
+    final wasNearBottom = _isNearBottom();
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      if (!_scrollController.hasClients) return;
+      if (!_hasJumpedToBottom) {
+        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+        _hasJumpedToBottom = true;
+        return;
+      }
+      if (wasNearBottom) {
+        _scrollController.animateTo(
+          _scrollController.position.maxScrollExtent,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+      }
+    });
   }
 
   void _attachStreams() {
@@ -232,6 +291,21 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
 
       final isOnline = (priestData?['isOnline'] as bool?) ?? false;
       final isBusy = (priestData?['isBusy'] as bool?) ?? false;
+      // Two-signal in-bible-session check, mirrors SpeakerModel's
+      // isInBibleSession getter. The lock is considered held only
+      // when liveBibleSessionId is non-empty AND
+      // bibleSessionLockedUntil is either missing OR still in the
+      // future. The deadline guard is what makes the lock
+      // self-healing: even if every server-side clear path fails,
+      // once the timestamp passes the priest is treated as released.
+      final liveBibleSessionId =
+          (priestData?['liveBibleSessionId'] as String?) ?? '';
+      final lockedUntilTs = priestData?['bibleSessionLockedUntil'];
+      final lockedUntil = lockedUntilTs is Timestamp
+          ? lockedUntilTs.toDate()
+          : null;
+      final isInBibleSession = liveBibleSessionId.isNotEmpty &&
+          (lockedUntil == null || DateTime.now().isBefore(lockedUntil));
       final rate = (settings?['chatRatePerMinute'] as num?)?.toInt() ??
           _kFallbackChatRate;
       // Resolve name + photo from the priest doc only when the
@@ -253,6 +327,7 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       setState(() {
         _isOnline = isOnline;
         _isBusy = isBusy;
+        _isInBibleSession = isInBibleSession;
         _chatRatePerMinute = rate;
         _fallbackPriestName = fallbackName;
         _fallbackPriestPhotoUrl = fallbackPhoto;
@@ -320,17 +395,27 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       _items = items;
       _latestMessage = timeline.isNotEmpty ? timeline.last : null;
     });
+    _scheduleScrollAfterRebuild();
   }
 
-  bool get _isAvailable => _isOnline && !_isBusy;
+  // "Truly available" — online, not paused/in-chat, and not
+  // teaching a Bible session. Mirrors SpeakerModel.isAvailable
+  // so the gate matches every other surface in the app.
+  bool get _isAvailable => _isOnline && !_isBusy && !_isInBibleSession;
 
+  // Precedence order matches the priest card / profile pill:
+  // in-bible-session wins over busy wins over offline. This ensures
+  // a priest who's also technically isBusy=true (back-to-back chat
+  // + bible) shows the more accurate "In Bible Session" label.
   String get _statusLabel {
+    if (_isInBibleSession) return 'In Bible Session';
     if (_isAvailable) return 'Online';
     if (_isBusy) return 'Busy';
     return 'Offline';
   }
 
   Color get _statusColor {
+    if (_isInBibleSession) return _kBibleAccent;
     if (_isAvailable) return _kOnlineGreen;
     if (_isBusy) return AppColors.amberGold;
     return AppColors.muted;
@@ -586,6 +671,7 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       backgroundColor: AppColors.surfaceWhite,
       onRefresh: _loadData,
       child: ListView.builder(
+        controller: _scrollController,
         physics: const AlwaysScrollableScrollPhysics(
           parent: BouncingScrollPhysics(),
         ),
@@ -717,6 +803,7 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       child: _StartSessionButton(
         isAvailable: _isAvailable,
         isBusy: _isBusy,
+        isInBibleSession: _isInBibleSession,
         ratePerMinute: _chatRatePerMinute,
         // Reply mode: when the most recent message is a free
         // priest message, the button copy reads "Reply · Start
@@ -725,9 +812,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
         // priest's message above.
         isReplyMode: _latestMessage?.isPriestMessage == true,
         // Available speakers go straight into the request flow —
-        // no profile detour. Busy / offline still routes to the
-        // profile so the user can see the rate or pick a different
-        // speaker; we'll add waitlist + notify-me there in v1.1.
+        // no profile detour. Busy / offline / in-bible still
+        // routes to the profile so the user can see the rate or
+        // pick a different speaker.
         onTap: _isAvailable ? _startChatSession : _openProfile,
       ),
     );
@@ -895,6 +982,11 @@ class _MessageBubble extends StatelessWidget {
 class _StartSessionButton extends StatefulWidget {
   final bool isAvailable;
   final bool isBusy;
+  // Distinct flag (not just "another kind of busy") so the button
+  // can show plum-accented "In Bible Session · View Profile" copy
+  // instead of the misleading amber "Speaker is busy" or muted
+  // "Speaker is offline" labels.
+  final bool isInBibleSession;
   final int ratePerMinute;
   // True when the most recent message is a free priest message —
   // flips the available-state copy from "Start New Session" to
@@ -906,6 +998,7 @@ class _StartSessionButton extends StatefulWidget {
   const _StartSessionButton({
     required this.isAvailable,
     required this.isBusy,
+    required this.isInBibleSession,
     required this.ratePerMinute,
     required this.isReplyMode,
     required this.onTap,
@@ -920,11 +1013,14 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
 
   @override
   Widget build(BuildContext context) {
-    // Three states drive the label + color:
-    //   • Available  → solid brown CTA inviting the new session
-    //   • Busy       → softened brown explaining why action is muted
-    //   • Offline    → muted "Notify me" copy that still routes to
-    //                  the profile so the user can decide
+    // Four states drive the label + color:
+    //   • Available        → solid brown CTA inviting the new session
+    //   • In Bible Session → plum "View Profile" — strongest do-not-
+    //                        disturb signal, checked first because
+    //                        the priest could also be technically
+    //                        isBusy=true in a chat at the same time
+    //   • Busy             → amber "Speaker is busy"
+    //   • Offline          → muted "Speaker is offline"
     String label;
     IconData icon;
     Color bgColor;
@@ -938,6 +1034,15 @@ class _StartSessionButtonState extends State<_StartSessionButton> {
           ? AppIcons.reply
           : AppIcons.chatOutline;
       bgColor = AppColors.primaryBrown;
+      fgColor = Colors.white;
+    } else if (widget.isInBibleSession) {
+      // Plum-tinted CTA: speaker is in a live Bible session and
+      // must not be disturbed. Tap routes to the profile (same as
+      // the other unavailable branches) so the user can read the
+      // in-bible reason banner with the full context.
+      label = 'In Bible Session · View Profile';
+      icon = AppIcons.bible;
+      bgColor = _kBibleAccent;
       fgColor = Colors.white;
     } else if (widget.isBusy) {
       // Tap routes to the priest's profile — keep the copy aligned

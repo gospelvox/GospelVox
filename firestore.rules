@@ -1,0 +1,313 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isAdmin() {
+      return request.auth != null
+             && exists(/databases/$(database)/documents/users/$(request.auth.uid))
+             && get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role == 'admin';
+    }
+
+    match /users/{userId} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == userId || isAdmin());
+
+      allow create: if request.auth != null
+                    && request.auth.uid == userId
+                    && request.resource.data.coinBalance == 0
+                    && request.resource.data.role in ["user", "priest"]
+                    && (!('isActivated' in request.resource.data) || request.resource.data.isActivated == false);
+
+      allow update: if request.auth != null
+                    && request.auth.uid == userId
+                    && !('coinBalance' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('role' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('walletBalance' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('isActivated' in request.resource.data.diff(resource.data).affectedKeys());
+
+      allow delete: if false;
+    }
+
+    match /priests/{priestId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+                    && request.auth.uid == priestId
+                    && request.resource.data.status == "pending"
+                    && (!('walletBalance' in request.resource.data) || request.resource.data.walletBalance == 0);
+
+      allow update: if request.auth != null
+                    && (
+                      (request.auth.uid == priestId
+                        && !('walletBalance' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('status' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('isActivated' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('totalEarnings' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('rating' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('reviewCount' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('lastReviewMilestone' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('recentReviews' in request.resource.data.diff(resource.data).affectedKeys()))
+                      ||
+                      (isAdmin()
+                        && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['walletBalance']))
+                    );
+
+      allow delete: if false;
+    }
+
+    match /sessions/{sessionId} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.userId
+                      || request.auth.uid == resource.data.priestId
+                      || isAdmin());
+
+      allow create: if false;
+
+      // Update is split per side so each party can only write fields
+      // that semantically belong to them. Without this split, the
+      // priest could write `userRating` (rate themselves) and the
+      // user could write `priestTyping` (fake a typing indicator).
+      //
+      // Shared lifecycle fields — status / startedAt / endedAt /
+      // lastHeartbeat — stay writable from both sides because both
+      // sides legitimately update them in normal flow (priest accept
+      // -> active, user cancel, periodic heartbeats from each side).
+      allow update: if request.auth != null
+                    && (
+                      // User-side write: own typing + own rating /
+                      // feedback + shared lifecycle keys.
+                      (request.auth.uid == resource.data.userId
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly([
+                              'status',
+                              'startedAt',
+                              'endedAt',
+                              'lastHeartbeat',
+                              'userRating',
+                              'userFeedback',
+                              'userTyping',
+                              'userTypingSince'
+                            ]))
+                      ||
+                      // Priest-side write: own typing + shared
+                      // lifecycle keys. NO access to userRating /
+                      // userFeedback — those belong to the user.
+                      (request.auth.uid == resource.data.priestId
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                            .hasOnly([
+                              'status',
+                              'startedAt',
+                              'endedAt',
+                              'lastHeartbeat',
+                              'priestTyping',
+                              'priestTypingSince'
+                            ]))
+                    );
+
+      allow delete: if false;
+
+      match /messages/{messageId} {
+        allow read: if request.auth != null
+                    && (request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId
+                        || request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.priestId);
+
+        // Create requires senderId to match the caller's auth uid.
+        // Without this, anyone in the session could write a message
+        // with senderId set to the OTHER party's uid — making the
+        // priest "say" something they never said, or vice-versa.
+        allow create: if request.auth != null
+                      && (request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId
+                          || request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.priestId)
+                      && request.resource.data.senderId == request.auth.uid
+                      && get(/databases/$(database)/documents/sessions/$(sessionId)).data.status == "active";
+
+        allow update: if request.auth != null
+                      && (request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.userId
+                          || request.auth.uid == get(/databases/$(database)/documents/sessions/$(sessionId)).data.priestId)
+                      && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['reactions']);
+
+        allow delete: if false;
+      }
+    }
+
+    match /bible_sessions/{bibleSessionId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.priestId
+                    && request.resource.data.status == 'upcoming'
+                    && request.resource.data.registrationCount == 0
+                    && request.resource.data.price is int
+                    && request.resource.data.price >= 0;
+
+      // Priest-side updates carry a deny-list of immutable fields:
+      //   • price / totalRevenue — payment integrity (a priest can't
+      //     re-price a session that users already paid for).
+      //   • priestId / registrationCount — ownership + server-maintained
+      //     counters that clients shouldn't touch.
+      //   • title / description — the create-flow review sheet warns
+      //     the priest these are locked after publish, so the rule
+      //     enforces the same contract. Without this, the UI promise
+      //     was technically a lie: the affordance was hidden but a
+      //     tampered client or future surface could quietly mutate
+      //     them after registrations had landed.
+      allow update: if request.auth != null
+                    && (
+                      (request.auth.uid == resource.data.priestId
+                        && !('price' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('title' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('description' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('totalRevenue' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('priestId' in request.resource.data.diff(resource.data).affectedKeys())
+                        && !('registrationCount' in request.resource.data.diff(resource.data).affectedKeys()))
+                      ||
+                      (isAdmin()
+                        && request.resource.data.diff(resource.data).affectedKeys()
+                           .hasOnly(['status','cancelledAt','adminNotes']))
+                    );
+
+      allow delete: if false;
+
+      match /registrations/{regId} {
+        allow read: if request.auth != null
+                    && (request.auth.uid == regId
+                        || request.auth.uid == get(/databases/$(database)/documents/bible_sessions/$(bibleSessionId)).data.priestId
+                        || isAdmin());
+
+        allow create: if request.auth != null
+                      && request.auth.uid == regId
+                      && request.resource.data.status == 'registered'
+                      && !('paymentId' in request.resource.data)
+                      && !('paidAt' in request.resource.data);
+
+        allow update: if request.auth != null
+                      && request.auth.uid == regId
+                      && (
+                        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','cancelledAt'])
+                          && request.resource.data.status == 'cancelled')
+                        ||
+                        (resource.data.status == 'cancelled'
+                          && request.resource.data.diff(resource.data).affectedKeys().hasOnly(['status','registeredAt','cancelledAt'])
+                          && request.resource.data.status == 'registered')
+                        ||
+                        (request.resource.data.diff(resource.data).affectedKeys().hasOnly(['rating','feedback','ratedAt']))
+                      );
+
+        allow delete: if false;
+      }
+    }
+
+    match /matrimony_profiles/{profileId} {
+      allow read: if request.auth != null;
+
+      allow create: if request.auth != null
+                    && request.auth.uid == profileId
+                    && request.resource.data.status == "pending";
+
+      allow update: if request.auth != null
+                    && request.auth.uid == profileId
+                    && !('status' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('isPaid' in request.resource.data.diff(resource.data).affectedKeys())
+                    && !('expiresAt' in request.resource.data.diff(resource.data).affectedKeys());
+
+      allow delete: if false;
+
+      match /unlocks/{unlockId} {
+        allow read: if request.auth != null
+                    && request.auth.uid == unlockId;
+        allow create: if false;
+        allow update: if false;
+        allow delete: if false;
+      }
+
+      match /chats/{chatId} {
+        allow read: if request.auth != null
+                    && (request.auth.uid == profileId
+                        || request.auth.uid == chatId);
+
+        match /messages/{msgId} {
+          allow read: if request.auth != null;
+          allow create: if request.auth != null
+                        && request.auth.uid == request.resource.data.senderId;
+          allow update: if false;
+          allow delete: if false;
+        }
+      }
+    }
+
+    match /wallet_transactions/{transactionId} {
+      allow read: if request.auth != null
+                  && request.auth.uid == resource.data.userId;
+
+      allow create: if false;
+      allow update: if false;
+      allow delete: if false;
+    }
+
+    match /withdrawals/{withdrawalId} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.priestId || isAdmin());
+
+      // Client-side create is blocked outright. All withdrawals MUST
+      // go through the requestWithdrawal Cloud Function, which uses
+      // the admin SDK (rules bypassed) and runs the full validation:
+      // balance check, bank-details check, min-amount check, all
+      // inside a Firestore transaction so the balance can't be
+      // race-deducted. Without this block, a malicious priest could
+      // skip the CF and write arbitrary pending payout rows directly.
+      allow create: if false;
+
+      allow update: if isAdmin()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                      'status',
+                      'paidAt',
+                      'paidBy',
+                      'blockedAt',
+                      'blockedBy'
+                    ]);
+
+      allow delete: if false;
+    }
+
+    match /reports/{reportId} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.reportedBy || isAdmin());
+
+      allow create: if request.auth != null
+                    && request.auth.uid == request.resource.data.reportedBy;
+
+      allow update: if isAdmin()
+                    && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
+                      'status',
+                      'adminNotes',
+                      'resolvedAt',
+                      'resolvedBy'
+                    ]);
+
+      allow delete: if false;
+    }
+
+    match /notifications/{notificationId} {
+      allow read: if request.auth != null
+                  && (request.auth.uid == resource.data.userId
+                      || request.auth.uid == resource.data.priestId);
+
+      allow update: if request.auth != null
+                    && request.auth.uid == resource.data.userId
+                    && request.resource.data.diff(resource.data).affectedKeys()
+                        .hasOnly(['isRead', 'dismissReason', 'dismissedAt']);
+
+      allow create: if false;
+      allow delete: if false;
+    }
+
+    match /app_config/{document=**} {
+      allow read: if request.auth != null;
+      allow write: if false;
+    }
+
+    match /{document=**} {
+      allow read, write: if false;
+    }
+  }
+}

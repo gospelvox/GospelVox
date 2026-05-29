@@ -203,6 +203,13 @@ class _UserNotificationsPageState extends State<UserNotificationsPage> {
       'bible_session_paid',
       'bible_session_completed',
       'bible_session_auto_completed',
+      // Fired by both completeBibleSession (manual) and the
+      // auto-complete pass of the bibleSessionReminders cron. The
+      // `_user` suffix distinguishes the fanout addressed to
+      // registrants from the priest-facing `bible_session_completed`
+      // summary doc that the same CFs also write — both inbox
+      // surfaces land on the same /bible/detail/{id} route.
+      'bible_session_completed_user',
       'bible_session_live',
       'bible_session_cancelled',
       'bible_session_link_added',
@@ -242,6 +249,20 @@ class _UserNotificationsPageState extends State<UserNotificationsPage> {
               'priestPhotoUrl': notif.priestPhotoUrl ?? '',
             },
           );
+        }
+        return;
+      case 'priest_reply':
+        // Priest replied to a review the user wrote on a session.
+        // The reply renders under the review on the priest's
+        // user-side profile (both bible and call/chat reviews
+        // share the same denormalised feed), so landing there
+        // gives the user immediate context — their own review
+        // sits in the feed with the priest's reply underneath.
+        // Matches the route the CF puts on the FCM push payload
+        // so in-app inbox tap and OS-push tap behave identically.
+        final replyPriestId = notif.priestId;
+        if (replyPriestId != null && replyPriestId.isNotEmpty && mounted) {
+          context.push('/user/priest/$replyPriestId');
         }
         return;
       case 'session_ended':

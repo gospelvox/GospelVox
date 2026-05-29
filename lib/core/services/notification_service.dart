@@ -590,6 +590,12 @@ class NotificationService {
       'bible_session_auto_completed',
       'bible_session_first_registration',
       'bible_session_full',
+      // User-rated-your-bible-session pushes route to the priest's
+      // own session-detail page where the attendee + rating list
+      // lives. The push payload includes an explicit `route` field
+      // so this fallback is rarely hit, but keeping the set in sync
+      // protects against a future writer that forgets the route.
+      'bible_session_reviewed',
     };
     return priestSide.contains(type)
         ? '/priest/bible/$sessionId'

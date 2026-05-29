@@ -54,6 +54,7 @@ const List<String> _kSpecializations = [
   'Evangelism',
   'Worship Leading',
   "Children's Ministry",
+  'Other',
 ];
 
 const List<String> _kLanguages = [
@@ -110,8 +111,15 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   final _dioceseController = TextEditingController();
   final _locationController = TextEditingController();
   final _experienceController = TextEditingController();
+  final _otherSpecController = TextEditingController();
+  final _otherLanguageController = TextEditingController();
   List<String> _editSpecializations = [];
   List<String> _editLanguages = [];
+  // Tracks whether the user has tapped the "Other" chip in either
+  // group. When true we surface an inline text field; the typed
+  // value is merged into the saved array on Save.
+  bool _editSpecOtherSelected = false;
+  bool _editLanguageOtherSelected = false;
   String? _newPhotoPath;
 
   @override
@@ -128,6 +136,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     _dioceseController.dispose();
     _locationController.dispose();
     _experienceController.dispose();
+    _otherSpecController.dispose();
+    _otherLanguageController.dispose();
     super.dispose();
   }
 
@@ -193,8 +203,40 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     _locationController.text = _location;
     _experienceController.text =
         _yearsOfExperience > 0 ? _yearsOfExperience.toString() : '';
-    _editSpecializations = List.from(_specializations);
-    _editLanguages = List.from(_languages);
+
+    // Split saved specializations into "known chips" + "custom Other".
+    // Anything that doesn't appear in _kSpecializations is treated as
+    // the priest's free-text Other value so re-editing preserves it.
+    final knownSpecs = _kSpecializations.toSet();
+    final specCustom = _specializations
+        .where((s) => !knownSpecs.contains(s))
+        .toList();
+    _editSpecializations = _specializations
+        .where((s) => knownSpecs.contains(s))
+        .toList();
+    if (specCustom.isNotEmpty) {
+      _editSpecOtherSelected = true;
+      _otherSpecController.text = specCustom.join(', ');
+    } else {
+      _editSpecOtherSelected = false;
+      _otherSpecController.text = '';
+    }
+
+    final knownLangs = _kLanguages.toSet();
+    final langCustom = _languages
+        .where((l) => !knownLangs.contains(l))
+        .toList();
+    _editLanguages = _languages
+        .where((l) => knownLangs.contains(l))
+        .toList();
+    if (langCustom.isNotEmpty) {
+      _editLanguageOtherSelected = true;
+      _otherLanguageController.text = langCustom.join(', ');
+    } else {
+      _editLanguageOtherSelected = false;
+      _otherLanguageController.text = '';
+    }
+
     _newPhotoPath = null;
     setState(() => _isEditing = true);
   }
@@ -288,6 +330,20 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     final years =
         int.tryParse(_experienceController.text.trim()) ?? _yearsOfExperience;
 
+    // Merge custom Other text into the saved arrays. The "Other" chip
+    // is a UX marker, not real data — we drop it and substitute the
+    // typed value so the user-facing display reads naturally.
+    final mergedSpecs = _mergeOther(
+      selected: _editSpecializations,
+      otherSelected: _editSpecOtherSelected,
+      otherText: _otherSpecController.text,
+    );
+    final mergedLangs = _mergeOther(
+      selected: _editLanguages,
+      otherSelected: _editLanguageOtherSelected,
+      otherText: _otherLanguageController.text,
+    );
+
     setState(() => _isSaving = true);
 
     try {
@@ -298,8 +354,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         'diocese': diocese,
         'location': location,
         'yearsOfExperience': years,
-        'specializations': _editSpecializations,
-        'languages': _editLanguages,
+        'specializations': mergedSpecs,
+        'languages': mergedLangs,
       };
 
       // Upload + overwrite the same Storage path registration uses
@@ -330,8 +386,8 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         _diocese = diocese;
         _location = location;
         _yearsOfExperience = years;
-        _specializations = List.from(_editSpecializations);
-        _languages = List.from(_editLanguages);
+        _specializations = mergedSpecs;
+        _languages = mergedLangs;
         if (updates.containsKey('photoUrl')) {
           _photoUrl = updates['photoUrl'] as String;
         }
@@ -349,6 +405,35 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       setState(() => _isSaving = false);
       AppSnackBar.error(context, 'Failed to save. Try again.');
     }
+  }
+
+  // Strip the 'Other' marker from the selected chips and substitute
+  // the priest's typed values. Comma- or newline-separated entries
+  // are split so one Other field can capture more than one custom
+  // value when needed. Duplicates and empties are dropped.
+  List<String> _mergeOther({
+    required List<String> selected,
+    required bool otherSelected,
+    required String otherText,
+  }) {
+    final out = <String>[];
+    final seen = <String>{};
+    for (final item in selected) {
+      if (item == 'Other') continue;
+      final v = item.trim();
+      if (v.isEmpty || !seen.add(v.toLowerCase())) continue;
+      out.add(v);
+    }
+    if (otherSelected) {
+      final pieces = otherText
+          .split(RegExp(r'[,\n]'))
+          .map((s) => s.trim())
+          .where((s) => s.isNotEmpty);
+      for (final p in pieces) {
+        if (seen.add(p.toLowerCase())) out.add(p);
+      }
+    }
+    return out;
   }
 
   @override
@@ -370,19 +455,15 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
           ? const _ProfileShimmer()
           : SafeArea(
               bottom: false,
-              child: Stack(
-                children: [
-                  _buildScrollContent(),
-                  if (_isEditing)
-                    Positioned(
-                      left: 0,
-                      right: 0,
-                      bottom: 0,
-                      child: _buildStickySaveBar(),
-                    ),
-                ],
-              ),
+              child: _buildScrollContent(),
             ),
+      // Save bar lives in bottomNavigationBar (not Positioned in a
+      // Stack) so the Scaffold accounts for its height when sizing the
+      // body. Without this, a focused field could sit visually below
+      // the bar — fields looked invisible while typing.
+      bottomNavigationBar: _isEditing && !_isLoading
+          ? _buildStickySaveBar()
+          : null,
     );
   }
 
@@ -449,13 +530,11 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   // ─── Scroll content (everything below the app bar) ─────────
 
   Widget _buildScrollContent() {
-    // Bottom padding has to clear the sticky save bar when editing
-    // so the last form field isn't hidden behind it.
-    final bottomPad = _isEditing ? 120.0 : 40.0;
-
+    // Save bar lives in bottomNavigationBar now, so we no longer need
+    // extra bottom padding to clear it — the Scaffold handles spacing.
     return SingleChildScrollView(
       physics: const BouncingScrollPhysics(),
-      padding: EdgeInsets.fromLTRB(20, 0, 20, bottomPad),
+      padding: const EdgeInsets.fromLTRB(20, 0, 20, 40),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
@@ -1108,6 +1187,21 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: _kSpecializations.map((s) {
+                    if (s == 'Other') {
+                      return _ChoiceChipTile(
+                        label: 'Other',
+                        selected: _editSpecOtherSelected,
+                        onTap: () {
+                          setState(() {
+                            _editSpecOtherSelected =
+                                !_editSpecOtherSelected;
+                            if (!_editSpecOtherSelected) {
+                              _otherSpecController.clear();
+                            }
+                          });
+                        },
+                      );
+                    }
                     final selected = _editSpecializations.contains(s);
                     return _ChoiceChipTile(
                       label: s,
@@ -1124,6 +1218,13 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                     );
                   }).toList(),
                 ),
+                if (_editSpecOtherSelected) ...[
+                  const SizedBox(height: 12),
+                  _OtherInputField(
+                    controller: _otherSpecController,
+                    hint: 'Type your specialization',
+                  ),
+                ],
               ],
             )
           : (items.isEmpty
@@ -1203,6 +1304,21 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                   spacing: 8,
                   runSpacing: 8,
                   children: _kLanguages.map((l) {
+                    if (l == 'Other') {
+                      return _ChoiceChipTile(
+                        label: 'Other',
+                        selected: _editLanguageOtherSelected,
+                        onTap: () {
+                          setState(() {
+                            _editLanguageOtherSelected =
+                                !_editLanguageOtherSelected;
+                            if (!_editLanguageOtherSelected) {
+                              _otherLanguageController.clear();
+                            }
+                          });
+                        },
+                      );
+                    }
                     final selected = _editLanguages.contains(l);
                     return _ChoiceChipTile(
                       label: l,
@@ -1219,6 +1335,13 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                     );
                   }).toList(),
                 ),
+                if (_editLanguageOtherSelected) ...[
+                  const SizedBox(height: 12),
+                  _OtherInputField(
+                    controller: _otherLanguageController,
+                    hint: 'Type the language you speak',
+                  ),
+                ],
               ],
             )
           : (items.isEmpty
@@ -1928,6 +2051,88 @@ class _ChoiceChipTile extends StatelessWidget {
               ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+// ─── Inline text field used by the "Other" chip ─────
+//
+// Compact bordered input that appears below the chip group when the
+// priest taps "Other". Comma- or newline-separated values let them
+// list more than one custom entry without re-toggling.
+
+class _OtherInputField extends StatefulWidget {
+  final TextEditingController controller;
+  final String hint;
+
+  const _OtherInputField({
+    required this.controller,
+    required this.hint,
+  });
+
+  @override
+  State<_OtherInputField> createState() => _OtherInputFieldState();
+}
+
+class _OtherInputFieldState extends State<_OtherInputField> {
+  final FocusNode _focusNode = FocusNode();
+  bool _focused = false;
+
+  @override
+  void initState() {
+    super.initState();
+    _focusNode.addListener(() {
+      if (mounted) setState(() => _focused = _focusNode.hasFocus);
+    });
+  }
+
+  @override
+  void dispose() {
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final borderColor = _focused
+        ? AppColors.primaryBrown
+        : AppColors.muted.withValues(alpha: 0.25);
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 160),
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
+      decoration: BoxDecoration(
+        color: const Color(0xFFF7F5F2),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(
+          color: borderColor,
+          width: _focused ? 1.5 : 1,
+        ),
+      ),
+      child: TextField(
+        controller: widget.controller,
+        focusNode: _focusNode,
+        textInputAction: TextInputAction.done,
+        maxLength: 80,
+        cursorColor: AppColors.primaryBrown,
+        cursorWidth: 1.6,
+        style: GoogleFonts.inter(
+          fontSize: 14,
+          fontWeight: FontWeight.w500,
+          color: AppColors.deepDarkBrown,
+        ),
+        decoration: InputDecoration(
+          isDense: true,
+          border: InputBorder.none,
+          hintText: widget.hint,
+          hintStyle: GoogleFonts.inter(
+            fontSize: 14,
+            fontWeight: FontWeight.w400,
+            color: AppColors.muted.withValues(alpha: 0.5),
+          ),
+          counterText: '',
+          contentPadding: const EdgeInsets.symmetric(vertical: 12),
         ),
       ),
     );

@@ -11,21 +11,11 @@
 // Dart is negligible.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:flutter/foundation.dart';
 
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
-
-// Composite key prefixes for the per-user `hiddenSessionIds` array.
-// Regular sessions and bible sessions live in different collections,
-// so a raw id could (in theory) collide; namespacing keeps the array
-// disambiguated. Both halves are written by this repository, so the
-// constants can stay private to the file.
-const String _kHiddenPrefixRegular = 's:';
-const String _kHiddenPrefixBible = 'b:';
-
-String _regularKey(String id) => '$_kHiddenPrefixRegular$id';
-String _bibleKey(String id) => '$_kHiddenPrefixBible$id';
 
 // Sealed history-entry type unifying regular sessions (chat / voice)
 // and bible sessions in one chronologically-sortable list. The page
@@ -33,11 +23,6 @@ String _bibleKey(String id) => '$_kHiddenPrefixBible$id';
 // fields onto SessionModel and vice-versa.
 sealed class HistoryEntry {
   const HistoryEntry();
-
-  // Composite key matching the format used in `hiddenSessionIds`.
-  // Stable across loads so the cubit's hide-then-rebuild flow can
-  // identify the same entry on the next snapshot.
-  String get hiddenKey;
 
   // Sort axis: when a bible session was attended (registration paidAt
   // or scheduledAt) vs. when a regular session was created. Older
@@ -67,9 +52,6 @@ sealed class HistoryEntry {
 class RegularSessionEntry extends HistoryEntry {
   final SessionModel session;
   const RegularSessionEntry(this.session);
-
-  @override
-  String get hiddenKey => _regularKey(session.id);
 
   @override
   DateTime? get sortAt => session.endedAt ?? session.createdAt;
@@ -114,9 +96,6 @@ class BibleSessionEntry extends HistoryEntry {
     this.priestRevenueInr = 0,
   });
 
-  @override
-  String get hiddenKey => _bibleKey(session.id);
-
   // Prefer the date the registration was paid (most relevant to the
   // user's own history); fall back to the session's scheduled time
   // (priest hosting view) and finally createdAt.
@@ -149,51 +128,52 @@ class BibleSessionEntry extends HistoryEntry {
   int? get rating => registration?.rating;
 }
 
-class SessionHistoryRepository {
-  // ── Hidden-id helpers ─────────────────────────────────────
-  //
-  // Firestore rules deny `delete` on /sessions and on the
-  // /bible_sessions/.../registrations subcollection, so "Clear All"
-  // and per-row dismiss are implemented as soft hides: the entry's
-  // composite key (s:{id} or b:{id}) is appended to the caller's
-  // own user/priest doc inside a `hiddenSessionIds: List<String>`
-  // field, and the load methods filter against that set. The
-  // counterparty + admin still see the underlying session.
+// Snapshot of the CF-aggregated rating on priests/{uid} — fetched
+// at history-load time so the summary card's "Avg Rating" stat
+// reflects the same number the dashboard shows (chat/voice + bible,
+// across all reviews ever, not just the ones in the visible window).
+class PriestRatingAggregate {
+  final double rating;
+  final int reviewCount;
+  const PriestRatingAggregate({
+    required this.rating,
+    required this.reviewCount,
+  });
+  static const empty = PriestRatingAggregate(rating: 0, reviewCount: 0);
+}
 
-  Future<Set<String>> getHiddenIds({
-    required String uid,
-    required bool isUserSide,
-  }) async {
+class SessionHistoryRepository {
+  // Every public loader on this class catches its own errors and
+  // returns an empty list on failure. The page-level cubit fans out
+  // multiple loaders in sequence; without per-loader catches a
+  // single broken collection (missing index, transient network
+  // blip, a single corrupt doc) would blank the entire history
+  // surface for the user. Empty-on-failure means the working half
+  // still renders, and a `debugPrint` keeps the actual error
+  // visible to anyone running the app with logs attached.
+
+  // Read the priest doc's CF-aggregated rating fields. Empty on
+  // failure — same defensive pattern as the loaders, since a single
+  // doc-read failure shouldn't take down the history page; the
+  // Avg Rating stat just falls through to "—".
+  Future<PriestRatingAggregate> getPriestRatingAggregate(
+    String priestId,
+  ) async {
     try {
-      final col = isUserSide ? 'users' : 'priests';
       final snap = await FirebaseFirestore.instance
-          .doc('$col/$uid')
+          .doc('priests/$priestId')
           .get()
           .timeout(const Duration(seconds: 8));
-      final raw = snap.data()?['hiddenSessionIds'];
-      if (raw is List) {
-        return raw.whereType<String>().toSet();
-      }
-      return const {};
-    } catch (_) {
-      // Hidden-list read failure shouldn't block the page — fall
-      // through to "nothing hidden" so the user still sees their
-      // history. The next successful refresh will re-apply the
-      // hide set.
-      return const {};
+      final data = snap.data();
+      if (data == null) return PriestRatingAggregate.empty;
+      return PriestRatingAggregate(
+        rating: (data['rating'] as num?)?.toDouble() ?? 0,
+        reviewCount: (data['reviewCount'] as num?)?.toInt() ?? 0,
+      );
+    } catch (e, st) {
+      debugPrint('[SessionHistory] getPriestRatingAggregate failed: $e\n$st');
+      return PriestRatingAggregate.empty;
     }
-  }
-
-  Future<void> hideEntries({
-    required String uid,
-    required bool isUserSide,
-    required List<String> hiddenKeys,
-  }) async {
-    if (hiddenKeys.isEmpty) return;
-    final col = isUserSide ? 'users' : 'priests';
-    await FirebaseFirestore.instance.doc('$col/$uid').update({
-      'hiddenSessionIds': FieldValue.arrayUnion(hiddenKeys),
-    }).timeout(const Duration(seconds: 10));
   }
 
   // ── Bible loaders ─────────────────────────────────────────
@@ -208,6 +188,17 @@ class SessionHistoryRepository {
   // "bible sessions this user paid for" and hydrate each one in
   // parallel.
   Future<List<BibleSessionEntry>> getUserBibleSessions(
+    String userId,
+  ) async {
+    try {
+      return await _getUserBibleSessions(userId);
+    } catch (e, st) {
+      debugPrint('[SessionHistory] getUserBibleSessions failed: $e\n$st');
+      return const [];
+    }
+  }
+
+  Future<List<BibleSessionEntry>> _getUserBibleSessions(
     String userId,
   ) async {
     final db = FirebaseFirestore.instance;
@@ -295,6 +286,21 @@ class SessionHistoryRepository {
   Future<List<BibleSessionEntry>> getPriestBibleSessions(
     String priestId,
   ) async {
+    try {
+      return await _getPriestBibleSessions(priestId);
+    } catch (e, st) {
+      // Most likely: missing composite index on
+      // bible_sessions(priestId, status). Firestore embeds a one-click
+      // create-index URL in the error message. Building the index
+      // takes a few minutes, after which the next refresh succeeds.
+      debugPrint('[SessionHistory] getPriestBibleSessions failed: $e\n$st');
+      return const [];
+    }
+  }
+
+  Future<List<BibleSessionEntry>> _getPriestBibleSessions(
+    String priestId,
+  ) async {
     final db = FirebaseFirestore.instance;
     final snap = await db
         .collection('bible_sessions')
@@ -336,49 +342,66 @@ class SessionHistoryRepository {
   // All sessions where the signed-in user was the listener side.
   // Newest first.
   Future<List<SessionModel>> getUserSessions(String userId) async {
-    final snap = await FirebaseFirestore.instance
-        .collection('sessions')
-        .where('userId', isEqualTo: userId)
-        .get()
-        .timeout(const Duration(seconds: 15));
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('sessions')
+          .where('userId', isEqualTo: userId)
+          .get()
+          .timeout(const Duration(seconds: 15));
 
-    final sessions = snap.docs
-        .map((doc) => SessionModel.fromFirestore(doc.id, doc.data()))
-        .toList();
+      final sessions = snap.docs
+          .map((doc) => SessionModel.fromFirestore(doc.id, doc.data()))
+          .toList();
 
-    // Client-side sort to avoid the composite-index requirement
-    // described in the file header. Docs whose server timestamp
-    // hasn't filled in yet (a brief window after creation) are
-    // pushed to the bottom by falling back to year 2000 — they'll
-    // float up on the next refresh once Firestore stamps them.
-    sessions.sort((a, b) {
-      final aTime = a.createdAt ?? DateTime(2000);
-      final bTime = b.createdAt ?? DateTime(2000);
-      return bTime.compareTo(aTime);
-    });
+      // Client-side sort to avoid the composite-index requirement
+      // described in the file header. Docs whose server timestamp
+      // hasn't filled in yet (a brief window after creation) are
+      // pushed to the bottom by falling back to year 2000 — they'll
+      // float up on the next refresh once Firestore stamps them.
+      sessions.sort((a, b) {
+        final aTime = a.createdAt ?? DateTime(2000);
+        final bTime = b.createdAt ?? DateTime(2000);
+        return bTime.compareTo(aTime);
+      });
 
-    return sessions;
+      return sessions;
+    } catch (e, st) {
+      debugPrint('[SessionHistory] getUserSessions failed: $e\n$st');
+      return const [];
+    }
   }
 
   // All sessions where the signed-in user was the speaker side.
   Future<List<SessionModel>> getPriestSessions(String priestId) async {
-    final snap = await FirebaseFirestore.instance
-        .collection('sessions')
-        .where('priestId', isEqualTo: priestId)
-        .get()
-        .timeout(const Duration(seconds: 15));
+    try {
+      final snap = await FirebaseFirestore.instance
+          .collection('sessions')
+          .where('priestId', isEqualTo: priestId)
+          .get()
+          .timeout(const Duration(seconds: 15));
 
-    final sessions = snap.docs
-        .map((doc) => SessionModel.fromFirestore(doc.id, doc.data()))
-        .toList();
+      final sessions = snap.docs
+          .map((doc) => SessionModel.fromFirestore(doc.id, doc.data()))
+          .toList();
 
-    sessions.sort((a, b) {
-      final aTime = a.createdAt ?? DateTime(2000);
-      final bTime = b.createdAt ?? DateTime(2000);
-      return bTime.compareTo(aTime);
-    });
+      sessions.sort((a, b) {
+        final aTime = a.createdAt ?? DateTime(2000);
+        final bTime = b.createdAt ?? DateTime(2000);
+        return bTime.compareTo(aTime);
+      });
 
-    return sessions;
+      return sessions;
+    } catch (e, st) {
+      // One bad doc that fails SessionModel.fromFirestore (e.g. a
+      // legacy session with a non-string field where we expect a
+      // string) would otherwise blank the entire page for THIS
+      // priest while every other priest still loads — that's the
+      // most likely cause of "session history works for some priests
+      // but not others." Swallow + log so the page renders empty
+      // rather than going to the error state.
+      debugPrint('[SessionHistory] getPriestSessions failed: $e\n$st');
+      return const [];
+    }
   }
 
   // One-time fetch of the entire transcript. We deliberately do NOT

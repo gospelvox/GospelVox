@@ -12,18 +12,17 @@
 //   • RegularSessionEntry (chat / voice consultation)
 //   • BibleSessionEntry  (paid bible session attendance / hosting)
 // Each kind has its own card chrome (icon, badge colour, secondary
-// chips), but they share the same outer container, long-press-to-
-// dismiss gesture, and detail-tap handler.
+// chips), but they share the same outer container and detail-tap
+// handler.
 //
-// Clear All + long-press dismiss are SOFT hides: Firestore rules
-// deny `delete` on /sessions and /bible_sessions/.../registrations,
-// so the cubit appends the entry's composite key onto the caller's
-// own `hiddenSessionIds` array. The other party + admin still see
-// the underlying record.
+// History is read-only from the user's perspective — there is no
+// clear / hide / dismiss path. The list is the authoritative record
+// of what happened; cluttering it with destructive actions only led
+// to support tickets ("where did my sessions go?") with no recovery
+// path because Firestore rules deny delete on /sessions.
 
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/services.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
@@ -32,7 +31,6 @@ import 'package:shimmer/shimmer.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/session_history_state.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
@@ -53,16 +51,11 @@ class SessionHistoryPage extends StatelessWidget {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
-      body: BlocConsumer<SessionHistoryCubit, SessionHistoryState>(
-        listener: (context, state) {
-          if (state is SessionHistoryError) {
-            AppSnackBar.error(context, state.message);
-          }
-        },
+      body: BlocBuilder<SessionHistoryCubit, SessionHistoryState>(
         builder: (context, state) {
           return Scaffold(
             backgroundColor: AppColors.background,
-            appBar: _buildAppBar(context, state),
+            appBar: _buildAppBar(),
             body: _buildBody(context, state),
           );
         },
@@ -86,13 +79,7 @@ class SessionHistoryPage extends StatelessWidget {
     return const SizedBox.shrink();
   }
 
-  PreferredSizeWidget _buildAppBar(
-    BuildContext context,
-    SessionHistoryState state,
-  ) {
-    final hasAny =
-        state is SessionHistoryLoaded && state.allEntries.isNotEmpty;
-
+  PreferredSizeWidget _buildAppBar() {
     return AppBar(
       backgroundColor: AppColors.background,
       elevation: 0,
@@ -112,29 +99,6 @@ class SessionHistoryPage extends StatelessWidget {
           color: AppColors.deepDarkBrown,
         ),
       ),
-      actions: [
-        if (hasAny)
-          Padding(
-            padding: const EdgeInsets.only(right: 16),
-            child: GestureDetector(
-              behavior: HitTestBehavior.opaque,
-              onTap: () => _confirmClearAll(context),
-              child: Container(
-                alignment: Alignment.center,
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
-                child: Text(
-                  'Clear All',
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.errorRed,
-                  ),
-                ),
-              ),
-            ),
-          ),
-      ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
         child: Container(
@@ -153,33 +117,6 @@ class SessionHistoryPage extends StatelessWidget {
       cubit.loadUserSessions(uid);
     } else {
       cubit.loadPriestSessions(uid);
-    }
-  }
-
-  Future<void> _confirmClearAll(BuildContext context) async {
-    final cubit = context.read<SessionHistoryCubit>();
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    final confirmed = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => const _ConfirmActionSheet(
-        title: 'Clear all history?',
-        message:
-            'This hides every entry from your view. The session data '
-            "itself isn't deleted — the other party can still see it. "
-            "You won't be able to undo this from your side.",
-        confirmLabel: 'Clear All',
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-    final ok = await cubit.hideAll(uid: uid, isUserSide: isUserSide);
-    if (!context.mounted) return;
-    if (ok) {
-      AppSnackBar.success(context, 'History cleared.');
-    } else {
-      AppSnackBar.error(context, "Couldn't clear history. Try again.");
     }
   }
 }
@@ -257,8 +194,6 @@ class _LoadedBody extends StatelessWidget {
                           entry: entry,
                           isUserSide: isUserSide,
                           onTap: () => _openDetail(context, entry),
-                          onLongPress: () =>
-                              _confirmDismiss(context, entry),
                         ),
                       )
                       .toList(),
@@ -286,38 +221,6 @@ class _LoadedBody extends StatelessWidget {
         );
     }
   }
-
-  Future<void> _confirmDismiss(
-    BuildContext context,
-    HistoryEntry entry,
-  ) async {
-    HapticFeedback.mediumImpact();
-    final cubit = context.read<SessionHistoryCubit>();
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    final confirmed = await showModalBottomSheet<bool>(
-      context: context,
-      backgroundColor: Colors.transparent,
-      builder: (_) => const _ConfirmActionSheet(
-        title: 'Remove from history?',
-        message:
-            "It'll be hidden from your view. The session data itself "
-            "isn't deleted, and the other party can still see it.",
-        confirmLabel: 'Remove',
-      ),
-    );
-    if (confirmed != true || !context.mounted) return;
-    final ok = await cubit.hideOne(
-      uid: uid,
-      isUserSide: isUserSide,
-      entry: entry,
-    );
-    if (!context.mounted) return;
-    if (!ok) {
-      AppSnackBar.error(context, "Couldn't remove. Try again.");
-    }
-  }
 }
 
 // ─── Summary card ──────────────────────────────────────────
@@ -330,15 +233,24 @@ class _SummaryCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Show whichever unit is non-zero. For most users the regular-
-    // session coin counter dominates; bible-only users see the INR
-    // counter. When both are non-zero we show the dominant one and
-    // call out the other in the subtitle so the card never lies
-    // about totals.
-    final coinValue = isUserSide ? state.coinsSpent : state.coinsEarned;
-    final inrValue = isUserSide ? state.inrSpent : state.inrEarned;
-    final primaryLabel = isUserSide ? 'Spent' : 'Earned';
-    final primaryValue = _formatPrimaryValue(coinValue, inrValue);
+    // Chat/voice and bible amounts live in different units on the
+    // user side (coins vs ₹) and the same unit on the priest side
+    // (both ₹). We split them into two dedicated stats so the priest
+    // never sees a mixed "544 · ₹297" line that reads as "five
+    // hundred and forty-four coins" when it's actually rupees.
+    final chatVoiceValue =
+        isUserSide ? state.coinsSpent : state.coinsEarned;
+    final bibleValue = isUserSide ? state.inrSpent : state.inrEarned;
+    final chatVoiceLabel =
+        isUserSide ? 'Spent · Chat/Voice' : 'Earned · Chat/Voice';
+    final bibleLabel =
+        isUserSide ? 'Spent · Bible' : 'Earned · Bible';
+    final chatVoiceText = chatVoiceValue == 0
+        ? '—'
+        : isUserSide
+            ? '$chatVoiceValue coins'
+            : '₹$chatVoiceValue';
+    final bibleText = bibleValue == 0 ? '—' : '₹$bibleValue';
 
     return Container(
       margin: const EdgeInsets.fromLTRB(20, 0, 20, 0),
@@ -357,41 +269,71 @@ class _SummaryCard extends StatelessWidget {
           ),
         ],
       ),
-      child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          _SummaryStat(
-            label: 'Total',
-            value: '${state.totalSessions}',
-            icon: AppIcons.history,
+          // Top row: count + average rating — the at-a-glance signals
+          // that fit naturally side-by-side regardless of side.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _SummaryStat(
+                label: 'Total',
+                value: '${state.totalSessions}',
+                icon: AppIcons.history,
+              ),
+              const _SummaryDivider(),
+              _SummaryStat(
+                label: 'Avg Rating',
+                // Priest side: use the CF-aggregated rating from the
+                // priest doc — same source as the dashboard, so the
+                // two surfaces never disagree. The local compute
+                // below silently drops bible ratings (priest-side
+                // BibleSessionEntry.rating is null because the priest
+                // hosts; they don't register) and any chat/voice
+                // rating past the 500-doc fetch limit.
+                //
+                // User side: keep the local compute — "Avg Rating"
+                // here means "ratings I HAVE GIVEN", which has no
+                // server-aggregated counterpart and is meaningful as
+                // a per-entry average.
+                value: isUserSide
+                    ? _avgRating(state.allEntries)
+                    : _formatPriestAvg(state),
+                icon: AppIcons.starOutline,
+              ),
+            ],
           ),
-          const _SummaryDivider(),
-          _SummaryStat(
-            label: primaryLabel,
-            value: primaryValue,
-            icon: isUserSide
-                ? AppIcons.coins
-                : AppIcons.wallet,
+          const SizedBox(height: 16),
+          Container(
+            height: 1,
+            color: AppColors.muted.withValues(alpha: 0.08),
           ),
-          const _SummaryDivider(),
-          _SummaryStat(
-            label: 'Avg Rating',
-            value: _avgRating(state.allEntries),
-            icon: AppIcons.starOutline,
+          const SizedBox(height: 16),
+          // Bottom row: amounts broken out per stream. Two columns so
+          // the priest can tell apart what they earned from regular
+          // consultations vs what came in from bible sessions, and the
+          // user can see their consultation coin spend separate from
+          // their ₹ bible-session spend.
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+            children: [
+              _SummaryStat(
+                label: chatVoiceLabel,
+                value: chatVoiceText,
+                icon: isUserSide ? AppIcons.coins : AppIcons.wallet,
+              ),
+              const _SummaryDivider(),
+              _SummaryStat(
+                label: bibleLabel,
+                value: bibleText,
+                icon: AppIcons.bible,
+              ),
+            ],
           ),
         ],
       ),
     );
-  }
-
-  // Stacks coin + ₹ totals when both are present so the user sees
-  // both units; falls back to "—" when neither has been spent /
-  // earned (avoids a confusing "0" for a brand-new account).
-  String _formatPrimaryValue(int coinValue, int inrValue) {
-    if (coinValue == 0 && inrValue == 0) return '—';
-    if (inrValue == 0) return '$coinValue';
-    if (coinValue == 0) return '₹$inrValue';
-    return '$coinValue · ₹$inrValue';
   }
 
   String _avgRating(List<HistoryEntry> entries) {
@@ -401,6 +343,17 @@ class _SummaryCard extends StatelessWidget {
     if (rated.isEmpty) return '—';
     final avg = rated.fold<double>(0.0, (sum, e) => sum + e.rating!) /
         rated.length;
+    return avg.toStringAsFixed(1);
+  }
+
+  // Priest-side avg: uses the CF-aggregated rating snapshotted at
+  // load time. A reviewCount of 0 means the priest genuinely has
+  // no ratings yet — show the em-dash empty state to match every
+  // other "no ratings" surface in the app.
+  String _formatPriestAvg(SessionHistoryLoaded state) {
+    final count = state.priestReviewCount ?? 0;
+    if (count <= 0) return '—';
+    final avg = state.priestAvgRating ?? 0;
     return avg.toStringAsFixed(1);
   }
 }
@@ -515,13 +468,11 @@ class _HistoryRow extends StatefulWidget {
   final HistoryEntry entry;
   final bool isUserSide;
   final VoidCallback onTap;
-  final VoidCallback onLongPress;
 
   const _HistoryRow({
     required this.entry,
     required this.isUserSide,
     required this.onTap,
-    required this.onLongPress,
   });
 
   @override
@@ -540,7 +491,6 @@ class _HistoryRowState extends State<_HistoryRow> {
       child: GestureDetector(
         behavior: HitTestBehavior.opaque,
         onTap: widget.onTap,
-        onLongPress: widget.onLongPress,
         child: AnimatedScale(
           scale: _scale,
           duration: const Duration(milliseconds: 120),
@@ -642,8 +592,16 @@ class _RegularCardContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
+                    // Prefer endedAt — that's the date the session
+                    // actually happened on, which is what the user
+                    // remembers. createdAt is only relevant for
+                    // pending/expired/declined rows where endedAt
+                    // never landed.
                     '${isChat ? 'Chat' : 'Voice'} · '
-                    '${df.formatFullDate(s.createdAt as DateTime?)}',
+                    '${df.formatFullDate(
+                      (s.endedAt as DateTime?) ??
+                          (s.createdAt as DateTime?),
+                    )}',
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.inter(
@@ -796,10 +754,21 @@ class _BibleCardContent extends StatelessWidget {
                   ),
                   const SizedBox(height: 2),
                   Text(
+                    // Prefer completedAt — the date the session
+                    // actually finished is what both sides remember
+                    // it by. Falls back to scheduledAt for sessions
+                    // that haven't completed yet (e.g. cancelled
+                    // pre-start), where completedAt is null.
                     isUserSide
                         ? '${priestName.isEmpty ? 'Speaker' : priestName} · '
-                            '${df.formatFullDate(s.scheduledAt as DateTime?)}'
-                        : df.formatFullDate(s.scheduledAt as DateTime?),
+                            '${df.formatFullDate(
+                              (s.completedAt as DateTime?) ??
+                                  (s.scheduledAt as DateTime?),
+                            )}'
+                        : df.formatFullDate(
+                            (s.completedAt as DateTime?) ??
+                                (s.scheduledAt as DateTime?),
+                          ),
                     maxLines: 1,
                     overflow: TextOverflow.ellipsis,
                     style: GoogleFonts.inter(
@@ -1013,134 +982,6 @@ class _DetailChip extends StatelessWidget {
           ),
         ),
       ],
-    );
-  }
-}
-
-// ─── Confirm action sheet (Clear All + per-row dismiss) ────
-
-class _ConfirmActionSheet extends StatelessWidget {
-  final String title;
-  final String message;
-  final String confirmLabel;
-
-  const _ConfirmActionSheet({
-    required this.title,
-    required this.message,
-    required this.confirmLabel,
-  });
-
-  @override
-  Widget build(BuildContext context) {
-    return SafeArea(
-      child: Container(
-        decoration: const BoxDecoration(
-          color: AppColors.surfaceWhite,
-          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
-        ),
-        padding: const EdgeInsets.fromLTRB(24, 12, 24, 24),
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            Container(
-              width: 36,
-              height: 4,
-              decoration: BoxDecoration(
-                color: AppColors.muted.withValues(alpha: 0.25),
-                borderRadius: BorderRadius.circular(2),
-              ),
-            ),
-            const SizedBox(height: 20),
-            Container(
-              width: 56,
-              height: 56,
-              decoration: BoxDecoration(
-                shape: BoxShape.circle,
-                color: AppColors.errorRed.withValues(alpha: 0.08),
-              ),
-              child: const AppIcon(
-                AppIcons.deleteSweep,
-                size: 28,
-                color: AppColors.errorRed,
-              ),
-            ),
-            const SizedBox(height: 16),
-            Text(
-              title,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 17,
-                fontWeight: FontWeight.w700,
-                color: AppColors.deepDarkBrown,
-              ),
-            ),
-            const SizedBox(height: 8),
-            Text(
-              message,
-              textAlign: TextAlign.center,
-              style: GoogleFonts.inter(
-                fontSize: 13,
-                fontWeight: FontWeight.w400,
-                height: 1.5,
-                color: AppColors.muted,
-              ),
-            ),
-            const SizedBox(height: 22),
-            Row(
-              children: [
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => Navigator.of(context).pop(false),
-                    child: Container(
-                      height: 48,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(14),
-                        border: Border.all(
-                          color: AppColors.muted.withValues(alpha: 0.25),
-                        ),
-                      ),
-                      child: Text(
-                        'Cancel',
-                        style: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: AppColors.deepDarkBrown,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-                const SizedBox(width: 12),
-                Expanded(
-                  child: GestureDetector(
-                    behavior: HitTestBehavior.opaque,
-                    onTap: () => Navigator.of(context).pop(true),
-                    child: Container(
-                      height: 48,
-                      alignment: Alignment.center,
-                      decoration: BoxDecoration(
-                        color: AppColors.errorRed,
-                        borderRadius: BorderRadius.circular(14),
-                      ),
-                      child: Text(
-                        confirmLabel,
-                        style: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w600,
-                          color: Colors.white,
-                        ),
-                      ),
-                    ),
-                  ),
-                ),
-              ],
-            ),
-          ],
-        ),
-      ),
     );
   }
 }

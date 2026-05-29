@@ -30,11 +30,22 @@ class SessionHistoryLoaded extends SessionHistoryState {
   final List<HistoryEntry> filtered;
   // 'all' | 'chat' | 'voice' | 'bible'
   final String activeFilter;
+  // Priest-side only: the CF-aggregated rating + review count from
+  // priests/{uid}, captured at load time. The summary card's "Avg
+  // Rating" stat reads from these on the priest side so the number
+  // matches the dashboard (single source of truth) instead of being
+  // re-derived from only the chat/voice entries in the visible list.
+  // Null on the user side — the user-side stat is meaningful as a
+  // local "ratings I have given" computation.
+  final double? priestAvgRating;
+  final int? priestReviewCount;
 
   SessionHistoryLoaded({
     required this.allEntries,
     List<HistoryEntry>? filtered,
     this.activeFilter = 'all',
+    this.priestAvgRating,
+    this.priestReviewCount,
   }) : filtered = filtered ?? allEntries;
 
   int get totalSessions => allEntries.length;
@@ -68,6 +79,10 @@ class SessionHistoryLoaded extends SessionHistoryState {
         allEntries: allEntries ?? this.allEntries,
         filtered: filtered ?? this.filtered,
         activeFilter: activeFilter ?? this.activeFilter,
+        // Priest aggregate values stay sticky across filter changes —
+        // flipping the type chip shouldn't blank the avg-rating stat.
+        priestAvgRating: priestAvgRating,
+        priestReviewCount: priestReviewCount,
       );
 }
 

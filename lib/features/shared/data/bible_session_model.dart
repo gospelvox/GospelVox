@@ -137,6 +137,34 @@ class BibleSessionModel {
     return DateTime.now().isBefore(deadline);
   }
 
+  // True when the doc says status='live' but we're already past the
+  // (startedAt + durationMinutes + 15min) deadline. The server-side
+  // cron flips these to 'completed' on its next tick, but there's a
+  // window where the doc still reads 'live' on the client. Without
+  // this guard the user sees a session shouting "LIVE NOW" long
+  // after the priest finished — and worse, paid users would still
+  // see a payable "Join" CTA. UI surfaces must treat this state as
+  // effectively completed.
+  bool get isPastDeadline {
+    if (!isLive || startedAt == null) return false;
+    final deadline = startedAt!.toLocal().add(
+          Duration(minutes: durationMinutes + 15),
+        );
+    return !DateTime.now().isBefore(deadline);
+  }
+
+  // What the UI should render. A session is "effectively live" only
+  // when status='live' AND we're still inside the deadline window.
+  // Once past the deadline the cron will flip the doc, but every
+  // screen should treat it as completed immediately rather than
+  // waiting for that round-trip.
+  bool get isEffectivelyLive => isLive && !isPastDeadline;
+
+  // Mirror of isEffectivelyLive for the completed side. A past-
+  // deadline 'live' doc is treated as completed for filters, status
+  // pills, and rating gates.
+  bool get isEffectivelyCompleted => isCompleted || isPastDeadline;
+
   // Time remaining in the SCHEDULED duration (not the 15-min buffer)
   // — the "X min left" pill should reflect what was promised, not
   // the grace window. Returns Duration.zero once we're past the

@@ -169,6 +169,23 @@ class PriestWalletCubit extends Cubit<PriestWalletState> {
     }
   }
 
+  // Optimistic local clear after the wallet page commits the
+  // delete-bank action. The priest doc stream will also surface the
+  // empty-string fields a moment later (PriestWalletSummary maps
+  // empty holder → null bankDetails), so this call just makes the
+  // hero CTA flip back to "Add Bank Details" without waiting on
+  // the round-trip.
+  void clearBankDetails() {
+    if (isClosed) return;
+    final current = state;
+    if (current is PriestWalletLoaded) {
+      emit(current.copyWith(
+        overwriteBankDetails: true,
+        bankDetails: null,
+      ));
+    }
+  }
+
   @override
   Future<void> close() async {
     await _summarySubscription?.cancel();

@@ -26,13 +26,12 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 // BuildContext is also brought into scope (an explicit `show` clause
 // would filter it out and silently break the success toast).
 import 'package:gospel_vox/features/priest/reviews/pages/priest_reviews_page.dart';
-import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class ReviewReplySheet extends StatefulWidget {
-  final SessionModel session;
+  final PriestReviewItem review;
 
-  const ReviewReplySheet({super.key, required this.session});
+  const ReviewReplySheet({super.key, required this.review});
 
   @override
   State<ReviewReplySheet> createState() => _ReviewReplySheetState();
@@ -50,7 +49,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
   void initState() {
     super.initState();
     _controller = TextEditingController(
-      text: widget.session.priestReply?.text ?? '',
+      text: widget.review.priestReply?.text ?? '',
     );
     _controller.addListener(_onChanged);
     // Auto-focus the composer so the keyboard is up the moment the
@@ -99,11 +98,11 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
     }
 
     setState(() => _saving = true);
-    final wasEdit = widget.session.priestReply != null;
+    final wasEdit = widget.review.priestReply != null;
 
     try {
       await ReplyToReviewService.submit(
-        sessionId: widget.session.id,
+        review: widget.review,
         text: text,
       );
       if (!mounted) return;
@@ -196,7 +195,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                     children: [
                       Expanded(
                         child: Text(
-                          widget.session.priestReply == null
+                          widget.review.priestReply == null
                               ? 'Reply to review'
                               : 'Edit your reply',
                           style: GoogleFonts.inter(
@@ -224,7 +223,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                     ],
                   ),
                   const SizedBox(height: 12),
-                  _ReviewQuote(session: widget.session),
+                  _ReviewQuote(review: widget.review),
                   const SizedBox(height: 14),
                   Container(
                     decoration: BoxDecoration(
@@ -320,7 +319,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                   ),
                   const SizedBox(height: 14),
                   _SubmitButton(
-                    label: widget.session.priestReply == null
+                    label: widget.review.priestReply == null
                         ? 'Post Reply'
                         : 'Update Reply',
                     saving: _saving,
@@ -329,7 +328,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                   const SizedBox(height: 6),
                   Center(
                     child: Text(
-                      widget.session.priestReply == null
+                      widget.review.priestReply == null
                           ? 'You can edit your reply for 24 hours after '
                               'posting.'
                           : 'Edits lock 24 hours after first publish.',
@@ -355,14 +354,14 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
 // the priest is always reminded of what specifically they're
 // replying to.
 class _ReviewQuote extends StatelessWidget {
-  final SessionModel session;
-  const _ReviewQuote({required this.session});
+  final PriestReviewItem review;
+  const _ReviewQuote({required this.review});
 
   @override
   Widget build(BuildContext context) {
-    final stars = session.userRating?.round() ?? 0;
-    final feedback = (session.userFeedback ?? '').trim();
-    final name = _firstName(session.userName);
+    final stars = review.stars;
+    final feedback = review.feedback.trim();
+    final name = _firstName(review.userName);
 
     return Container(
       width: double.infinity,

@@ -40,6 +40,23 @@ class SpeakerModel {
   // they can finish an ongoing session and respond at leisure) but
   // users see them as "Busy" and can't open new sessions with them.
   final bool isBusy;
+  // ID of the currently-live Bible session this priest is teaching.
+  // Set atomically by the startBibleSession CF, cleared by
+  // completeBibleSession AND the bibleSessionReminders auto-complete
+  // cron. While this field is non-empty (and not past its deadline,
+  // see bibleSessionLockedUntil below), the priest is treated as
+  // "In Bible Session" everywhere — distinct from `isBusy` so a
+  // priest who's both in a chat session AND a bible session
+  // doesn't get prematurely unlocked when one of the two ends.
+  final String liveBibleSessionId;
+  // Wall-clock deadline at which the bible-session lock auto-releases
+  // (startedAt + durationMinutes + 15min). Acts as the self-healing
+  // guard for the lock — if every server-side clear path fails, the
+  // moment this timestamp passes both the client UI and the
+  // createSessionRequest CF treat the priest as free again. Without
+  // this fallback a stuck `liveBibleSessionId` could otherwise block
+  // a priest from receiving any session request indefinitely.
+  final DateTime? bibleSessionLockedUntil;
   final double walletBalance;
   final double totalEarnings;
   final int totalSessions;
@@ -69,6 +86,8 @@ class SpeakerModel {
     required this.isActivated,
     this.isOnline = false,
     this.isBusy = false,
+    this.liveBibleSessionId = '',
+    this.bibleSessionLockedUntil,
     required this.walletBalance,
     required this.totalEarnings,
     required this.totalSessions,
@@ -107,6 +126,14 @@ class SpeakerModel {
       isActivated: data['isActivated'] as bool? ?? false,
       isOnline: data['isOnline'] as bool? ?? false,
       isBusy: data['isBusy'] as bool? ?? false,
+      // Defaults to empty string when the field is missing — older
+      // priest docs created before this lock existed simply read as
+      // "not in bible session", no migration needed.
+      liveBibleSessionId: data['liveBibleSessionId'] as String? ?? '',
+      bibleSessionLockedUntil:
+          data['bibleSessionLockedUntil'] is Timestamp
+              ? (data['bibleSessionLockedUntil'] as Timestamp).toDate()
+              : null,
       walletBalance:
           (data['walletBalance'] as num?)?.toDouble() ?? 0,
       totalEarnings:
@@ -127,10 +154,40 @@ class SpeakerModel {
   bool get hasIdProof => idProofUrl.isNotEmpty;
   bool get hasCertificate => certificateUrl.isNotEmpty;
 
-  // "Truly available to take a new session" — online AND not paused.
-  // Everything downstream (feed section split, profile action gating)
-  // should key off this instead of re-deriving the logic each time.
-  bool get isAvailable => isOnline && !isBusy;
+  // True when the priest is currently teaching a live Bible session.
+  //
+  // The check has TWO independent signals and BOTH must agree for the
+  // lock to be considered held:
+  //
+  //   1. liveBibleSessionId is set — the server-side lock flag,
+  //      written atomically by startBibleSession and cleared by
+  //      completeBibleSession / the auto-complete cron.
+  //
+  //   2. bibleSessionLockedUntil is either missing OR still in the
+  //      future. This is the self-healing escape hatch: if every
+  //      server-side clear path fails and the field gets stuck, the
+  //      moment the deadline passes the UI auto-releases the priest
+  //      without waiting for any CF to run. A priest can never be
+  //      permanently locked into "In Bible Session" by a buggy CF.
+  //
+  // Conservative on missing-deadline: if liveBibleSessionId is set
+  // but bibleSessionLockedUntil is null (older docs, partial writes),
+  // we trust the lock flag and treat the priest as in-session. The
+  // server CF gate enforces the same precedence.
+  bool get isInBibleSession {
+    if (liveBibleSessionId.isEmpty) return false;
+    final until = bibleSessionLockedUntil;
+    if (until != null && !DateTime.now().isBefore(until)) return false;
+    return true;
+  }
+
+  // "Truly available to take a new session" — online, not paused
+  // (isBusy false), AND not teaching a Bible session. Adding the
+  // isInBibleSession term here cascades the gate to EVERY caller of
+  // isAvailable (home feed Available-Now section, priest profile
+  // Call/Chat buttons, etc.) without each one having to remember
+  // to add the check separately.
+  bool get isAvailable => isOnline && !isBusy && !isInBibleSession;
 
   // First letter of name for the avatar fallback. Trimmed because
   // leading whitespace in user-submitted data would render as a

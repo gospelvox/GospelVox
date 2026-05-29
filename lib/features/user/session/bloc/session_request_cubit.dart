@@ -77,6 +77,15 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
       } else if (reason.contains('priest-offline')) {
         emit(const SessionRequestError(
             'This speaker just went offline.'));
+      } else if (reason.contains('priest-in-bible-session')) {
+        // Distinct from priest-busy so the user gets honest copy
+        // about WHY the speaker is unreachable. Checked BEFORE the
+        // generic priest-busy branch because the CF only throws
+        // one code at a time, but ordering keeps grep-by-string
+        // matching deterministic if the message format ever changes.
+        emit(const SessionRequestError(
+            'This speaker is teaching a Bible session right now. '
+            'Please try again once the session ends.'));
       } else if (reason.contains('priest-busy')) {
         emit(const SessionRequestError(
             'This speaker is currently in another session.'));

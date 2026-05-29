@@ -62,6 +62,12 @@ class PriestWalletRepository {
   // other fields (status, walletBalance, etc.) that must NOT be
   // overwritten — `update` instead of `set` keeps everything else
   // untouched.
+  //
+  // 30-second timeout (vs the 10s elsewhere) because cloud_firestore's
+  // update() future only resolves when the server acks the write, and
+  // a spotty mobile network round-trip can take 15-25 s. Anything
+  // shorter falsely reports "Save timed out" while the write is in
+  // fact already queued / completing.
   Future<void> saveBankDetails({
     required String uid,
     required BankDetails details,
@@ -69,7 +75,67 @@ class PriestWalletRepository {
     await _firestore
         .doc('priests/$uid')
         .update(details.toFirestore())
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 30));
+  }
+
+  // Server-side truth check for the bank details on the priest doc.
+  // Used by the bank-details page as a self-heal after a save
+  // TimeoutException: even when the network round-trip blew past
+  // the ack deadline, the write is often already committed on the
+  // server. This lets the UI confirm + flip to the saved view
+  // instead of asking the priest to re-enter data they already
+  // sent.
+  Future<BankDetails?> fetchBankDetailsOnce(String uid) async {
+    final snap = await _firestore
+        .doc('priests/$uid')
+        .get(const GetOptions(source: Source.server))
+        .timeout(const Duration(seconds: 15));
+    final data = snap.data();
+    if (data == null) return null;
+    final details = BankDetails.fromFirestore(data);
+    return details.isComplete ? details : null;
+  }
+
+  // Clears every bank-detail field on the priest doc — used by the
+  // "Delete bank account" action. We blank the strings rather than
+  // FieldValue.delete() so PriestWalletSummary.fromFirestore stays
+  // on a single code path (it checks `holder.isEmpty` to decide
+  // bankDetails == null, which empty-string satisfies cleanly).
+  //
+  // Pending withdrawals already snapshot the bank fields onto the
+  // withdrawal doc itself, so deleting the priest's saved details
+  // never strands money in motion — admin payouts still know where
+  // each historical request was meant to go.
+  //
+  // Same 30s timeout reasoning as saveBankDetails — server ack on
+  // slow mobile networks can exceed 10s.
+  Future<void> clearBankDetails(String uid) async {
+    await _firestore
+        .doc('priests/$uid')
+        .update(const <String, dynamic>{
+          'bankAccountName': '',
+          'bankAccountNumber': '',
+          'bankIfscCode': '',
+          'bankName': '',
+          'bankBranchName': '',
+          'bankAccountType': '',
+          'upiId': '',
+        })
+        .timeout(const Duration(seconds: 30));
+  }
+
+  // Count of withdrawals the priest still has in flight (status =
+  // pending). Used as a guard before the delete-bank action so we
+  // can warn the priest that admin payouts will continue against
+  // the snapshotted bank info on those rows.
+  Future<int> getPendingWithdrawalCount(String uid) async {
+    final snap = await _firestore
+        .collection('withdrawals')
+        .where('priestId', isEqualTo: uid)
+        .where('status', isEqualTo: 'pending')
+        .get()
+        .timeout(const Duration(seconds: 8));
+    return snap.size;
   }
 
   // Generates a fresh idempotency token. We use a Firestore auto-id

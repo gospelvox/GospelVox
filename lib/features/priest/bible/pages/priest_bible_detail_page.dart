@@ -49,11 +49,31 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
   // pop() result so the list reloads only when needed.
   bool _changed = false;
 
+  // Ticks every 30 s so the time-based view branch
+  // (isEffectivelyLive / isPastDeadline) re-evaluates without waiting
+  // for the auto-complete cron to flip the doc. Without this, a
+  // priest sitting on this page when their session crosses the
+  // deadline would stay on the Live view (open meeting / mark
+  // completed) for up to a cron cycle.
+  Timer? _refreshTimer;
+
   @override
   void initState() {
     super.initState();
     _sessionStream = _repository.watchSession(widget.sessionId);
+    _refreshTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) {
+        if (mounted) setState(() {});
+      },
+    );
     _loadRegistrations();
+  }
+
+  @override
+  void dispose() {
+    _refreshTimer?.cancel();
+    super.dispose();
   }
 
   Future<void> _loadRegistrations() async {
@@ -448,7 +468,14 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
         children: [
           _SessionInfoCard(session: session),
           const SizedBox(height: 16),
-          if (session.isLive)
+          // isEffectivelyLive — a status='live' doc whose deadline
+          // has passed must NOT render the Live state view (open-
+          // meeting button + complete CTA), because the meeting is
+          // already over. We route it through the Completed view
+          // instead. The auto-complete cron will flip the doc on
+          // its next tick; meanwhile the priest sees the correct
+          // post-session UI immediately.
+          if (session.isEffectivelyLive)
             _LiveStateView(
               session: session,
               paidCount:
@@ -469,7 +496,7 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
               onStart: () => _confirmStart(session),
               onCancel: () => _confirmCancel(session),
             )
-          else if (session.isCompleted)
+          else if (session.isEffectivelyCompleted)
             _CompletedStateView(
               session: session,
               registrations: _registrations,
@@ -505,10 +532,10 @@ class _SessionInfoCard extends StatelessWidget {
         color: AppColors.surfaceWhite,
         borderRadius: BorderRadius.circular(16),
         border: Border.all(
-          color: session.isLive
+          color: session.isEffectivelyLive
               ? _kLiveRed.withValues(alpha: 0.3)
               : AppColors.muted.withValues(alpha: 0.06),
-          width: session.isLive ? 1.4 : 1.0,
+          width: session.isEffectivelyLive ? 1.4 : 1.0,
         ),
         boxShadow: [
           BoxShadow(
@@ -593,7 +620,7 @@ class _HeaderStatusPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    if (session.isLive) {
+    if (session.isEffectivelyLive) {
       return Container(
         padding:
             const EdgeInsets.symmetric(horizontal: 10, vertical: 5),
@@ -621,12 +648,12 @@ class _HeaderStatusPill extends StatelessWidget {
     }
     final color = session.isUpcoming
         ? AppColors.amberGold
-        : session.isCompleted
+        : session.isEffectivelyCompleted
             ? _kCompletedGreen
             : AppColors.muted;
     final label = session.isUpcoming
         ? "UPCOMING"
-        : session.isCompleted
+        : session.isEffectivelyCompleted
             ? "COMPLETED"
             : "CANCELLED";
     return Container(

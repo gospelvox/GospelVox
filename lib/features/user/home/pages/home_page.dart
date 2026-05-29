@@ -237,6 +237,14 @@ class _HomeViewState extends State<_HomeView>
   List<BibleSessionModel> _bibleSessions = const [];
   int _liveCount = 0;
   StreamSubscription<QuerySnapshot<Map<String, dynamic>>>? _bibleSub;
+  // Latest raw docs from the bible-sessions stream, cached so the
+  // periodic tick can re-evaluate the time-based filter (isPastDeadline
+  // / isEffectivelyLive) without waiting for Firestore to emit. The
+  // stream only re-emits on doc changes — time elapsing doesn't —
+  // so we'd otherwise show "LIVE NOW" for a session that crossed its
+  // deadline while the user was still on the page.
+  List<QueryDocumentSnapshot<Map<String, dynamic>>> _bibleRawDocs = const [];
+  Timer? _bibleTickTimer;
   // First-time bootstrap guard. Fires once per home-mount: if any
   // live session has the signed-in user as a non-cancelled
   // registrant, surface the call-like overlay so a user who missed
@@ -262,6 +270,14 @@ class _HomeViewState extends State<_HomeView>
     _animController.forward();
 
     _startBibleStream();
+    // Periodic re-bucket so a session crossing its deadline while
+    // the user is still on the home page transitions out of the
+    // carousel immediately instead of waiting for Firestore (and
+    // the auto-complete cron) to flip its status.
+    _bibleTickTimer = Timer.periodic(
+      const Duration(seconds: 30),
+      (_) => _rebucketBibleSessions(),
+    );
 
     // Fire-and-forget warm-up of the coin-pack list so a low-balance
     // RechargeSheet opens with instant content the first time the user
@@ -316,26 +332,52 @@ class _HomeViewState extends State<_HomeView>
 
   void _onBibleSnap(QuerySnapshot<Map<String, dynamic>> snap) {
     if (!mounted) return;
+    _bibleRawDocs = snap.docs;
+    _rebucketBibleSessions();
+  }
+
+  // Pure re-bucket against the cached raw docs and the current wall-
+  // clock. Called both from the Firestore stream tick (data changed)
+  // and from the periodic timer (time changed). Splitting it out lets
+  // the timer transition a stale-live session into the past bucket
+  // without waiting for Firestore to emit a new snapshot.
+  void _rebucketBibleSessions() {
+    if (!mounted) return;
     final now = DateTime.now();
-    final parsed = snap.docs
+    final parsed = _bibleRawDocs
         .map((d) => BibleSessionModel.fromFirestore(d.id, d.data()))
         .where((s) {
       // Drop rows with no scheduledAt — we can't reason about them
       // and they shouldn't render in a date-sorted carousel.
       final at = s.scheduledAt;
       if (at == null) return false;
+      // A status='live' session whose deadline has already passed
+      // (auto-complete cron hasn't fired yet) is dropped entirely —
+      // showing it as "LIVE NOW" would be a lie, and showing it as
+      // upcoming would be worse. The Bible tab's Past bucket will
+      // pick it up once the cron flips the doc.
+      if (s.isPastDeadline) return false;
       // Drop expired upcoming sessions — the priest may not have
       // marked them complete yet, but they shouldn't surface as
-      // "upcoming" on home. Live sessions get a wider tolerance
-      // (duration + 15 min buffer) to match the auto-complete cron.
-      final endTime = at.add(Duration(
-        minutes: s.durationMinutes + (s.isLive ? 15 : 0),
-      ));
+      // "upcoming" on home. Live sessions use startedAt as the
+      // anchor (since they may have started later than scheduledAt)
+      // with the same 15-min grace as the auto-complete cron.
+      if (s.isLive) {
+        final started = s.startedAt;
+        if (started != null) {
+          final liveEnd =
+              started.add(Duration(minutes: s.durationMinutes + 15));
+          return liveEnd.isAfter(now);
+        }
+      }
+      final endTime = at.add(Duration(minutes: s.durationMinutes));
       return endTime.isAfter(now);
     }).toList()
       ..sort((a, b) => a.scheduledAt!.compareTo(b.scheduledAt!));
 
-    final live = parsed.where((s) => s.isLive).length;
+    // Count uses isEffectivelyLive so a stale 'live' doc past its
+    // deadline doesn't inflate the home page's "N Live" pill.
+    final live = parsed.where((s) => s.isEffectivelyLive).length;
     final visible = parsed.take(_kHomeBibleLimit).toList();
 
     setState(() {
@@ -358,7 +400,8 @@ class _HomeViewState extends State<_HomeView>
     // stream tick.
     if (!_liveBootstrapDone) {
       _liveBootstrapDone = true;
-      final liveSessions = parsed.where((s) => s.isLive).toList();
+      final liveSessions =
+          parsed.where((s) => s.isEffectivelyLive).toList();
       if (liveSessions.isNotEmpty) {
         _maybeFireLiveOverlay(liveSessions);
       }
@@ -459,6 +502,7 @@ class _HomeViewState extends State<_HomeView>
   @override
   void dispose() {
     _autoScrollTimer?.cancel();
+    _bibleTickTimer?.cancel();
     _bibleSub?.cancel();
     _animController.dispose();
     _searchController.dispose();
@@ -1351,31 +1395,44 @@ class _SectionHeader extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Padding(
-      padding: const EdgeInsets.fromLTRB(20, 20, 0, 14),
+      padding: const EdgeInsets.fromLTRB(20, 20, 20, 14),
       child: Row(
         children: [
-          Flexible(
-            child: Text(
-              title,
-              maxLines: 1,
-              overflow: TextOverflow.ellipsis,
-              style: GoogleFonts.inter(
-                // Weight pulled back from w700 → w600 to fit the
-                // limited-weight palette (400 / 600 / 700) — the
-                // single 700 per screen is reserved for hero copy,
-                // not every section header.
-                fontSize: 17,
-                fontWeight: FontWeight.w600,
-                letterSpacing: -0.2,
-                color: AppColors.deepDarkBrown,
-              ),
+          // Title + optional trailing pill sit inside an Expanded so
+          // they consume all the space the See All button doesn't
+          // need. Without this Expanded, the Flexible(title) and a
+          // bare Spacer compete for flex space and the See All button
+          // drifts horizontally when the trailing pill appears /
+          // disappears (e.g. the LIVE pill on the Bible Sessions
+          // header when a session goes live). Anchoring See All to
+          // the right of an Expanded eliminates that drift entirely.
+          Expanded(
+            child: Row(
+              children: [
+                Flexible(
+                  child: Text(
+                    title,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      // Weight pulled back from w700 → w600 to fit the
+                      // limited-weight palette (400 / 600 / 700) — the
+                      // single 700 per screen is reserved for hero copy,
+                      // not every section header.
+                      fontSize: 17,
+                      fontWeight: FontWeight.w600,
+                      letterSpacing: -0.2,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                ),
+                if (trailing != null) ...[
+                  const SizedBox(width: 10),
+                  trailing!,
+                ],
+              ],
             ),
           ),
-          if (trailing != null) ...[
-            const SizedBox(width: 10),
-            trailing!,
-          ],
-          const Spacer(),
           if (onSeeAll != null)
             _PressScale(
               onTap: onSeeAll!,
@@ -2239,7 +2296,12 @@ class _BibleSessionBanner extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final isLive = session.isLive;
+    // isEffectivelyLive instead of isLive — a session whose deadline
+    // (startedAt + duration + 15min) has passed is treated as no
+    // longer live by the UI even if the auto-complete cron hasn't
+    // flipped the doc yet, so users never see a "LIVE NOW" banner
+    // for a session that's actually wrapped up.
+    final isLive = session.isEffectivelyLive;
     final labelText = isLive ? 'LIVE NOW' : 'UPCOMING';
     final dotColor = isLive ? _liveRed : _C.amberGold;
     final labelColor = isLive ? _liveRed : _C.amberGold;
@@ -2428,7 +2490,7 @@ class _BibleSessionBanner extends StatelessWidget {
   // Showing price here turned the CTA into a value-judgement
   // ("₹50? worth it?") before the user had any context.
   String _ctaLabel(BibleSessionModel s) {
-    if (s.isLive) return 'Join Now';
+    if (s.isEffectivelyLive) return 'Join Now';
     return 'Register for Free';
   }
 
