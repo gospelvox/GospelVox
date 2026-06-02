@@ -1,4 +1,4 @@
-# Terms & Conditions — Gospel Vox
+# Terms & Conditions — GospelVox
 
 **Effective Date:** 2 June 2026
 **Last Updated:** 2 June 2026
@@ -6,9 +6,9 @@
 These Terms & Conditions ("**Terms**") form a binding contract between
 you and **Codedu Software Technologies**, having its registered office
 at **COCO Group, Mukkadan Complex, Infopark Smart City Short Road,
-Edachira, Kakkanad, Kochi, Kerala 682030, India** ("**Gospel Vox**",
+Edachira, Kakkanad, Kochi, Kerala 682030, India** ("**GospelVox**",
 "**we**", "**us**", "**our**"), governing your access to and use of
-the Gospel Vox mobile application, websites, and related services
+the GospelVox mobile application, websites, and related services
 (collectively, the "**Platform**").
 
 By creating an account, signing in, or using any part of the Platform,
@@ -92,7 +92,7 @@ without prior notice.
 
 **The Platform is a technology intermediary.** Sessions and Bible
 Sessions are person-to-person services delivered by independent
-Speakers. Gospel Vox is not a provider of religious counsel,
+Speakers. GospelVox is not a provider of religious counsel,
 psychological therapy, legal advice, or medical advice, and does not
 employ Speakers as agents or employees.
 
@@ -246,7 +246,7 @@ relevant authority on the Speaker's behalf.
 
 8.7 **Independent contractor.** Nothing in these Terms creates an
 employment, agency, joint-venture, or partnership relationship between
-Gospel Vox and any Speaker.
+GospelVox and any Speaker.
 
 ## 9. Refunds, Cancellations & Chargebacks
 
@@ -440,7 +440,7 @@ negligence, or death or personal injury caused by negligence.
 
 ## 18. Indemnity
 
-You agree to indemnify and hold harmless Gospel Vox, its affiliates,
+You agree to indemnify and hold harmless GospelVox, its affiliates,
 officers, directors, employees, and agents from and against any
 claims, damages, losses, liabilities, costs, and expenses (including
 reasonable legal fees) arising out of or related to (a) your use of
@@ -505,7 +505,7 @@ Guidelines and Digital Media Ethics Code) Rules, 2021, the Grievance
 Officer for the Platform is:
 
 - **Name:** Mr. Relin K Mathew
-- **Designation:** Grievance Officer, Gospel Vox
+- **Designation:** Grievance Officer, GospelVox
 - **Email:** Relin.m@outlook.com
 - **Postal address:** Codedu Software Technologies, COCO Group,
   Mukkadan Complex, Infopark Smart City Short Road, Edachira,

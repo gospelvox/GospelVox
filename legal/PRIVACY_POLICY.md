@@ -1,4 +1,4 @@
-# Privacy Policy — Gospel Vox
+# Privacy Policy — GospelVox
 
 **Effective Date:** 2 June 2026
 **Last Updated:** 2 June 2026
@@ -6,8 +6,8 @@
 This Privacy Policy explains how **Codedu Software Technologies**,
 having its registered office at **COCO Group, Mukkadan Complex,
 Infopark Smart City Short Road, Edachira, Kakkanad, Kochi, Kerala
-682030, India** ("**Gospel Vox**", "**we**", "**us**", "**our**"), collects, uses, shares, retains, and protects
-information about you when you use the Gospel Vox mobile application,
+682030, India** ("**GospelVox**", "**we**", "**us**", "**our**"), collects, uses, shares, retains, and protects
+information about you when you use the GospelVox mobile application,
 websites, and related services (collectively, the "**Platform**").
 
 We are the **Data Fiduciary** under the Digital Personal Data
@@ -337,7 +337,7 @@ records retained as above.
 
 ## 11. Cookies and Similar Technologies
 
-The Gospel Vox mobile app does not use browser cookies. The SDKs we
+The GospelVox mobile app does not use browser cookies. The SDKs we
 use (Firebase, OneSignal, Agora, Razorpay's checkout WebView) may
 store small amounts of data locally on your device for session
 continuity, crash reporting, and notification delivery. You can
@@ -354,7 +354,7 @@ Media Ethics Code) Rules, 2021, the Grievance Officer for the Platform
 is:
 
 - **Name:** Mr. Relin K Mathew
-- **Designation:** Grievance Officer, Gospel Vox
+- **Designation:** Grievance Officer, GospelVox
 - **Email:** Relin.m@outlook.com
 - **Postal address:** Codedu Software Technologies, COCO Group,
   Mukkadan Complex, Infopark Smart City Short Road, Edachira,

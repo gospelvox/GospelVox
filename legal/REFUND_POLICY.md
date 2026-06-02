@@ -1,10 +1,10 @@
-# Refund Policy — Gospel Vox
+# Refund Policy — GospelVox
 
 **Effective Date:** 2 June 2026
 **Last Updated:** 2 June 2026
 
 This Refund Policy describes when and how refunds are issued for
-purchases made on the Gospel Vox mobile application and related
+purchases made on the GospelVox mobile application and related
 services (the "**Platform**"), operated by **Codedu Software
 Technologies**.
 
@@ -165,7 +165,7 @@ to contest chargebacks we believe to be invalid.
 | Stage | Typical timeline |
 |---|---|
 | Acknowledgement of refund request | **48 hours** |
-| Verification by Gospel Vox | **5 business days** |
+| Verification by GospelVox | **5 business days** |
 | Razorpay refund initiation | Immediate on approval |
 | Credit to your card / UPI / bank | **5–7 business days** from Razorpay's initiation (depends on issuer) |
 

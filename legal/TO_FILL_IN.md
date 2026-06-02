@@ -21,7 +21,7 @@ versioned, slow process.**
 | Support email | **support@gospelvox.com** |
 | Privacy email (also used for data requests) | **support@gospelvox.com** (alias / same mailbox — set up a forwarder on your registrar/Workspace if not done) |
 | Legal / IP-takedown email | **support@gospelvox.com** |
-| Brand display name | Gospel Vox |
+| Brand display name | GospelVox |
 | Copyright line | © 2026 Codedu Software Technologies |
 
 ## B. Grievance Officer (from you — verbatim)
@@ -29,7 +29,7 @@ versioned, slow process.**
 | Field | Value |
 |---|---|
 | Name | **Mr. Relin K Mathew** |
-| Designation | Grievance Officer, Gospel Vox |
+| Designation | Grievance Officer, GospelVox |
 | Email | **Relin.m@outlook.com** |
 | Postal address | Same as the operator address above |
 | Phone | **+91 79070 18137** |

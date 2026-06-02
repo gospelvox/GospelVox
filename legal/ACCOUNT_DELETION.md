@@ -1,8 +1,8 @@
-# Delete Your Gospel Vox Account
+# Delete Your GospelVox Account
 
 **Last Updated:** 2 June 2026
 
-This page explains how to delete your Gospel Vox account and what
+This page explains how to delete your GospelVox account and what
 happens to your data when you do. It is published in compliance with
 Google Play's Account Deletion Disclosure requirement and Apple App
 Store Guideline 5.1.1(v).
@@ -14,7 +14,7 @@ period** and **no contact with support is required**.
 
 ## In-app deletion (fastest)
 
-1. Open the Gospel Vox app and sign in with the account you want
+1. Open the GospelVox app and sign in with the account you want
    to delete.
 2. Go to **Settings** → **Account** → **Delete Account**.
 3. Confirm the deletion when prompted.
@@ -27,7 +27,7 @@ signed out and unable to sign in again with that identity.
 If you cannot access the app — for example, if you've changed phones,
 lost access to your sign-in provider, or already removed the app —
 email **support@gospelvox.com** from the email address linked
-to your Gospel Vox account, with:
+to your GospelVox account, with:
 
 - **Subject:** "Account Deletion Request"
 - **Body:** the phone number and/or email address associated with the
@@ -80,7 +80,7 @@ Conditions.
 
 ## Sub-processors and downstream deletion
 
-Deleting your Gospel Vox account also propagates deletion to our
+Deleting your GospelVox account also propagates deletion to our
 backend services:
 
 - **Firebase Authentication** — your authentication record is deleted
