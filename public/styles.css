@@ -1,0 +1,296 @@
+/* Gospel Vox — legal pages
+   ---------------------------------------------------------------
+   Single, self-contained stylesheet for every hosted document.
+   No external fonts, no JS, no third-party assets — keeps the page
+   readable when reviewed offline by Apple / Play Store automation
+   and respects users with strict privacy settings.
+   --------------------------------------------------------------- */
+
+:root {
+  --brand: #6b4a2b;       /* primary brown (matches AppColors.primaryBrown) */
+  --brand-deep: #2e1d0f;
+  --gold: #c89b53;
+  --bg: #f4ede3;          /* matches AppColors.background */
+  --surface: #ffffff;
+  --text: #1f1a14;
+  --muted: #6f6356;
+  --rule: #e6dccd;
+  --link: #7a4a17;
+  --link-hover: #5a3210;
+  --code-bg: #f1e9da;
+  --max-width: 760px;
+}
+
+* { box-sizing: border-box; }
+
+html { -webkit-text-size-adjust: 100%; }
+
+body {
+  margin: 0;
+  padding: 0;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
+    "Helvetica Neue", Arial, sans-serif;
+  font-size: 16px;
+  line-height: 1.65;
+  color: var(--text);
+  background: var(--bg);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+}
+
+a { color: var(--link); text-decoration: underline; text-underline-offset: 2px; }
+a:hover, a:focus { color: var(--link-hover); }
+
+/* Site header */
+.site-header {
+  background: var(--brand-deep);
+  color: #fff;
+  padding: 16px 20px;
+  position: sticky;
+  top: 0;
+  z-index: 10;
+  box-shadow: 0 1px 0 rgba(0,0,0,0.08);
+}
+
+.site-header__inner {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.site-header__brand {
+  color: #fff;
+  font-weight: 700;
+  font-size: 17px;
+  letter-spacing: 0.2px;
+  text-decoration: none;
+}
+
+.site-header__brand:hover { color: #fff; opacity: 0.9; }
+
+.site-header__nav {
+  margin-left: auto;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 16px;
+}
+
+.site-header__nav a {
+  color: #f5e7cc;
+  font-size: 14px;
+  text-decoration: none;
+}
+
+.site-header__nav a:hover { color: #fff; }
+
+/* Document container */
+main.doc {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 28px 22px 80px;
+  background: var(--surface);
+  border-left: 1px solid var(--rule);
+  border-right: 1px solid var(--rule);
+  min-height: 60vh;
+}
+
+main.doc h1 {
+  font-size: 28px;
+  line-height: 1.25;
+  margin: 8px 0 6px;
+  color: var(--brand-deep);
+}
+
+main.doc .meta {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0 0 28px;
+}
+
+main.doc h2 {
+  font-size: 20px;
+  line-height: 1.3;
+  margin: 32px 0 10px;
+  color: var(--brand-deep);
+  border-bottom: 1px solid var(--rule);
+  padding-bottom: 6px;
+}
+
+main.doc h3 {
+  font-size: 16px;
+  margin: 22px 0 8px;
+  color: var(--brand);
+}
+
+main.doc h4 {
+  font-size: 15px;
+  margin: 18px 0 6px;
+  color: var(--brand);
+}
+
+main.doc p { margin: 0 0 14px; }
+
+main.doc ul, main.doc ol {
+  margin: 0 0 16px 22px;
+  padding: 0;
+}
+
+main.doc li { margin-bottom: 6px; }
+
+main.doc strong { color: var(--brand-deep); }
+
+main.doc em { color: var(--text); }
+
+main.doc code {
+  background: var(--code-bg);
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-size: 14px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+}
+
+main.doc hr {
+  border: 0;
+  border-top: 1px solid var(--rule);
+  margin: 28px 0;
+}
+
+main.doc blockquote {
+  border-left: 4px solid var(--gold);
+  margin: 16px 0;
+  padding: 8px 14px;
+  background: #faf3e6;
+  color: var(--text);
+  border-radius: 0 6px 6px 0;
+}
+
+/* Tables */
+main.doc .table-wrap {
+  overflow-x: auto;
+  -webkit-overflow-scrolling: touch;
+  margin: 0 0 18px;
+  border: 1px solid var(--rule);
+  border-radius: 8px;
+}
+
+main.doc table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+main.doc th, main.doc td {
+  text-align: left;
+  vertical-align: top;
+  padding: 10px 12px;
+  border-bottom: 1px solid var(--rule);
+}
+
+main.doc th {
+  background: #faf3e6;
+  font-weight: 700;
+  color: var(--brand-deep);
+}
+
+main.doc tr:last-child td { border-bottom: 0; }
+
+/* Highlight FILL placeholders so the operator can spot them. They
+   stay visible until you replace them in the markdown sources.
+   Reviewers will treat any leftover [FILL: ...] as a broken policy
+   page, so do the swap before submitting. */
+.fill {
+  background: #fff3cd;
+  color: #6a4d00;
+  padding: 1px 6px;
+  border-radius: 4px;
+  font-weight: 600;
+}
+
+/* Footer */
+.site-footer {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 22px;
+  font-size: 13px;
+  color: var(--muted);
+  text-align: center;
+}
+
+.site-footer a { color: var(--muted); }
+
+/* Landing page tiles */
+.landing__hero {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 48px 22px 24px;
+  text-align: center;
+}
+
+.landing__hero h1 {
+  font-size: 32px;
+  margin: 0 0 6px;
+  color: var(--brand-deep);
+}
+
+.landing__hero p.tag {
+  font-size: 14px;
+  color: var(--gold);
+  margin: 0 0 10px;
+}
+
+.landing__hero p.lead {
+  font-size: 15px;
+  color: var(--muted);
+  margin: 8px auto 0;
+  max-width: 540px;
+}
+
+.landing__cards {
+  max-width: var(--max-width);
+  margin: 0 auto;
+  padding: 12px 22px 60px;
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 12px;
+}
+
+@media (min-width: 620px) {
+  .landing__cards { grid-template-columns: 1fr 1fr; }
+}
+
+.landing__card {
+  display: block;
+  padding: 18px 18px;
+  background: var(--surface);
+  border: 1px solid var(--rule);
+  border-radius: 12px;
+  text-decoration: none;
+  color: var(--text);
+  transition: transform 0.08s ease, border-color 0.08s ease;
+}
+
+.landing__card:hover {
+  border-color: var(--gold);
+  transform: translateY(-1px);
+}
+
+.landing__card h2 {
+  font-size: 16px;
+  margin: 0 0 4px;
+  color: var(--brand-deep);
+}
+
+.landing__card p {
+  font-size: 13px;
+  color: var(--muted);
+  margin: 0;
+}
+
+/* Print */
+@media print {
+  .site-header, .site-footer { display: none; }
+  main.doc { border: 0; max-width: none; padding: 0; }
+  a { color: var(--text); text-decoration: none; }
+}
