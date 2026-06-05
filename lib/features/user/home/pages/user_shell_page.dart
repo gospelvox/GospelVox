@@ -29,6 +29,8 @@
 //     hides — reflow during scroll is the #1 cause of jank in this
 //     kind of UI.
 
+import 'dart:async';
+
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/rendering.dart' show ScrollDirection;
@@ -112,12 +114,19 @@ class _UserShellPageState extends State<UserShellPage>
     //
     // Skip if the route is "/user" (we're already there) or empty.
     // Pushing the shell on top of itself would stack two of them.
+    //
+    // Push permission is requested here (not at app launch) so the
+    // dialog only appears once the user has signed in and landed on
+    // their real home — Play / Apple HIG both flag cold-start prompts.
+    // The call is idempotent and process-flagged inside the service,
+    // so re-mounting the shell doesn't re-prompt.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final route = NotificationService.pendingRoute;
       NotificationService.pendingRoute = null;
-      if (route == null || route.isEmpty || route == '/user') return;
-      if (!mounted) return;
-      context.push(route);
+      if (route != null && route.isNotEmpty && route != '/user' && mounted) {
+        context.push(route);
+      }
+      unawaited(NotificationService().requestPermissionsIfNeeded());
     });
   }
 

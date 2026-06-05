@@ -17,6 +17,7 @@
       { "source": "/privacy-policy",  "destination": "/privacy-policy.html" },
       { "source": "/refund-policy",   "destination": "/refund-policy.html" },
       { "source": "/delete-account",  "destination": "/delete-account.html" },
+      { "source": "/child-safety-standards", "destination": "/child-safety-standards.html" },
       { "source": "/help",            "destination": "/help.html" }
     ],
     "headers": [

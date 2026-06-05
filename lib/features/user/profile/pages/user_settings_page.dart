@@ -23,13 +23,16 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
 
+import 'package:gospel_vox/core/config/legal_urls.dart';
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_version_text.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
+import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 class UserSettingsPage extends StatefulWidget {
@@ -50,12 +53,18 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
   // human-readable; falls back to the uid when unavailable.
   List<({String priestId, String name})> _mutedPriests = const [];
   bool _mutedLoading = true;
+  // Blocked speakers list — same loader pattern as muted, distinct
+  // collection field (`blockedPriestIds`). Hidden until the user has
+  // actually blocked someone.
+  List<({String priestId, String name})> _blockedPriests = const [];
+  bool _blockedLoading = true;
 
   @override
   void initState() {
     super.initState();
     _loadSettings();
     _loadMutedPriests();
+    _loadBlockedPriests();
   }
 
   Future<void> _loadMutedPriests() async {
@@ -132,6 +141,75 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
     } catch (_) {
       if (!mounted) return;
       AppSnackBar.error(context, 'Could not unmute. Try again.');
+    }
+  }
+
+  Future<void> _loadBlockedPriests() async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      if (mounted) setState(() => _blockedLoading = false);
+      return;
+    }
+    try {
+      final ids = (await sl<HomeRepository>().getBlockedPriestIds(uid))
+          .toList();
+      if (ids.isEmpty) {
+        if (!mounted) return;
+        setState(() {
+          _blockedPriests = const [];
+          _blockedLoading = false;
+        });
+        return;
+      }
+
+      final db = FirebaseFirestore.instance;
+      // Parallel name lookup, same fan-out as muted.
+      final names = await Future.wait(ids.map((id) async {
+        try {
+          final p = await db
+              .doc('priests/$id')
+              .get()
+              .timeout(const Duration(seconds: 5));
+          final n = p.data()?['fullName'] as String?;
+          return (priestId: id, name: n != null && n.isNotEmpty ? n : id);
+        } catch (_) {
+          return (priestId: id, name: id);
+        }
+      }));
+
+      if (!mounted) return;
+      setState(() {
+        _blockedPriests = names;
+        _blockedLoading = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _blockedLoading = false);
+    }
+  }
+
+  Future<void> _unblock(String priestId, String priestName) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    try {
+      await sl<HomeRepository>().setPriestBlocked(
+        userId: uid,
+        priestId: priestId,
+        blocked: false,
+      );
+      if (!mounted) return;
+      setState(() {
+        _blockedPriests = _blockedPriests
+            .where((p) => p.priestId != priestId)
+            .toList();
+      });
+      AppSnackBar.success(
+        context,
+        "$priestName has been unblocked.",
+      );
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'Could not unblock. Try again.');
     }
   }
 
@@ -323,6 +401,42 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                       ),
                     ),
                   ],
+                  // Blocked Speakers — hidden until populated, same as
+                  // the muted list above. The unblock action mirrors the
+                  // unmute row (single trailing CTA) but reads "Unblock"
+                  // so the destructive/non-destructive distinction stays
+                  // crisp.
+                  if (!_blockedLoading && _blockedPriests.isNotEmpty) ...[
+                    const SizedBox(height: 32),
+                    _SectionLabel('BLOCKED SPEAKERS'),
+                    const SizedBox(height: 12),
+                    Container(
+                      decoration: BoxDecoration(
+                        color: AppColors.surfaceWhite,
+                        borderRadius: BorderRadius.circular(14),
+                        border: Border.all(
+                          color: AppColors.muted.withValues(alpha: 0.08),
+                        ),
+                      ),
+                      child: Column(
+                        children: [
+                          for (var i = 0;
+                              i < _blockedPriests.length;
+                              i++) ...[
+                            _BlockedRow(
+                              name: _blockedPriests[i].name,
+                              onUnblock: () => _unblock(
+                                _blockedPriests[i].priestId,
+                                _blockedPriests[i].name,
+                              ),
+                            ),
+                            if (i != _blockedPriests.length - 1)
+                              const _RowDivider(),
+                          ],
+                        ],
+                      ),
+                    ),
+                  ],
                   const SizedBox(height: 32),
                   _SectionLabel('ACCOUNT'),
                   const SizedBox(height: 12),
@@ -357,31 +471,35 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
                         _SettingsRow(
                           icon: AppIcons.document,
                           title: 'Terms of Service',
-                          onTap: () {
-                            AppSnackBar.info(
-                              context,
-                              'Terms of Service coming soon',
-                            );
-                          },
+                          onTap: () => launchLegalUrl(
+                            context,
+                            LegalUrls.termsOfService,
+                          ),
                         ),
                         const _RowDivider(),
                         _SettingsRow(
                           icon: AppIcons.privacy,
                           title: 'Privacy Policy',
-                          onTap: () {
-                            AppSnackBar.info(
-                              context,
-                              'Privacy Policy coming soon',
-                            );
-                          },
+                          onTap: () => launchLegalUrl(
+                            context,
+                            LegalUrls.privacyPolicy,
+                          ),
+                        ),
+                        const _RowDivider(),
+                        _SettingsRow(
+                          icon: AppIcons.wallet,
+                          title: 'Refund Policy',
+                          onTap: () => launchLegalUrl(
+                            context,
+                            LegalUrls.refundPolicy,
+                          ),
                         ),
                       ],
                     ),
                   ),
                   const SizedBox(height: 32),
                   Center(
-                    child: Text(
-                      'Gospel Vox v1.0.0',
+                    child: AppVersionText(
                       style: GoogleFonts.inter(
                         fontSize: 12,
                         fontWeight: FontWeight.w400,
@@ -659,6 +777,75 @@ class _MutedRow extends StatelessWidget {
               ),
               child: Text(
                 'Unmute',
+                style: GoogleFonts.inter(
+                  fontSize: 12,
+                  fontWeight: FontWeight.w600,
+                  color: AppColors.primaryBrown,
+                ),
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Mirror of _MutedRow for blocked speakers. Distinct widget so the
+// chip label and the leading-icon tint can carry a stronger visual
+// (errorRed-tinted block icon) without forking the muted styling.
+class _BlockedRow extends StatelessWidget {
+  final String name;
+  final VoidCallback onUnblock;
+
+  const _BlockedRow({required this.name, required this.onUnblock});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+      child: Row(
+        children: [
+          Container(
+            width: 38,
+            height: 38,
+            decoration: BoxDecoration(
+              color: AppColors.errorRed.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: AppIcon(
+              AppIcons.block,
+              size: 18,
+              color: AppColors.errorRed,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Text(
+              name,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w600,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: onUnblock,
+            child: Container(
+              padding: const EdgeInsets.symmetric(
+                horizontal: 14,
+                vertical: 7,
+              ),
+              decoration: BoxDecoration(
+                color: AppColors.primaryBrown.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Text(
+                'Unblock',
                 style: GoogleFonts.inter(
                   fontSize: 12,
                   fontWeight: FontWeight.w600,

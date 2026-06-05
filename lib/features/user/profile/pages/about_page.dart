@@ -7,10 +7,11 @@
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/config/legal_urls.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_version_text.dart';
 
 class AboutPage extends StatelessWidget {
   const AboutPage({super.key});
@@ -99,8 +100,8 @@ class AboutPage extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 8),
-            Text(
-              'Version 1.0.0',
+            AppVersionText(
+              prefix: 'Version ',
               style: GoogleFonts.inter(
                 fontSize: 12,
                 fontWeight: FontWeight.w400,
@@ -135,21 +136,27 @@ class AboutPage extends StatelessWidget {
                     icon: AppIcons.document,
                     title: 'Terms of Service',
                     onTap: () =>
-                        AppSnackBar.info(context, 'Coming soon'),
+                        launchLegalUrl(context, LegalUrls.termsOfService),
                   ),
                   const _AboutDivider(),
                   _AboutRow(
                     icon: AppIcons.privacy,
                     title: 'Privacy Policy',
                     onTap: () =>
-                        AppSnackBar.info(context, 'Coming soon'),
+                        launchLegalUrl(context, LegalUrls.privacyPolicy),
+                  ),
+                  const _AboutDivider(),
+                  _AboutRow(
+                    icon: AppIcons.wallet,
+                    title: 'Refund Policy',
+                    onTap: () =>
+                        launchLegalUrl(context, LegalUrls.refundPolicy),
                   ),
                   const _AboutDivider(),
                   _AboutRow(
                     icon: AppIcons.mail,
                     title: 'Contact Us',
-                    onTap: () =>
-                        AppSnackBar.info(context, 'Coming soon'),
+                    onTap: () => launchSupportEmail(context),
                   ),
                 ],
               ),

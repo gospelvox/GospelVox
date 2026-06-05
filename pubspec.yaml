@@ -1,7 +1,7 @@
 name: gospel_vox
 description: "Gospel Vox — Global Christian Spiritual Consultation Platform"
 publish_to: 'none'
-version: 1.0.0+1
+version: 1.0.0+8
 
 environment:
   sdk: ^3.11.4
@@ -85,6 +85,13 @@ dependencies:
   # shared gospelvox://priest/<uid> link opens the profile page
   # straight away inside the running app.
   app_links: any
+
+  # Reads the running app's version + build number off the platform
+  # so the About / Settings "Gospel Vox v1.0.0" strings stay in sync
+  # with pubspec.yaml automatically. Without this every release ships
+  # with a stale hardcoded version string in two places, which Play
+  # Store reviewers occasionally flag as a "metadata mismatch".
+  package_info_plus: any
 
   # Audio playback for incoming/outgoing ringtones.
   #

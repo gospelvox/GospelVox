@@ -479,12 +479,302 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
         Positioned(
           top: topInset + 8,
           right: 16,
-          child: _CircleIconButton(
-            icon: AppIcons.share,
-            onTap: _sharePriest,
+          child: Row(
+            children: [
+              _CircleIconButton(
+                icon: AppIcons.share,
+                onTap: _sharePriest,
+              ),
+              const SizedBox(width: 8),
+              _CircleIconButton(
+                icon: AppIcons.more,
+                onTap: _showMoreActions,
+              ),
+            ],
           ),
         ),
       ],
+    );
+  }
+
+  // Overflow menu — currently houses the Block action. Lives in a
+  // sheet (not a popup menu) for thumb-reachability on tall phones
+  // and to give the destructive action enough breathing room to
+  // include the consequence list. Report stays per-message for now;
+  // a "Report speaker" entry can be added here when the generic
+  // report flow ships.
+  Future<void> _showMoreActions() async {
+    final priest = _priest;
+    if (priest == null) return;
+    HapticFeedback.lightImpact();
+
+    final action = await showModalBottomSheet<_ProfileAction>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => const _ProfileActionsSheet(),
+    );
+
+    if (!mounted || action == null) return;
+    if (action == _ProfileAction.block) {
+      await _confirmAndBlock(priest);
+    }
+  }
+
+  // Confirm sheet + write. We're deliberately strict — Block is
+  // irreversible without finding the priest again in Settings, so the
+  // user has to actively confirm. The write itself is idempotent
+  // (arrayUnion no-ops if already blocked) so a tap that gets retried
+  // by network can't corrupt state.
+  Future<void> _confirmAndBlock(SpeakerModel priest) async {
+    final confirmed = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (_) => _ConfirmBlockSheet(priestName: _displayName(priest)),
+    );
+    if (!mounted || confirmed != true) return;
+
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      AppSnackBar.error(context, 'Please sign in again to block.');
+      return;
+    }
+
+    try {
+      await _repo.setPriestBlocked(
+        userId: uid,
+        priestId: priest.uid,
+        blocked: true,
+      );
+      if (!mounted) return;
+      AppSnackBar.success(
+        context,
+        '${_displayName(priest)} has been blocked.',
+      );
+      // Pop back to the feed — the blocked priest will have already
+      // vanished from the list by the time this frame lands, because
+      // HomeCubit's blocked-id stream fired in parallel.
+      context.pop();
+    } catch (_) {
+      if (!mounted) return;
+      AppSnackBar.error(context, 'Could not block. Please try again.');
+    }
+  }
+}
+
+enum _ProfileAction { block }
+
+class _ProfileActionsSheet extends StatelessWidget {
+  const _ProfileActionsSheet();
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.fromLTRB(20, 12, 20, bottomPad + 12),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Container(
+            width: 40,
+            height: 4,
+            decoration: BoxDecoration(
+              color: AppColors.muted.withValues(alpha: 0.2),
+              borderRadius: BorderRadius.circular(2),
+            ),
+          ),
+          const SizedBox(height: 16),
+          _SheetActionRow(
+            icon: AppIcons.block,
+            label: 'Block speaker',
+            destructive: true,
+            onTap: () => Navigator.of(context).pop(_ProfileAction.block),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _SheetActionRow extends StatelessWidget {
+  final IconData icon;
+  final String label;
+  final bool destructive;
+  final VoidCallback onTap;
+
+  const _SheetActionRow({
+    required this.icon,
+    required this.label,
+    required this.onTap,
+    this.destructive = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final color = destructive ? AppColors.errorRed : AppColors.deepDarkBrown;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Padding(
+        padding: const EdgeInsets.symmetric(vertical: 14),
+        child: Row(
+          children: [
+            Container(
+              width: 38,
+              height: 38,
+              decoration: BoxDecoration(
+                color: color.withValues(alpha: 0.08),
+                borderRadius: BorderRadius.circular(10),
+              ),
+              alignment: Alignment.center,
+              child: AppIcon(icon, size: 18, color: color),
+            ),
+            const SizedBox(width: 14),
+            Expanded(
+              child: Text(
+                label,
+                style: GoogleFonts.inter(
+                  fontSize: 15,
+                  fontWeight: FontWeight.w600,
+                  color: color,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _ConfirmBlockSheet extends StatelessWidget {
+  final String priestName;
+  const _ConfirmBlockSheet({required this.priestName});
+
+  @override
+  Widget build(BuildContext context) {
+    final bottomPad = MediaQuery.of(context).padding.bottom;
+    return Container(
+      decoration: const BoxDecoration(
+        color: AppColors.surfaceWhite,
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+      ),
+      padding: EdgeInsets.fromLTRB(24, 12, 24, bottomPad + 20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Center(
+            child: Container(
+              width: 40,
+              height: 4,
+              decoration: BoxDecoration(
+                color: AppColors.muted.withValues(alpha: 0.2),
+                borderRadius: BorderRadius.circular(2),
+              ),
+            ),
+          ),
+          const SizedBox(height: 18),
+          Center(
+            child: Container(
+              width: 56,
+              height: 56,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: AppColors.errorRed.withValues(alpha: 0.08),
+              ),
+              alignment: Alignment.center,
+              child: AppIcon(
+                AppIcons.block,
+                size: 28,
+                color: AppColors.errorRed,
+              ),
+            ),
+          ),
+          const SizedBox(height: 16),
+          Center(
+            child: Text(
+              'Block $priestName?',
+              textAlign: TextAlign.center,
+              style: GoogleFonts.inter(
+                fontSize: 18,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+          const SizedBox(height: 10),
+          Text(
+            "They'll no longer appear in your feed, and you won't "
+            "be able to start sessions with them. You can unblock "
+            "anytime from Settings.",
+            style: GoogleFonts.inter(
+              fontSize: 13,
+              fontWeight: FontWeight.w400,
+              color: AppColors.muted,
+              height: 1.5,
+            ),
+          ),
+          const SizedBox(height: 24),
+          Row(
+            children: [
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context).pop(false),
+                  child: Container(
+                    height: 48,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.surfaceWhite,
+                      borderRadius: BorderRadius.circular(12),
+                      border: Border.all(
+                        color: AppColors.muted.withValues(alpha: 0.2),
+                      ),
+                    ),
+                    child: Text(
+                      'Cancel',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.muted,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () => Navigator.of(context).pop(true),
+                  child: Container(
+                    height: 48,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: AppColors.errorRed,
+                      borderRadius: BorderRadius.circular(12),
+                    ),
+                    child: Text(
+                      'Block',
+                      style: GoogleFonts.inter(
+                        fontSize: 14,
+                        fontWeight: FontWeight.w700,
+                        color: Colors.white,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
+            ],
+          ),
+        ],
+      ),
     );
   }
 }

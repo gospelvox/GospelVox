@@ -52,3 +52,13 @@ functions/.test-watchdog-state.json
 # Firebase Functions env (holds Razorpay key secret — must NEVER be committed)
 functions/.env
 functions/.env.*
+
+# Android release signing — keystore + passwords. The keystore is the
+# single source of truth for app identity on Play Store; losing it
+# means you can never push an update under the same app ID again.
+# Back it up somewhere safe (1Password / GitHub Actions secret /
+# secure offline storage) and NEVER commit it.
+android/key.properties
+android/app/upload-keystore.jks
+android/app/*.jks
+android/app/*.keystore

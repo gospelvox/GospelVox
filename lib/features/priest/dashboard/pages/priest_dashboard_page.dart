@@ -146,12 +146,22 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     // and pushing again would stack a duplicate dashboard. The session-
     // request push uses "/priest" specifically so the dashboard's own
     // pending-request stream picks it up with the full SessionModel.
+    //
+    // Push permission is requested here (not at app launch) so the
+    // dialog only appears once the priest is signed in and on their
+    // dashboard. Notifications are how incoming session requests reach
+    // the priest, so this is the most contextually meaningful moment
+    // to ask. Idempotent + process-flagged inside the service.
     WidgetsBinding.instance.addPostFrameCallback((_) {
       final route = NotificationService.pendingRoute;
       NotificationService.pendingRoute = null;
-      if (route == null || route.isEmpty || route == '/priest') return;
-      if (!mounted) return;
-      context.push(route);
+      if (route != null &&
+          route.isNotEmpty &&
+          route != '/priest' &&
+          mounted) {
+        context.push(route);
+      }
+      unawaited(NotificationService().requestPermissionsIfNeeded());
     });
   }
 

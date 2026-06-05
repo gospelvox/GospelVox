@@ -14,6 +14,30 @@
       },
       "oauth_client": [
         {
+          "client_id": "761780336670-8ckih5a2dos54hu9ft48biabb3s1uvjm.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gospelvox.gospel_vox",
+            "certificate_hash": "bacbd9a4c2c1e485fb63f093617cca5c52810658"
+          }
+        },
+        {
+          "client_id": "761780336670-k6nfbufsr4ajk04hg8tli75dp6gb4voo.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gospelvox.gospel_vox",
+            "certificate_hash": "8990489d7413814ed38e7abf49a3b431f6f0c6da"
+          }
+        },
+        {
+          "client_id": "761780336670-u6s0ujpobipvef87t713dfhet2juvsq9.apps.googleusercontent.com",
+          "client_type": 1,
+          "android_info": {
+            "package_name": "com.gospelvox.gospel_vox",
+            "certificate_hash": "c64a8706e4c42b1562c408e15bc9177af539dcfb"
+          }
+        },
+        {
           "client_id": "761780336670-t7sllsa9fkrke1o0ah94dt1eab1b10ul.apps.googleusercontent.com",
           "client_type": 3
         }
@@ -29,6 +53,13 @@
             {
               "client_id": "761780336670-t7sllsa9fkrke1o0ah94dt1eab1b10ul.apps.googleusercontent.com",
               "client_type": 3
+            },
+            {
+              "client_id": "761780336670-ggv79vir65e07el03o6ldtvslb5mlma1.apps.googleusercontent.com",
+              "client_type": 2,
+              "ios_info": {
+                "bundle_id": "com.gospelvox.gospelVox"
+              }
             }
           ]
         }

@@ -1,4 +1,5 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+<manifest xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:tools="http://schemas.android.com/tools">
 
     <!--
         Runtime permissions required across the app.
@@ -29,8 +30,20 @@
 
     <!-- image_picker -->
     <uses-permission android:name="android.permission.CAMERA"/>
-    <uses-permission android:name="android.permission.READ_MEDIA_IMAGES"/>
-    <!-- Android 12 and below still use the legacy storage permission. -->
+    <!-- READ_MEDIA_IMAGES is stripped because image_picker auto-falls-back
+         to the Android Photo Picker (ACTION_PICK_IMAGES) on API 33+ when
+         the permission isn't granted. Photo Picker doesn't require any
+         permission and runs in a sandboxed system process, which is what
+         Google's "Photo and video permissions" policy mandates for apps
+         with one-time / infrequent picking (profile avatar, registration
+         documents). image_picker_android 0.8.9+ handles the delegation
+         transparently. -->
+    <uses-permission
+        android:name="android.permission.READ_MEDIA_IMAGES"
+        tools:node="remove"/>
+    <!-- Android 12 and below still use the legacy storage permission —
+         Photo Picker isn't available pre-API-33, so image_picker falls
+         back to the classic gallery flow that reads MediaStore directly. -->
     <uses-permission
         android:name="android.permission.READ_EXTERNAL_STORAGE"
         android:maxSdkVersion="32"/>
@@ -81,6 +94,17 @@
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE"/>
     <uses-permission android:name="android.permission.FOREGROUND_SERVICE_MICROPHONE"/>
 
+    <!-- Agora's SDK manifest injects FOREGROUND_SERVICE_MEDIA_PROJECTION
+         because its full feature set includes screen sharing. GospelVox
+         uses Agora for voice calls only, so the permission is unused.
+         Removing it here avoids a Play Console "undeclared foreground
+         service" prompt and keeps the runtime permission surface honest
+         — if we ever add screen sharing, delete this remove directive
+         and declare the usage in Play Console's data safety form. -->
+    <uses-permission
+        android:name="android.permission.FOREGROUND_SERVICE_MEDIA_PROJECTION"
+        tools:node="remove"/>
+
     <!-- Optional features — let Play Store filter correctly instead of
          rejecting devices without a camera. -->
     <uses-feature
@@ -119,17 +143,35 @@
             <!-- Custom-scheme deep link for shared priest profiles.
                  A URL like gospelvox://priest/<uid> opens the app
                  straight to that priest's profile page (handled in
-                 lib/core/services/deep_link_service.dart). This is
-                 the dummy scheme — when we get the gospelvox.app
-                 domain set up with assetlinks.json, add a parallel
-                 intent-filter for `android:scheme="https"
-                 android:host="gospelvox.app"` with autoVerify="true"
-                 and the same paths. The two can coexist. -->
+                 lib/core/services/deep_link_service.dart). The HTTPS
+                 filter below coexists with this one so a shared
+                 https://gospelvox.app/priest/<uid> link also opens
+                 the app on devices where Android resolves it. -->
             <intent-filter android:autoVerify="false">
                 <action android:name="android.intent.action.VIEW"/>
                 <category android:name="android.intent.category.DEFAULT"/>
                 <category android:name="android.intent.category.BROWSABLE"/>
                 <data android:scheme="gospelvox"/>
+            </intent-filter>
+
+            <!-- HTTPS deep link for the same profile route. Marked
+                 autoVerify="true" so once the domain serves
+                 https://gospelvox.app/.well-known/assetlinks.json
+                 with this app's release SHA-256 fingerprint, Android
+                 will skip the disambiguation chooser and open the
+                 app directly. Until assetlinks.json is published the
+                 filter still works as a "verified-on-best-effort"
+                 link — Android falls back to a chooser dialog, the
+                 user-experience equivalent of autoVerify="false".
+                 No regression for shipping today; ready for the
+                 domain the moment it's set up. -->
+            <intent-filter android:autoVerify="true">
+                <action android:name="android.intent.action.VIEW"/>
+                <category android:name="android.intent.category.DEFAULT"/>
+                <category android:name="android.intent.category.BROWSABLE"/>
+                <data android:scheme="https"
+                      android:host="gospelvox.app"
+                      android:pathPrefix="/priest/"/>
             </intent-filter>
         </activity>
         <!-- Don't delete the meta-data below.

@@ -134,6 +134,13 @@ class NotificationService {
       FlutterLocalNotificationsPlugin();
 
   bool _isInitialized = false;
+  // Flips true the first time requestPermissionsIfNeeded() runs in this
+  // process. Permission dialogs are intentionally NOT triggered from
+  // init() — Play Store reviewers (and Apple HIG 4.5.4) flag apps that
+  // prompt for push permission at cold-start before the user has done
+  // anything. Asking once after sign-in, when the user has demonstrated
+  // they want to engage with the app, is both better UX and policy-safe.
+  bool _permissionsRequested = false;
 
   // Pending notification-tap route. Drained by the shell pages on
   // mount so a tap that wakes the app from terminated state still
@@ -176,44 +183,11 @@ class NotificationService {
     // isolate. Synchronous, no network.
     FirebaseMessaging.onBackgroundMessage(firebaseMessagingBackgroundHandler);
 
-    // Permission dialog — local, fast. Returns the user's choice.
-    final settings = await _messaging.requestPermission(
-      alert: true,
-      badge: true,
-      sound: true,
-      provisional: false,
-      announcement: false,
-      carPlay: false,
-      criticalAlert: false,
-    );
-
-    debugPrint('[FCM] Permission: ${settings.authorizationStatus}');
-
-    if (settings.authorizationStatus == AuthorizationStatus.denied) {
-      debugPrint('[FCM] User denied notification permission');
-      return;
-    }
-
     // Local-notifications channel setup — pure platform-channel work,
-    // no network required.
+    // no network required, no permission required. Channels can be
+    // created before the user grants permission; they simply won't be
+    // used to display anything until permission lands.
     await _setupLocalNotifications();
-
-    // Android-only: ask for the runtime notification permission
-    // (Android 13 / API 33+) and the battery-optimisation exemption.
-    // Both are idempotent — request() returns the existing grant
-    // without showing a dialog if the user already granted, and
-    // returns the existing denial without nagging if the user
-    // permanently refused. We fire-and-forget so a slow user
-    // dismissing the dialog doesn't block runApp.
-    //
-    // The battery-optimisation exemption is what keeps Samsung /
-    // Xiaomi / Realme from killing the app within seconds of
-    // backgrounding. Without this, FCM messages stop being
-    // delivered to a backgrounded priest in under a minute on
-    // those OEMs and incoming requests silently disappear.
-    if (!kIsWeb && Platform.isAndroid) {
-      unawaited(_requestAndroidPermissionsSafely());
-    }
 
     // Register all stream listeners synchronously. Doing this BEFORE
     // any network call ensures we never miss a foreground / tap event
@@ -238,6 +212,54 @@ class NotificationService {
     unawaited(_drainInitialMessageWithTimeout());
     unawaited(_drainLocalLaunchDetailsWithTimeout());
     unawaited(_setForegroundOptionsSafely());
+  }
+
+  // Triggers the system-level push-permission dialog. Called from each
+  // role-specific shell page (user_shell_page, priest_dashboard_page,
+  // admin_dashboard_page) on first mount — by the time those screens
+  // are visible, the user has signed in and picked a role, which is
+  // the right UX moment to ask. Idempotent and gated by a process-wide
+  // flag so re-mounting the shell (tab switches, hot reload) does not
+  // re-prompt.
+  //
+  // Safe to call from any context — failure is swallowed, the app
+  // still functions; the user just won't receive pushes until they
+  // re-grant from system Settings.
+  Future<void> requestPermissionsIfNeeded() async {
+    if (_permissionsRequested) return;
+    _permissionsRequested = true;
+
+    try {
+      final settings = await _messaging.requestPermission(
+        alert: true,
+        badge: true,
+        sound: true,
+        provisional: false,
+        announcement: false,
+        carPlay: false,
+        criticalAlert: false,
+      );
+      debugPrint('[FCM] Permission: ${settings.authorizationStatus}');
+    } catch (e) {
+      debugPrint('[FCM] requestPermission failed: $e');
+    }
+
+    // Android-only: ask for the runtime notification permission
+    // (Android 13 / API 33+) and the battery-optimisation exemption.
+    // Both are idempotent — request() returns the existing grant
+    // without showing a dialog if the user already granted, and
+    // returns the existing denial without nagging if the user
+    // permanently refused. We fire-and-forget so a slow user
+    // dismissing the dialog doesn't block the shell mount.
+    //
+    // The battery-optimisation exemption is what keeps Samsung /
+    // Xiaomi / Realme from killing the app within seconds of
+    // backgrounding. Without this, FCM messages stop being
+    // delivered to a backgrounded priest in under a minute on
+    // those OEMs and incoming requests silently disappear.
+    if (!kIsWeb && Platform.isAndroid) {
+      unawaited(_requestAndroidPermissionsSafely());
+    }
   }
 
   Future<void> _saveTokenWithTimeout() async {

@@ -19,7 +19,7 @@ const db = admin.firestore();
 // We also pin the authoritative amount to coin_packs config here,
 // so a tampered client cannot ask for 10,000 coins for ₹1.
 exports.createCoinOrder = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d;
+    var _a, _b;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -52,10 +52,22 @@ exports.createCoinOrder = (0, https_1.onCall)({ region: constants_1.REGION }, as
         if (!priorPurchase.empty) {
             throw new https_1.HttpsError("failed-precondition", "Welcome offer already claimed");
         }
+        // Fail loudly when the welcome-offer config is missing rather
+        // than silently charging users the historical 29 INR / 100 coins.
+        // A misconfigured deploy is a deploy problem; charging customers
+        // an undocumented price for it is a refund-and-rating problem.
         const settingsDoc = await db.doc("app_config/settings").get();
         const s = (_a = settingsDoc.data()) !== null && _a !== void 0 ? _a : {};
-        priceRupees = Number((_b = s.welcomeOfferPrice) !== null && _b !== void 0 ? _b : 29);
-        coins = Number((_c = s.welcomeOfferCoins) !== null && _c !== void 0 ? _c : 100);
+        const priceRaw = s.welcomeOfferPrice;
+        const coinsRaw = s.welcomeOfferCoins;
+        if (typeof priceRaw !== "number" ||
+            typeof coinsRaw !== "number" ||
+            priceRaw <= 0 ||
+            coinsRaw <= 0) {
+            throw new https_1.HttpsError("failed-precondition", "Welcome offer is not configured. Please pick another pack.");
+        }
+        priceRupees = priceRaw;
+        coins = coinsRaw;
     }
     else {
         const packDoc = await db
@@ -64,7 +76,7 @@ exports.createCoinOrder = (0, https_1.onCall)({ region: constants_1.REGION }, as
         if (!packDoc.exists) {
             throw new https_1.HttpsError("not-found", "Unknown coin pack");
         }
-        const p = (_d = packDoc.data()) !== null && _d !== void 0 ? _d : {};
+        const p = (_b = packDoc.data()) !== null && _b !== void 0 ? _b : {};
         if (p.isActive !== true) {
             throw new https_1.HttpsError("failed-precondition", "Pack not available");
         }

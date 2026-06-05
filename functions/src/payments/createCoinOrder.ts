@@ -62,10 +62,27 @@ export const createCoinOrder = onCall(
           "Welcome offer already claimed",
         );
       }
+      // Fail loudly when the welcome-offer config is missing rather
+      // than silently charging users the historical 29 INR / 100 coins.
+      // A misconfigured deploy is a deploy problem; charging customers
+      // an undocumented price for it is a refund-and-rating problem.
       const settingsDoc = await db.doc("app_config/settings").get();
       const s = settingsDoc.data() ?? {};
-      priceRupees = Number(s.welcomeOfferPrice ?? 29);
-      coins = Number(s.welcomeOfferCoins ?? 100);
+      const priceRaw = s.welcomeOfferPrice;
+      const coinsRaw = s.welcomeOfferCoins;
+      if (
+        typeof priceRaw !== "number" ||
+        typeof coinsRaw !== "number" ||
+        priceRaw <= 0 ||
+        coinsRaw <= 0
+      ) {
+        throw new HttpsError(
+          "failed-precondition",
+          "Welcome offer is not configured. Please pick another pack.",
+        );
+      }
+      priceRupees = priceRaw;
+      coins = coinsRaw;
     } else {
       const packDoc = await db
         .doc(`app_config/coin_packs/packs/${packId}`)

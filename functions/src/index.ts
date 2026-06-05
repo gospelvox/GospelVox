@@ -8,7 +8,9 @@ export {verifyCoinPurchase} from "./payments/verifyCoinPurchase";
 export {createActivationOrder} from "./payments/createActivationOrder";
 export {verifyActivationFee} from "./payments/verifyActivationFee";
 export {verifyBibleSessionPayment} from "./payments/verifyBibleSessionPayment";
-export {verifyMatrimonyPayment} from "./payments/verifyMatrimonyPayment";
+// Matrimony payments intentionally not exported — the feature is not
+// shipping in v1, and exporting a stub that throws `unimplemented`
+// surfaces as a real runtime crash if anything ever invokes it.
 
 // ═══ Sessions ═══
 export {createSessionRequest} from "./sessions/createSessionRequest";
@@ -30,12 +32,16 @@ export {getPublicPriestReviews} from "./sessions/getPublicPriestReviews";
 
 // ═══ Admin ═══
 export {approveRejectPriest} from "./admin/approveRejectPriest";
-export {approveRejectMatrimony} from "./admin/approveRejectMatrimony";
-export {updateAppConfig} from "./admin/updateAppConfig";
 export {onReportResolved} from "./admin/onReportResolved";
+// approveRejectMatrimony + updateAppConfig are unimplemented stubs —
+// not exported so they aren't deployed. Admin currently edits
+// app_config/settings directly via the Firestore-rules-protected
+// path; introduce the CF when matrimony or a config UI ships.
 
 // ═══ Priest ═══
-export {activatePriestAccount} from "./priest/activatePriestAccount";
+// activatePriestAccount is orphaned — the live activation flow runs
+// through verifyActivationFee (Razorpay-signed). Keeping the stub
+// exported would deploy a CF that only throws.
 export {requestWithdrawal} from "./priest/requestWithdrawal";
 
 // ═══ Users ═══
@@ -54,4 +60,7 @@ export {createBibleSession} from "./bible/createBibleSession";
 export {onBibleSessionRated} from "./bible/onBibleSessionRated";
 
 // ═══ Notifications ═══
-export {sendNotification} from "./notifications/sendNotification";
+// sendNotification stub removed — push delivery goes through sendPush
+// (FCM) and the per-event CFs (missedRequestNotif, onSessionTerminal,
+// etc.) that compose their own payloads. The bare stub never ran in
+// production and only added a deployed-but-broken callable to probe.

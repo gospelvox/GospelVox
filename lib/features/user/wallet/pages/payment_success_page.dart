@@ -10,7 +10,6 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:intl/intl.dart';
 
 import 'package:gospel_vox/core/theme/app_colors.dart';
-import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/coin_icon.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
@@ -92,11 +91,6 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
     context.pop();
   }
 
-  void _viewTransactions() {
-    // TODO Week 4: navigate to transaction history page
-    AppSnackBar.info(context, "Transaction history coming soon");
-  }
-
   @override
   Widget build(BuildContext context) {
     // PopScope blocks the hardware back button mid-animation. Without
@@ -119,9 +113,7 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
                 _buildCoinsCard(),
                 const Spacer(flex: 4),
                 _buildContinueButton(),
-                const SizedBox(height: 12),
-                _buildViewTransactionsLink(),
-                const SizedBox(height: 8),
+                const SizedBox(height: 20),
               ],
             ),
           ),
@@ -324,24 +316,4 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
     );
   }
 
-  Widget _buildViewTransactionsLink() {
-    return FadeTransition(
-      opacity: _fadeAnimation,
-      child: GestureDetector(
-        behavior: HitTestBehavior.opaque,
-        onTap: _viewTransactions,
-        child: Padding(
-          padding: const EdgeInsets.symmetric(vertical: 6),
-          child: Text(
-            "View transaction history",
-            style: GoogleFonts.inter(
-              fontSize: 13,
-              fontWeight: FontWeight.w500,
-              color: AppColors.muted,
-            ),
-          ),
-        ),
-      ),
-    );
-  }
 }

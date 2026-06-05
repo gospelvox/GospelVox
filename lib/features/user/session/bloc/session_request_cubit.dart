@@ -89,6 +89,14 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
       } else if (reason.contains('priest-busy')) {
         emit(const SessionRequestError(
             'This speaker is currently in another session.'));
+      } else if (reason.contains('priest-blocked')) {
+        // User has this speaker on their block list. The feed already
+        // hides them, so the only way to hit this is a stale view (the
+        // user navigated to the profile before the home stream caught
+        // up). Tell them honestly so they don't keep retrying.
+        emit(const SessionRequestError(
+            "You've blocked this speaker. Unblock from "
+            'Settings to start a session again.'));
       } else if (reason.contains('unimplemented')) {
         emit(const SessionRequestError(
             'Server not deployed yet. Run: firebase deploy '

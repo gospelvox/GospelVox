@@ -12,9 +12,11 @@
 
 import 'dart:io';
 
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/config/legal_urls.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
@@ -40,6 +42,28 @@ class RegistrationStep4Review extends StatefulWidget {
 
 class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
   bool _termsAccepted = false;
+
+  // Tap recognisers for the Terms / Privacy spans in the
+  // acknowledgement row. Held on the State so dispose() can release
+  // them — leaking a GestureRecognizer per page-pop adds up.
+  late final TapGestureRecognizer _termsTap;
+  late final TapGestureRecognizer _privacyTap;
+
+  @override
+  void initState() {
+    super.initState();
+    _termsTap = TapGestureRecognizer()
+      ..onTap = () => launchLegalUrl(context, LegalUrls.termsOfService);
+    _privacyTap = TapGestureRecognizer()
+      ..onTap = () => launchLegalUrl(context, LegalUrls.privacyPolicy);
+  }
+
+  @override
+  void dispose() {
+    _termsTap.dispose();
+    _privacyTap.dispose();
+    super.dispose();
+  }
 
   // Defensive sanity check. In theory the per-step validators prevent
   // a priest from reaching this page with holes — but a user who
@@ -327,19 +351,23 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
                       ),
                       TextSpan(
                         text: 'Terms of Service',
+                        recognizer: _termsTap,
                         style: GoogleFonts.inter(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                           color: AppColors.primaryBrown,
+                          decoration: TextDecoration.underline,
                         ),
                       ),
                       const TextSpan(text: ' and '),
                       TextSpan(
                         text: 'Privacy Policy',
+                        recognizer: _privacyTap,
                         style: GoogleFonts.inter(
                           fontSize: 13,
                           fontWeight: FontWeight.w500,
                           color: AppColors.primaryBrown,
+                          decoration: TextDecoration.underline,
                         ),
                       ),
                       const TextSpan(text: '.'),

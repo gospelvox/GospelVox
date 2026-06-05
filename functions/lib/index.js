@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.sendNotification = exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.activatePriestAccount = exports.onReportResolved = exports.updateAppConfig = exports.approveRejectMatrimony = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyMatrimonyPayment = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -14,8 +14,9 @@ var verifyActivationFee_1 = require("./payments/verifyActivationFee");
 Object.defineProperty(exports, "verifyActivationFee", { enumerable: true, get: function () { return verifyActivationFee_1.verifyActivationFee; } });
 var verifyBibleSessionPayment_1 = require("./payments/verifyBibleSessionPayment");
 Object.defineProperty(exports, "verifyBibleSessionPayment", { enumerable: true, get: function () { return verifyBibleSessionPayment_1.verifyBibleSessionPayment; } });
-var verifyMatrimonyPayment_1 = require("./payments/verifyMatrimonyPayment");
-Object.defineProperty(exports, "verifyMatrimonyPayment", { enumerable: true, get: function () { return verifyMatrimonyPayment_1.verifyMatrimonyPayment; } });
+// Matrimony payments intentionally not exported — the feature is not
+// shipping in v1, and exporting a stub that throws `unimplemented`
+// surfaces as a real runtime crash if anything ever invokes it.
 // ═══ Sessions ═══
 var createSessionRequest_1 = require("./sessions/createSessionRequest");
 Object.defineProperty(exports, "createSessionRequest", { enumerable: true, get: function () { return createSessionRequest_1.createSessionRequest; } });
@@ -49,15 +50,16 @@ Object.defineProperty(exports, "getPublicPriestReviews", { enumerable: true, get
 // ═══ Admin ═══
 var approveRejectPriest_1 = require("./admin/approveRejectPriest");
 Object.defineProperty(exports, "approveRejectPriest", { enumerable: true, get: function () { return approveRejectPriest_1.approveRejectPriest; } });
-var approveRejectMatrimony_1 = require("./admin/approveRejectMatrimony");
-Object.defineProperty(exports, "approveRejectMatrimony", { enumerable: true, get: function () { return approveRejectMatrimony_1.approveRejectMatrimony; } });
-var updateAppConfig_1 = require("./admin/updateAppConfig");
-Object.defineProperty(exports, "updateAppConfig", { enumerable: true, get: function () { return updateAppConfig_1.updateAppConfig; } });
 var onReportResolved_1 = require("./admin/onReportResolved");
 Object.defineProperty(exports, "onReportResolved", { enumerable: true, get: function () { return onReportResolved_1.onReportResolved; } });
+// approveRejectMatrimony + updateAppConfig are unimplemented stubs —
+// not exported so they aren't deployed. Admin currently edits
+// app_config/settings directly via the Firestore-rules-protected
+// path; introduce the CF when matrimony or a config UI ships.
 // ═══ Priest ═══
-var activatePriestAccount_1 = require("./priest/activatePriestAccount");
-Object.defineProperty(exports, "activatePriestAccount", { enumerable: true, get: function () { return activatePriestAccount_1.activatePriestAccount; } });
+// activatePriestAccount is orphaned — the live activation flow runs
+// through verifyActivationFee (Razorpay-signed). Keeping the stub
+// exported would deploy a CF that only throws.
 var requestWithdrawal_1 = require("./priest/requestWithdrawal");
 Object.defineProperty(exports, "requestWithdrawal", { enumerable: true, get: function () { return requestWithdrawal_1.requestWithdrawal; } });
 // ═══ Users ═══
@@ -85,6 +87,8 @@ Object.defineProperty(exports, "createBibleSession", { enumerable: true, get: fu
 var onBibleSessionRated_1 = require("./bible/onBibleSessionRated");
 Object.defineProperty(exports, "onBibleSessionRated", { enumerable: true, get: function () { return onBibleSessionRated_1.onBibleSessionRated; } });
 // ═══ Notifications ═══
-var sendNotification_1 = require("./notifications/sendNotification");
-Object.defineProperty(exports, "sendNotification", { enumerable: true, get: function () { return sendNotification_1.sendNotification; } });
+// sendNotification stub removed — push delivery goes through sendPush
+// (FCM) and the per-event CFs (missedRequestNotif, onSessionTerminal,
+// etc.) that compose their own payloads. The bare stub never ran in
+// production and only added a deployed-but-broken callable to probe.
 //# sourceMappingURL=index.js.map

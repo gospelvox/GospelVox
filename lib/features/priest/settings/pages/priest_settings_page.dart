@@ -20,24 +20,16 @@ import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:google_sign_in/google_sign_in.dart';
-import 'package:url_launcher/url_launcher.dart';
-
+import 'package:gospel_vox/core/config/legal_urls.dart';
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_version_text.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
-
-// Public legal + support endpoints. Hosted pages may not exist yet
-// at the time of writing; the URL is what we ship to users / the
-// app store and what we'll keep stable across releases. Updating
-// the page content is a separate concern from the app build.
-const String _kPrivacyPolicyUrl = 'https://gospelvox.com/privacy-policy';
-const String _kHelpCenterUrl = 'https://gospelvox.com/help';
-const String _kSupportEmail = 'support@gospelvox.com';
 
 class PriestSettingsPage extends StatefulWidget {
   const PriestSettingsPage({super.key});
@@ -83,50 +75,6 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
     await context.push('/priest/notifications');
     // No manual refresh needed — the badge listens to a live stream
     // and updates the moment the notifications page marks reads.
-  }
-
-  // Opens an external URL in the system browser. Surfaces a snackbar
-  // on launch failure (e.g. no browser, malformed URL) so a tap that
-  // does nothing visible at least explains itself.
-  Future<void> _launchExternalUrl(String url) async {
-    final uri = Uri.tryParse(url);
-    if (uri == null) {
-      if (!mounted) return;
-      AppSnackBar.error(context, "Couldn't open the link.");
-      return;
-    }
-    try {
-      final ok =
-          await launchUrl(uri, mode: LaunchMode.externalApplication);
-      if (!ok && mounted) {
-        AppSnackBar.error(context, "Couldn't open the link.");
-      }
-    } catch (_) {
-      if (!mounted) return;
-      AppSnackBar.error(context, "Couldn't open the link.");
-    }
-  }
-
-  // Opens the device's default mail composer to support@gospelvox.com.
-  // Falls back to a snackbar when no mail app is registered (some
-  // tablets / emulator builds).
-  Future<void> _openSupportEmail() async {
-    final uri = Uri(
-      scheme: 'mailto',
-      path: _kSupportEmail,
-      queryParameters: <String, String>{
-        'subject': 'Gospel Vox Support Request',
-      },
-    );
-    try {
-      final ok = await launchUrl(uri);
-      if (!ok && mounted) {
-        AppSnackBar.error(context, 'No email app available on this device.');
-      }
-    } catch (_) {
-      if (!mounted) return;
-      AppSnackBar.error(context, 'No email app available on this device.');
-    }
   }
 
   // Opens the irreversible delete-account confirmation sheet. The sheet
@@ -347,18 +295,27 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                   _SettingsTile(
                     icon: AppIcons.help,
                     title: 'Help & FAQ',
-                    onTap: () => _launchExternalUrl(_kHelpCenterUrl),
+                    onTap: () =>
+                        launchLegalUrl(context, LegalUrls.helpCenter),
                   ),
                   _SettingsTile(
                     icon: AppIcons.mail,
                     title: 'Contact Support',
                     subtitle: 'Get help with your account',
-                    onTap: _openSupportEmail,
+                    onTap: () => launchSupportEmail(context),
                   ),
                   _SettingsTile(
                     icon: AppIcons.document,
                     title: 'Terms & Privacy Policy',
-                    onTap: () => _launchExternalUrl(_kPrivacyPolicyUrl),
+                    onTap: () =>
+                        launchLegalUrl(context, LegalUrls.privacyPolicy),
+                  ),
+                  _SettingsTile(
+                    icon: AppIcons.wallet,
+                    title: 'Refund Policy',
+                    subtitle: 'Activation fee, withdrawals, refunds',
+                    onTap: () =>
+                        launchLegalUrl(context, LegalUrls.refundPolicy),
                   ),
                 ],
               ),
@@ -405,8 +362,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
               ),
               const SizedBox(height: 18),
               Center(
-                child: Text(
-                  'Gospel Vox v1.0.0',
+                child: AppVersionText(
                   style: GoogleFonts.inter(
                     fontSize: 11,
                     fontWeight: FontWeight.w400,
@@ -1049,6 +1005,18 @@ class _PriestDeleteAccountSheetState
                   _ConsequenceRow('Remove your speaker profile from the feed'),
                   SizedBox(height: 8),
                   _ConsequenceRow('Delete your personal data'),
+                  SizedBox(height: 8),
+                  // Wallet-balance disclosure mirrors the user-side
+                  // "Forfeit any remaining coin balance" line. Without
+                  // this, a priest who deletes while holding earnings
+                  // would assume support can restore the funds — we
+                  // can't (the Firebase Auth account is gone). The
+                  // off-ramp is to withdraw first; the language is
+                  // direct so the priest sees the choice clearly.
+                  _ConsequenceRow(
+                    'Forfeit any remaining wallet balance — '
+                    'withdraw earnings first',
+                  ),
                   SizedBox(height: 8),
                   _ConsequenceRow('Revoke access to all services'),
                 ],

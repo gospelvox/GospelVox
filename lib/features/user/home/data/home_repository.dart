@@ -81,6 +81,68 @@ class HomeRepository {
     return priests;
   }
 
+  // ─── User block (per priest) ─────────────────────────────
+  //
+  // Block is intentionally separate from Mute:
+  //   • Mute (in session_repository.setPriestMuted) suppresses free
+  //     priest messages but the priest still appears in the feed and
+  //     is dialable.
+  //   • Block hides the priest from the feed entirely AND the server
+  //     refuses createSessionRequest against them, so a user who's
+  //     been harassed can fully sever the connection.
+  // Per Google Play UGC policy, an "ability to block" is the second
+  // pillar (alongside Report) for any app where strangers interact.
+
+  // Live stream of the current user's blocked-priest list. Drives the
+  // feed-filter inside HomeCubit and the unblock list on the Settings
+  // page. Returns a Set so membership checks are O(1).
+  Stream<Set<String>> watchBlockedPriestIds(String userId) {
+    return _db.doc('users/$userId').snapshots().map((snap) {
+      final raw = snap.data()?['blockedPriestIds'];
+      if (raw is List) {
+        return raw.whereType<String>().toSet();
+      }
+      return const <String>{};
+    });
+  }
+
+  // One-shot read for the Settings page where a live stream would be
+  // wasteful (the user opens the page, taps Unblock, leaves — total
+  // dwell ~10s).
+  Future<Set<String>> getBlockedPriestIds(String userId) async {
+    final doc = await _db
+        .doc('users/$userId')
+        .get()
+        .timeout(const Duration(seconds: 8));
+    final raw = doc.data()?['blockedPriestIds'];
+    if (raw is List) {
+      return raw.whereType<String>().toSet();
+    }
+    return const <String>{};
+  }
+
+  // Adds or removes a priest from the user's block list. Idempotent —
+  // arrayUnion/arrayRemove no-op if the value is already (not) there,
+  // so a duplicated Block tap from a flaky network doesn't double-
+  // write or hit a "already blocked" error.
+  Future<void> setPriestBlocked({
+    required String userId,
+    required String priestId,
+    required bool blocked,
+  }) async {
+    await _db
+        .doc('users/$userId')
+        .set(
+          {
+            'blockedPriestIds': blocked
+                ? FieldValue.arrayUnion([priestId])
+                : FieldValue.arrayRemove([priestId]),
+          },
+          SetOptions(merge: true),
+        )
+        .timeout(const Duration(seconds: 8));
+  }
+
   // Detail fetch for the priest profile page. We don't stream this —
   // the profile page is short-lived and a single read keeps Firestore
   // costs predictable for a flow the user may open/close rapidly.

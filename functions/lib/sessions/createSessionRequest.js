@@ -79,6 +79,16 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
     }
     const userData = (_b = userSnap.data()) !== null && _b !== void 0 ? _b : {};
     const coinBalance = Number((_c = userData.coinBalance) !== null && _c !== void 0 ? _c : 0);
+    // 1a. User has blocked this priest? Refuse before any other
+    //     state mutation. The client also hides blocked priests from
+    //     the feed (HomeCubit's blocked-id stream), so reaching this
+    //     CF with a blocked priestId is either a stale view or a
+    //     tampered request — either way, hard-reject.
+    const blockedRaw = userData.blockedPriestIds;
+    if (Array.isArray(blockedRaw) &&
+        blockedRaw.includes(priestId)) {
+        throw new https_1.HttpsError("failed-precondition", "priest-blocked");
+    }
     // 2. Rates + commission (locked into the doc so admin edits
     //    after this moment can't rewrite what the user owes)
     const settingsSnap = await db.doc("app_config/settings").get();
