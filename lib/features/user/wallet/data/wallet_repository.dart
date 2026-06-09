@@ -5,7 +5,8 @@ import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 
 class WalletRepository {
   final FirebaseFirestore _firestore = FirebaseFirestore.instance;
-  final FirebaseFunctions _functions = FirebaseFunctions.instanceFor(region: 'asia-south1');
+  final FirebaseFunctions _functions =
+      FirebaseFunctions.instanceFor(region: 'asia-south1');
 
   // In-memory pack cache. Coin packs change ~once a quarter at most
   // (admin tweaks pricing), but the recharge sheet opens dozens of
@@ -67,81 +68,36 @@ class WalletRepository {
     return packs;
   }
 
-  // Check if user has ever purchased coins (for welcome offer)
-  Future<bool> hasEverPurchased(String uid) async {
-    final snap = await _firestore
-        .collection('wallet_transactions')
-        .where('userId', isEqualTo: uid)
-        .where('type', isEqualTo: 'purchase')
-        .limit(1)
-        .get()
-        .timeout(const Duration(seconds: 10));
-    return snap.docs.isNotEmpty;
-  }
-
-  // Get welcome offer settings
-  Future<Map<String, int>> getWelcomeOffer() async {
-    final doc = await _firestore
-        .doc('app_config/settings')
-        .get()
-        .timeout(const Duration(seconds: 10));
-    final data = doc.data() ?? {};
-    return {
-      'coins': (data['welcomeOfferCoins'] as num?)?.toInt() ?? 100,
-      'price': (data['welcomeOfferPrice'] as num?)?.toInt() ?? 29,
-    };
-  }
-
-  // Creates a Razorpay order on the server. Returns the order id
-  // and the authoritative amount (in paise) to pass to the checkout
-  // sheet. The CF looks up the price from Firestore, so the client
-  // cannot fabricate a cheaper order for a more expensive pack.
-  Future<CoinOrder> createCoinOrder({required String packId}) async {
-    final callable = _functions.httpsCallable('createCoinOrder');
-    final result = await callable
-        .call({'packId': packId})
-        .timeout(const Duration(seconds: 15));
-    final data = Map<String, dynamic>.from(result.data as Map);
-    return CoinOrder(
-      orderId: data['orderId'] as String,
-      amountPaise: (data['amount'] as num).toInt(),
-      coins: (data['coins'] as num).toInt(),
-      priceRupees: (data['priceRupees'] as num).toInt(),
-    );
-  }
-
-  // Verifies the signature Razorpay returned on successful payment,
-  // then credits coins. The `packId` is redundant (the server also
-  // has it in the order's notes) but passing it lets the CF reject
-  // a payment that was somehow redirected to a different pack.
-  Future<int> verifyCoinPurchase({
-    required String razorpayPaymentId,
-    required String razorpayOrderId,
-    required String razorpaySignature,
-    required String packId,
+  // Verifies a Google Play purchase token against the
+  // verifyCoinPurchase Cloud Function. The server resolves the coin
+  // count from the pack doc keyed off productId and credits
+  // server-side — this client NEVER credits coins locally. Throws
+  // FirebaseFunctionsException on server-side rejection; callers
+  // should handle the stable code/message contract documented on
+  // the server.
+  Future<VerifyCoinPurchaseResult> verifyCoinPurchase({
+    required String productId,
+    required String purchaseToken,
   }) async {
     final callable = _functions.httpsCallable('verifyCoinPurchase');
     final result = await callable.call({
-      'razorpayPaymentId': razorpayPaymentId,
-      'razorpayOrderId': razorpayOrderId,
-      'razorpaySignature': razorpaySignature,
-      'packId': packId,
-    }).timeout(const Duration(seconds: 15));
+      'productId': productId,
+      'purchaseToken': purchaseToken,
+    }).timeout(const Duration(seconds: 20));
     final data = Map<String, dynamic>.from(result.data as Map);
-    return (data['newBalance'] as num?)?.toInt() ?? 0;
+    return VerifyCoinPurchaseResult(
+      newBalance: (data['newBalance'] as num?)?.toInt() ?? 0,
+      alreadyProcessed: data['alreadyProcessed'] as bool? ?? false,
+    );
   }
 }
 
-class CoinOrder {
-  final String orderId;
-  final int amountPaise;
-  final int coins;
-  final int priceRupees;
+class VerifyCoinPurchaseResult {
+  final int newBalance;
+  final bool alreadyProcessed;
 
-  const CoinOrder({
-    required this.orderId,
-    required this.amountPaise,
-    required this.coins,
-    required this.priceRupees,
+  const VerifyCoinPurchaseResult({
+    required this.newBalance,
+    required this.alreadyProcessed,
   });
 }

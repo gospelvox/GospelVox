@@ -20,15 +20,16 @@
 
 import 'dart:math' as math;
 
+import 'dart:async';
+
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
 
+import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
-import 'package:gospel_vox/core/services/razorpay_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
@@ -105,29 +106,34 @@ class RechargeSheet extends StatefulWidget {
 
 class _RechargeSheetState extends State<RechargeSheet> {
   late final WalletRepository _wallet = sl<WalletRepository>();
-  late final RazorpayService _razorpay;
+  late final IapService _iap = sl<IapService>();
+  StreamSubscription<IapOutcome>? _iapOutcomeSubscription;
 
   bool _loading = true;
   String? _error;
   List<CoinPackModel> _packs = const [];
   CoinPackModel? _selected;
 
-  // Lock against double-tap of Proceed while we're already creating
-  // a server order or waiting for Razorpay to open.
+  // Lock against double-tap of Proceed while a buy is dispatching
+  // to the Play sheet or the server verify is in flight. The
+  // app-wide IapService outcome stream releases this on
+  // success/error/cancel.
   bool _payInFlight = false;
 
-  // Preserved across the Razorpay round-trip so the verify call
-  // knows which pack the payment was for.
+  // Tracks the pack the user picked when we kicked off a buy so the
+  // success snackbar can render "+N coins" without re-deriving N
+  // from the productId. Cleared on every outcome.
   CoinPackModel? _pendingPack;
 
   @override
   void initState() {
     super.initState();
-    _razorpay = RazorpayService();
-    _razorpay.init();
-    _razorpay.onSuccess = _onPaySuccess;
-    _razorpay.onFailure = _onPayFailure;
-    _razorpay.onWallet = (_) {};
+
+    // Subscribe to the SAME global IapService.outcomes stream the
+    // wallet page listens on. Two surfaces share one listener so a
+    // purchase that completes after the user dismissed the sheet
+    // still credits without losing the outcome.
+    _iapOutcomeSubscription = _iap.outcomes.listen(_onIapOutcome);
 
     // Warm-cache fast-path. If the pack list was fetched recently
     // (within the repository's TTL), render the sheet with content on
@@ -146,7 +152,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
 
   @override
   void dispose() {
-    _razorpay.dispose();
+    _iapOutcomeSubscription?.cancel();
     super.dispose();
   }
 
@@ -193,85 +199,132 @@ class _RechargeSheetState extends State<RechargeSheet> {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) return;
 
+    if (!_iap.isStoreAvailable) {
+      AppSnackBar.error(
+        context,
+        "In-app purchases aren't available on this device yet.",
+      );
+      return;
+    }
+
     HapticFeedback.lightImpact();
     setState(() => _payInFlight = true);
     _pendingPack = pack;
 
+    // Force-refresh the Firebase ID token so the server-side verify
+    // CF doesn't reject with UNAUTHENTICATED from a stale token —
+    // mirrors the wallet page's pre-purchase guard.
     try {
-      final order = await _wallet.createCoinOrder(packId: pack.id);
-      if (!mounted) return;
-
-      _razorpay.openCheckout(
-        razorpayOrderId: order.orderId,
-        amountInPaise: order.amountPaise,
-        description: '${pack.coins} coins',
-        userEmail: user.email ?? '',
-        userName: user.displayName ?? 'Gospel Vox user',
-      );
-    } catch (_) {
+      await user.getIdToken(true);
+    } catch (e) {
       _pendingPack = null;
       if (!mounted) return;
       setState(() => _payInFlight = false);
       AppSnackBar.error(
         context,
-        "Couldn't start payment. Try again.",
-      );
-    }
-  }
-
-  Future<void> _onPaySuccess(PaymentSuccessResponse response) async {
-    final pack = _pendingPack;
-    _pendingPack = null;
-
-    final paymentId = response.paymentId;
-    final orderId = response.orderId;
-    final signature = response.signature;
-
-    if (pack == null ||
-        paymentId == null ||
-        orderId == null ||
-        signature == null) {
-      if (!mounted) return;
-      setState(() => _payInFlight = false);
-      AppSnackBar.error(
-        context,
-        'Payment received but verification failed. '
-        'Contact support.',
+        "Couldn't verify your session. Sign out and sign in, then retry.",
       );
       return;
     }
 
-    try {
-      final newBalance = await _wallet.verifyCoinPurchase(
-        razorpayPaymentId: paymentId,
-        razorpayOrderId: orderId,
-        razorpaySignature: signature,
-        packId: pack.id,
-      );
+    final productId = _packIdToProductId(pack.id);
+    if (productId == null) {
+      _pendingPack = null;
       if (!mounted) return;
+      setState(() => _payInFlight = false);
+      AppSnackBar.error(context, "Couldn't find this pack. Please refresh.");
+      return;
+    }
 
-      HapticFeedback.mediumImpact();
-      AppSnackBar.success(
-        context,
-        '+${pack.coins} coins added (balance: $newBalance)',
-      );
-      Navigator.of(context).pop(true);
-    } catch (_) {
+    // Look up product details — the wallet cubit may have warm-
+    // cached it, but the recharge sheet is also a valid entry point
+    // (e.g. user pulled it up mid-call without visiting the wallet
+    // first), so we query lazily here too.
+    final products = await _iap.queryProducts({productId});
+    final product = products[productId];
+    if (product == null) {
+      _pendingPack = null;
       if (!mounted) return;
       setState(() => _payInFlight = false);
       AppSnackBar.error(
         context,
-        'Payment captured but server credit failed. '
-        'Coins will land shortly.',
+        "This pack isn't available in the Play Store yet.",
       );
+      return;
+    }
+
+    final started = await _iap.buyConsumable(product);
+    if (!mounted) return;
+    if (!started) {
+      // The IapService already emitted an unavailable/error outcome
+      // which our listener will handle. Release the local lock so
+      // the user can pick a different pack.
+      _pendingPack = null;
+      setState(() => _payInFlight = false);
     }
   }
 
-  void _onPayFailure(PaymentFailureResponse response) {
-    _pendingPack = null;
+  void _onIapOutcome(IapOutcome outcome) {
     if (!mounted) return;
-    setState(() => _payInFlight = false);
-    if (response.code == 2) return;
+    switch (outcome.kind) {
+      case IapOutcomeKind.success:
+        final pack = _pendingPack;
+        _pendingPack = null;
+        HapticFeedback.mediumImpact();
+        final coinsDelta = pack?.coins ?? 0;
+        final balance = outcome.newBalance ?? 0;
+        AppSnackBar.success(
+          context,
+          coinsDelta > 0
+              ? '+$coinsDelta coins added (balance: $balance)'
+              : 'Coins added (balance: $balance)',
+        );
+        // Pop true so the caller (voice/chat view) knows to re-check
+        // affordability and resume the session.
+        Navigator.of(context).pop(true);
+        break;
+
+      case IapOutcomeKind.pending:
+        setState(() => _payInFlight = false);
+        AppSnackBar.info(
+          context,
+          'Payment is processing. Coins will arrive shortly.',
+        );
+        break;
+
+      case IapOutcomeKind.canceled:
+        _pendingPack = null;
+        setState(() => _payInFlight = false);
+        break;
+
+      case IapOutcomeKind.error:
+        _pendingPack = null;
+        setState(() => _payInFlight = false);
+        AppSnackBar.error(
+          context,
+          outcome.message ?? "Couldn't complete your purchase.",
+        );
+        break;
+
+      case IapOutcomeKind.unavailable:
+        _pendingPack = null;
+        setState(() => _payInFlight = false);
+        AppSnackBar.error(
+          context,
+          "In-app purchases aren't available on this device yet.",
+        );
+        break;
+    }
+  }
+
+  // Mirrors the wallet cubit's mapping. Kept local rather than
+  // exposed because the recharge sheet is currently the only other
+  // caller and a top-level helper would split ownership of the
+  // SKU contract.
+  String? _packIdToProductId(String packId) {
+    final match = RegExp(r'^pack_(\d+)$').firstMatch(packId);
+    if (match == null) return null;
+    return 'coins_${match.group(1)}';
   }
 
   // Picks the 4 packs to show and arranges them so the popular one

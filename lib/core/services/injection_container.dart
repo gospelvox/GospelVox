@@ -2,6 +2,7 @@
 
 import 'package:get_it/get_it.dart';
 
+import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/features/admin/dashboard/bloc/dashboard_cubit.dart';
 import 'package:gospel_vox/features/admin/dashboard/data/dashboard_repository.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/coin_packs_cubit.dart';
@@ -62,9 +63,18 @@ Future<void> initDependencies() async {
   sl.registerFactory<CoinPacksCubit>(
       () => CoinPacksCubit(sl<CoinPacksRepository>()));
 
+  // In-app purchase service. Single instance owns the global
+  // purchase stream — see iap_service.dart for the rationale.
+  // Registered before WalletRepository so the cubit factory below
+  // can resolve it. `init()` is called from main.dart after this
+  // function returns.
+  sl.registerLazySingleton<IapService>(
+      () => IapService(sl<WalletRepository>()));
+
   // User wallet
   sl.registerLazySingleton<WalletRepository>(() => WalletRepository());
-  sl.registerFactory<WalletCubit>(() => WalletCubit(sl<WalletRepository>()));
+  sl.registerFactory<WalletCubit>(
+      () => WalletCubit(sl<WalletRepository>(), sl<IapService>()));
 
   // User home — repo is a singleton (stateless), but the cubit is a
   // factory because each home-tab mount should own its own stream

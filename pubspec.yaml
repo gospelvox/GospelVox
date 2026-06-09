@@ -1,7 +1,7 @@
 name: gospel_vox
 description: "Gospel Vox — Global Christian Spiritual Consultation Platform"
 publish_to: 'none'
-version: 1.0.0+8
+version: 1.1.2+11
 
 environment:
   sdk: ^3.11.4
@@ -36,7 +36,19 @@ dependencies:
   sign_in_with_apple: any
 
   # Payments
+  # razorpay_flutter is kept until the activation + Bible-session
+  # flows migrate in later slices. The COIN purchase flow has moved
+  # to Google Play Billing via in_app_purchase (Android only — iOS
+  # coin purchases are gated until the StoreKit slice ships).
   razorpay_flutter: any
+  in_app_purchase: ^3.2.0
+  # Direct dep on the Android federated plugin so the IAP service
+  # can reach InAppPurchaseAndroidPlatformAddition.consumePurchase.
+  # The in_app_purchase package pulls this in transitively, but the
+  # Dart analyzer (correctly) rejects "implicit transitive" imports —
+  # declaring it here makes the import legitimate without changing
+  # the resolved version.
+  in_app_purchase_android: any
 
   # Voice Calls
   agora_rtc_engine: any

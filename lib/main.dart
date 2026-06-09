@@ -11,6 +11,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/connectivity_service.dart';
 import 'package:gospel_vox/core/services/deep_link_service.dart';
+import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/services/priest_incoming_request_service.dart';
@@ -80,6 +81,15 @@ void main() async {
   unawaited(DeepLinkService().init());
 
   await initDependencies();
+
+  // Start the global Play Billing listener AFTER DI is wired (so the
+  // service can resolve WalletRepository) and BEFORE runApp (so no
+  // wallet page can mount before the stream subscription exists,
+  // which would lose any re-delivered purchases the plugin emits at
+  // subscribe time). Fire-and-forget — the service handles its own
+  // store-unavailable / non-Android fallback internally and never
+  // throws out of init.
+  unawaited(sl<IapService>().init());
 
   Bloc.observer = AppBlocObserver();
 

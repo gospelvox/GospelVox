@@ -3,160 +3,142 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.verifyCoinPurchase = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
-const crypto = require("crypto");
-// See createCoinOrder.ts for why this uses require-style import.
-const Razorpay = require("razorpay");
 const constants_1 = require("../config/constants");
-const sendPush_1 = require("../notifications/sendPush");
+const playVerify_1 = require("./playVerify");
+const creditCoins_1 = require("./creditCoins");
 const db = admin.firestore();
-// Credits coins to the user AFTER verifying three things:
-//   1. The HMAC-SHA256 signature from Razorpay matches (proves the
-//      payment data was not tampered with in transit).
-//   2. The order on Razorpay's side is `paid` and its amount equals
-//      the pack's server-side price (prevents downgrade attacks where
-//      a client says "I paid ₹1 for 10,000 coins").
-//   3. We haven't already credited this payment (idempotency).
+// Maps a Play product id (coins_<N>) to its Firestore pack doc id
+// (pack_<N>). The store catalog is the customer-facing source of
+// price; the Firestore pack doc is the source of truth for how many
+// coins to grant. The two IDs are kept aligned by convention —
+// the admin who edits one must also edit the other in Play Console.
+function productIdToPackId(productId) {
+    const match = productId.match(/^coins_(\d+)$/);
+    if (!match)
+        return null;
+    return `pack_${match[1]}`;
+}
+// Credits coins to the user after verifying a Google Play purchase
+// token. Three security layers:
+//   1. The Android Publisher API call requires our service-account
+//      signed key — a tampered client cannot fabricate a token that
+//      resolves to a successful (purchaseState===0) purchase for the
+//      claimed productId.
+//   2. We resolve the coin count from the SERVER-SIDE pack doc keyed
+//      off the productId. A client cannot grant itself more coins by
+//      reporting a higher-tier productId than what it actually paid
+//      for — the productId is part of the Play-verified token, so
+//      the cross-check happens implicitly inside the Android
+//      Publisher response.
+//   3. Idempotency on purchaseToken — a network retry from the client
+//      (or a second tap on Verify) doesn't double-credit because
+//      wallet_transactions already carries the token.
 //
-// Any one of these failing is unrecoverable from the client side —
-// the user's money is safe with Razorpay, but they don't get coins
-// until the payment is properly reconciled. Surface a support-friendly
-// error message with the paymentId so manual resolution is cheap.
-exports.verifyCoinPurchase = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
+// After a successful credit we consume the token via the Play API
+// so the consumable can be repurchased and so Google's 3-day
+// acknowledgement requirement is satisfied (avoids the auto-refund
+// chargeback path).
+exports.verifyCoinPurchase = (0, https_1.onCall)({ region: constants_1.REGION, secrets: ["GOOGLE_PLAY_SERVICE_ACCOUNT"] }, async (request) => {
     var _a, _b, _c, _d, _e;
-    if (!request.auth) {
+    const uid = (_a = request.auth) === null || _a === void 0 ? void 0 : _a.uid;
+    if (!uid) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
-    const uid = request.auth.uid;
-    const { razorpayPaymentId, razorpayOrderId, razorpaySignature, packId, } = request.data;
-    if (!razorpayPaymentId ||
-        !razorpayOrderId ||
-        !razorpaySignature ||
-        !packId) {
-        throw new https_1.HttpsError("invalid-argument", "Missing payment fields");
+    const { productId, purchaseToken } = request.data;
+    if (!productId ||
+        typeof productId !== "string" ||
+        !purchaseToken ||
+        typeof purchaseToken !== "string") {
+        throw new https_1.HttpsError("invalid-argument", "productId and purchaseToken are required");
     }
-    const keyId = process.env.RAZORPAY_KEY_ID;
-    const keySecret = process.env.RAZORPAY_KEY_SECRET;
-    if (!keyId || !keySecret) {
-        throw new https_1.HttpsError("failed-precondition", "Razorpay not configured on the server");
-    }
-    // ── 1. Idempotency check ────────────────────────────────────
-    // Using razorpayPaymentId as the dedupe key (not orderId) since
-    // a failed+retried payment attempt produces a new paymentId but
-    // can reuse the same orderId.
+    // ── 1. Idempotency check on purchaseToken ───────────────────
+    // The Play purchaseToken is globally unique per purchase. Using
+    // it as the dedupe key means a legitimate retry from the client
+    // (network blip after Play returned) lands here a second time
+    // and exits early without re-running the Play round-trip or
+    // re-crediting.
     const existingTx = await db
         .collection("wallet_transactions")
-        .where("paymentId", "==", razorpayPaymentId)
+        .where("purchaseToken", "==", purchaseToken)
         .limit(1)
         .get();
     if (!existingTx.empty) {
+        // Already credited. Re-attempt consume in case the original
+        // consumeProduct call after credit silently failed (Play API
+        // transient, network blip) — without this the purchaseStream
+        // would keep re-delivering this token on every app launch and
+        // the user would hit ITEM_ALREADY_OWNED on any new buy of the
+        // same SKU. consumeProduct is idempotent on the Play side
+        // (its own error filter swallows "already consumed"). The
+        // outer try/catch is purely defensive: we never want a retry
+        // attempt on the already-credited path to FAIL the request —
+        // the user is entitled to their existing balance regardless of
+        // whether this stuck-purchase rescue succeeds.
+        try {
+            await (0, playVerify_1.consumeProduct)({ productId, purchaseToken });
+        }
+        catch (err) {
+            console.error("[verifyCoinPurchase] idempotent consume rescue failed:", err instanceof Error ? err.message : String(err));
+        }
         const userDoc = await db.doc(`users/${uid}`).get();
         return {
-            newBalance: (_b = (_a = userDoc.data()) === null || _a === void 0 ? void 0 : _a.coinBalance) !== null && _b !== void 0 ? _b : 0,
+            newBalance: Number((_c = (_b = userDoc.data()) === null || _b === void 0 ? void 0 : _b.coinBalance) !== null && _c !== void 0 ? _c : 0),
             alreadyProcessed: true,
         };
     }
-    // ── 2. HMAC signature verification ──────────────────────────
-    // Razorpay signs `{order_id}|{payment_id}` with our key_secret
-    // using HMAC-SHA256. Reproducing the same HMAC locally and
-    // comparing is the cryptographic proof the payment is genuine.
-    const expectedSignature = crypto
-        .createHmac("sha256", keySecret)
-        .update(`${razorpayOrderId}|${razorpayPaymentId}`)
-        .digest("hex");
-    // timingSafeEqual avoids byte-by-byte comparison leaking timing
-    // info — overkill here but costs nothing.
-    const sigBufA = Buffer.from(expectedSignature, "utf8");
-    const sigBufB = Buffer.from(razorpaySignature, "utf8");
-    if (sigBufA.length !== sigBufB.length ||
-        !crypto.timingSafeEqual(sigBufA, sigBufB)) {
-        throw new https_1.HttpsError("permission-denied", "Payment signature mismatch — payment rejected");
+    // ── 2. Verify with Google Play ──────────────────────────────
+    // Throws HttpsError on any failure (network, invalid token,
+    // purchaseState != 0). Returns the purchase resource on success.
+    await (0, playVerify_1.verifyProductPurchase)({ productId, purchaseToken });
+    // ── 3. Resolve pack from Firestore ──────────────────────────
+    // The store catalog supplies the user-facing price; the pack
+    // doc is the authoritative source for the coin count we grant.
+    // Never derive the grant from the amount paid — local currency
+    // amounts make that unsafe, and the productId is the verified
+    // contract from the Play response.
+    const packId = productIdToPackId(productId);
+    if (!packId) {
+        throw new https_1.HttpsError("failed-precondition", "unknown_or_inactive_pack");
     }
-    // ── 3. Cross-check the order with Razorpay API ──────────────
-    // Signature verification proves the message came from Razorpay,
-    // but we still re-fetch the order to confirm it's actually paid
-    // and for the expected amount. This defends against the case
-    // where a leaked signature from an old transaction is replayed.
-    const razorpay = new Razorpay({ key_id: keyId, key_secret: keySecret });
-    let orderStatus;
-    let orderAmountPaise;
-    let notesPackId;
-    let notesCoins;
-    try {
-        const order = await razorpay.orders.fetch(razorpayOrderId);
-        orderStatus = String(order.status);
-        orderAmountPaise = Number(order.amount);
-        const notes = ((_c = order.notes) !== null && _c !== void 0 ? _c : {});
-        notesPackId = notes.packId;
-        notesCoins = notes.coins;
+    const packDoc = await db
+        .doc(`app_config/coin_packs/packs/${packId}`)
+        .get();
+    if (!packDoc.exists) {
+        throw new https_1.HttpsError("failed-precondition", "unknown_or_inactive_pack");
     }
-    catch (e) {
-        throw new https_1.HttpsError("internal", "Could not verify order with Razorpay");
+    const packData = (_d = packDoc.data()) !== null && _d !== void 0 ? _d : {};
+    if (packData.isActive !== true) {
+        throw new https_1.HttpsError("failed-precondition", "unknown_or_inactive_pack");
     }
-    if (orderStatus !== "paid") {
-        throw new https_1.HttpsError("failed-precondition", `Order not paid (status=${orderStatus})`);
-    }
-    // The order was created by createCoinOrder with packId/coins in
-    // notes. Trust those values (server-signed) rather than anything
-    // the client sends as `coins`/`price`.
-    if (!notesPackId || notesPackId !== packId) {
-        throw new https_1.HttpsError("failed-precondition", "Order packId mismatch");
-    }
-    const coins = Number(notesCoins);
+    const coins = Number(packData.coins);
     if (!Number.isFinite(coins) || coins <= 0) {
-        throw new https_1.HttpsError("internal", "Order missing coin amount");
+        throw new https_1.HttpsError("internal", "Invalid coins in pack config");
     }
-    // Sanity-check the amount matches current config — if an admin
-    // changed the pack price between order creation and payment, we
-    // still honour the amount the user actually paid, but we credit
-    // the coins the order was created for.
-    const amountPaidRupees = Math.round(orderAmountPaise / 100);
-    // ── 4. Credit + record + notify atomically ──────────────────
-    // The notification doc is part of the same batch as the balance
-    // update so the in-app inbox can never be out of sync with the
-    // wallet. The OS-level push is best-effort and fires after.
-    const batch = db.batch();
-    const userRef = db.doc(`users/${uid}`);
-    batch.update(userRef, {
-        coinBalance: admin.firestore.FieldValue.increment(coins),
-    });
-    const txRef = db.collection("wallet_transactions").doc();
-    batch.set(txRef, {
-        userId: uid,
-        type: "purchase",
-        paymentId: razorpayPaymentId,
-        orderId: razorpayOrderId,
-        packId,
+    const priceRupees = Number((_e = packData.price) !== null && _e !== void 0 ? _e : 0);
+    // ── 4. Credit + record + notify atomically ─────────────────
+    // creditCoins runs the exact same batch the legacy Razorpay path
+    // ran (balance increment + wallet_transactions row + inbox
+    // notification + push), plus stamps the new provider/token/
+    // productId fields on the ledger row via ledgerExtra.
+    const { newBalance } = await (0, creditCoins_1.creditCoins)({
+        uid,
         coins,
-        amountPaid: amountPaidRupees,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    const notifRef = db.collection("notifications").doc();
-    batch.set(notifRef, {
-        userId: uid,
-        type: "coins_purchased",
-        title: "Coins Added",
-        body: `Your purchase of ${coins} coins for ₹${amountPaidRupees} ` +
-            "is complete. Tap to open your wallet.",
-        isRead: false,
-        createdAt: admin.firestore.FieldValue.serverTimestamp(),
-    });
-    await batch.commit();
-    const updatedUser = await userRef.get();
-    const newBalance = Number((_e = (_d = updatedUser.data()) === null || _d === void 0 ? void 0 : _d.coinBalance) !== null && _e !== void 0 ? _e : 0);
-    // Push so the user sees the receipt even if the wallet page is
-    // backgrounded after Razorpay's redirect. Body includes the new
-    // balance so the OS banner is self-explanatory without opening
-    // the app — same numbers the in-app doc shows.
-    await (0, sendPush_1.sendPushNotification)({
-        userId: uid,
-        title: "Coins Added",
-        body: `${coins} coins credited for ₹${amountPaidRupees}. ` +
-            `Wallet balance: ${newBalance} coins.`,
-        data: {
-            type: "coins_purchased",
-            route: "/user",
+        packId,
+        amountPaidRupees: priceRupees,
+        ledgerExtra: {
+            provider: "play",
+            purchaseToken,
+            productId,
         },
     });
+    // ── 5. Consume on Play ──────────────────────────────────────
+    // Marks the consumable as spent (so it can be repurchased) AND
+    // implicitly acknowledges the purchase, avoiding the 3-day
+    // auto-refund. Best-effort — failures are logged inside
+    // consumeProduct, never re-thrown. The credit has already
+    // landed; a retried verify will short-circuit on idempotency
+    // and (importantly) not re-credit.
+    await (0, playVerify_1.consumeProduct)({ productId, purchaseToken });
     return { newBalance, alreadyProcessed: false };
 });
 //# sourceMappingURL=verifyCoinPurchase.js.map

@@ -3,7 +3,13 @@ import * as admin from "firebase-admin";
 admin.initializeApp();
 
 // ═══ Payments ═══
-export {createCoinOrder} from "./payments/createCoinOrder";
+// Coin purchases migrated from Razorpay → Google Play Billing.
+// Activation + Bible session unlocks still go through Razorpay for
+// now; they migrate to Play/StoreKit in later slices. There is no
+// `createCoinOrder` equivalent any more — Play handles the order
+// lifecycle entirely on the device + Play servers, and the client
+// hands us back a purchaseToken that verifyCoinPurchase resolves
+// against the Android Publisher API.
 export {verifyCoinPurchase} from "./payments/verifyCoinPurchase";
 export {createActivationOrder} from "./payments/createActivationOrder";
 export {verifyActivationFee} from "./payments/verifyActivationFee";

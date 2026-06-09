@@ -1,11 +1,16 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = exports.createCoinOrder = void 0;
+exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
-var createCoinOrder_1 = require("./payments/createCoinOrder");
-Object.defineProperty(exports, "createCoinOrder", { enumerable: true, get: function () { return createCoinOrder_1.createCoinOrder; } });
+// Coin purchases migrated from Razorpay → Google Play Billing.
+// Activation + Bible session unlocks still go through Razorpay for
+// now; they migrate to Play/StoreKit in later slices. There is no
+// `createCoinOrder` equivalent any more — Play handles the order
+// lifecycle entirely on the device + Play servers, and the client
+// hands us back a purchaseToken that verifyCoinPurchase resolves
+// against the Android Publisher API.
 var verifyCoinPurchase_1 = require("./payments/verifyCoinPurchase");
 Object.defineProperty(exports, "verifyCoinPurchase", { enumerable: true, get: function () { return verifyCoinPurchase_1.verifyCoinPurchase; } });
 var createActivationOrder_1 = require("./payments/createActivationOrder");

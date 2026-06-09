@@ -5,15 +5,12 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:intl/intl.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
-import 'package:gospel_vox/core/services/razorpay_service.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/coin_icon.dart';
 import 'package:gospel_vox/features/user/wallet/bloc/wallet_cubit.dart';
 import 'package:gospel_vox/features/user/wallet/bloc/wallet_state.dart';
-import 'package:gospel_vox/features/user/wallet/widgets/payment_failure_sheet.dart';
 import 'package:gospel_vox/features/user/wallet/widgets/payment_processing_overlay.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
@@ -27,52 +24,18 @@ class WalletPage extends StatefulWidget {
 
 class _WalletPageState extends State<WalletPage> {
   late final WalletCubit _cubit;
-  late final RazorpayService _razorpayService;
 
-  // Held between openCheckout and the Razorpay callback so we know
-  // which pack to credit. Storing it in cubit state would race with
-  // the user selecting a different card while the checkout is open.
-  CoinPackModel? _pendingPack;
-
-  // Guards against a rapid second tap on "Proceed to Pay" while the
-  // Razorpay sheet is being loaded — without this, users on slower
-  // networks see two sheets stack on top of each other.
+  // Tap-debounce on the "Proceed to Pay" button. The cubit also
+  // tracks `isPurchasing` for the overlay, but that flag isn't set
+  // until the IapService dispatches to the Play sheet — a fast
+  // double-tap can fire two startPurchase calls before the state
+  // settles. This synchronous bool blocks the second tap.
   bool _isPaymentInProgress = false;
-
-  // Remembered across Razorpay callbacks so the failure sheet can
-  // surface a support-traceable reference ("Ref: pay_xxx"). Razorpay
-  // itself stamps a paymentId even on failed attempts (declined card,
-  // failed OTP) so this is the single handle support needs to find
-  // the attempt in the Razorpay dashboard.
-  String? _lastPaymentId;
-
-  // Set true when a verification-path WalletError fires (payment
-  // captured but CF crediting failed). In that path a "Retry" button
-  // would create a DUPLICATE charge — Razorpay has no concept of
-  // "retry the same verify call", so retry always means a new payment.
-  // Hiding the retry button on this path prevents double-charges.
-  bool _lastErrorWasAfterCapture = false;
-
-  // True from the moment we hand a captured payment to the CF for
-  // verification until the cubit emits either PurchaseSuccess or
-  // WalletError. Used by the state listener to tell apart a verify
-  // failure (show the "Payment Failed" sheet with refund reassurance)
-  // from an unrelated load failure (show the wallet error body with a
-  // Retry button). Without this, a user opening the wallet with no
-  // internet would see a "Payment Failed — don't worry about your
-  // refund" sheet for a payment they never made.
-  bool _verifyInFlight = false;
 
   @override
   void initState() {
     super.initState();
     _cubit = sl<WalletCubit>();
-
-    _razorpayService = RazorpayService();
-    _razorpayService.init();
-    _razorpayService.onSuccess = _onPaymentSuccess;
-    _razorpayService.onFailure = _onPaymentFailure;
-    _razorpayService.onWallet = _onExternalWallet;
 
     final uid = FirebaseAuth.instance.currentUser?.uid;
     if (uid != null) {
@@ -82,153 +45,37 @@ class _WalletPageState extends State<WalletPage> {
 
   @override
   void dispose() {
-    _razorpayService.dispose();
     _cubit.close();
     super.dispose();
   }
 
-  // ── Razorpay callbacks ─────────────────────────────────────────
-
-  void _onPaymentSuccess(PaymentSuccessResponse response) {
-    if (mounted) {
-      setState(() => _isPaymentInProgress = false);
-    } else {
-      _isPaymentInProgress = false;
-    }
-
-    final paymentId = response.paymentId;
-    final orderId = response.orderId;
-    final signature = response.signature;
-    final pack = _pendingPack;
-    _pendingPack = null;
-
-    // Stash the paymentId even when we can't verify — support still
-    // needs it to look up the transaction.
-    _lastPaymentId = paymentId;
-
-    // Missing any of these means either (a) the checkout was opened
-    // without a server-created order_id (we always pass one now, so
-    // this shouldn't happen) or (b) the SDK returned a malformed
-    // response. Either way we can't verify server-side.
-    if (paymentId == null ||
-        orderId == null ||
-        signature == null ||
-        pack == null) {
-      _lastErrorWasAfterCapture = true;
-      _showPaymentFailure();
-      return;
-    }
-
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid == null) return;
-
-    _verifyInFlight = true;
-    _cubit.verifyAndCreditPurchase(
-      uid: uid,
-      razorpayPaymentId: paymentId,
-      razorpayOrderId: orderId,
-      razorpaySignature: signature,
-      pack: pack,
-    );
-  }
-
-  void _onPaymentFailure(PaymentFailureResponse response) {
-    _pendingPack = null;
-    if (mounted) {
-      setState(() => _isPaymentInProgress = false);
-    } else {
-      _isPaymentInProgress = false;
-    }
-
-    // Code 2 is Razorpay's signal for "user dismissed the sheet".
-    // That's a deliberate action, not a failure — showing an error
-    // would feel like we're scolding them for cancelling.
-    if (response.code == 2) return;
-
-    // Razorpay stuffs the paymentId (when present) into
-    // `error.metadata.payment_id` — there's no top-level getter for
-    // it on PaymentFailureResponse. Fish it out defensively since
-    // the nested shape is only populated on some failure modes.
-    _lastPaymentId = _extractPaymentIdFromFailure(response);
-    _lastErrorWasAfterCapture = false;
-
-    if (mounted) {
-      _showPaymentFailure();
-    }
-  }
-
-  // Shared entry point for both Razorpay-side failure and
-  // verification-side failure. `allowRetry` is off for the verify
-  // path because tapping Retry there would trigger a second Razorpay
-  // charge instead of re-verifying the existing one.
-  Future<void> _showPaymentFailure() async {
-    final shouldRetry = await PaymentFailureSheet.show(
-      context,
-      paymentId: _lastPaymentId,
-    );
-
-    if (!mounted) return;
-
-    if (shouldRetry == true && !_lastErrorWasAfterCapture) {
-      // Razorpay-side failure — safe to reopen checkout because no
-      // money was captured. Razorpay auto-refunds failed attempts
-      // so there's no double-charge risk.
-      _proceedToPay();
-    } else {
-      // Either the user dismissed, chose Contact Support, or we're
-      // in the post-capture path where retry would double-charge.
-      _pendingPack = null;
-      _lastPaymentId = null;
-      _lastErrorWasAfterCapture = false;
-    }
-  }
-
-  void _onExternalWallet(ExternalWalletResponse response) {
-    // Razorpay handles the external-wallet flow itself. This
-    // callback fires only so we can log which wallet was picked.
-    debugPrint('[Razorpay] External wallet selected: ${response.walletName}');
-  }
-
-  String? _extractPaymentIdFromFailure(PaymentFailureResponse response) {
-    final error = response.error;
-    if (error == null) return null;
-    final metadata = error['metadata'];
-    if (metadata is Map) {
-      final id = metadata['payment_id'];
-      if (id is String && id.isNotEmpty) return id;
-    }
-    return null;
-  }
-
   // ── Purchase triggers ──────────────────────────────────────────
 
-  // Two-phase flow: (1) ask the CF to create a Razorpay order so we
-  // get a real `order_<…>` id + server-verified amount, (2) open the
-  // checkout sheet with those. If step 1 fails we never open the
-  // sheet, so the user never gets charged for something we couldn't
-  // verify.
-  Future<void> _startPurchase(CoinPackModel pack, String description) async {
+  // Triggers a Play Billing purchase via the cubit. The IapService
+  // handles the actual store sheet + server verification + receipt
+  // completion — the page only needs to drive the start trigger and
+  // listen for the success/error state transition.
+  //
+  // The cubit's purchasePack() guards against double-purchase via
+  // the WalletLoaded.isPurchasing flag, but we also keep a local
+  // synchronous lock against a fast double-tap that arrives before
+  // the state transition lands.
+  Future<void> _startPurchase(CoinPackModel pack) async {
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
-      // No FirebaseAuth session at all — the wallet shouldn't be
-      // reachable without one, but surface something actionable if
-      // the session was silently cleared (token revoked, etc.).
       if (mounted) {
         AppSnackBar.error(context, "You're signed out. Please sign in again.");
       }
       return;
     }
 
-    _pendingPack = pack;
     setState(() => _isPaymentInProgress = true);
 
-    // Force-refresh the Firebase ID token before calling the CF.
-    // Without this, a stale/expired token (common on Samsung devices
-    // where background processes get frozen aggressively) makes the
-    // callable reach the server with no auth, and the CF correctly
-    // rejects with UNAUTHENTICATED. `getIdToken(true)` triggers a
-    // round-trip to Google's identity service and waits for the new
-    // token to be attached before subsequent callables fire.
+    // Force-refresh the Firebase ID token before the verify CF
+    // fires. Without this, a stale/expired token (common on Samsung
+    // devices where background processes get frozen aggressively)
+    // makes the callable reach the server with no auth, and the CF
+    // correctly rejects with UNAUTHENTICATED.
     try {
       await user.getIdToken(true);
     } catch (e) {
@@ -240,29 +87,16 @@ class _WalletPageState extends State<WalletPage> {
           "Couldn't verify your session. Sign out and sign in, then retry.",
         );
       }
-      _pendingPack = null;
       return;
     }
 
-    final order = await _cubit.createOrder(packId: pack.id);
+    await _cubit.purchasePack(pack.id);
     if (!mounted) return;
-    if (order == null) {
-      _pendingPack = null;
-      setState(() => _isPaymentInProgress = false);
-      AppSnackBar.error(
-        context,
-        "Couldn't start payment. Please try again in a moment.",
-      );
-      return;
-    }
-
-    _razorpayService.openCheckout(
-      razorpayOrderId: order.orderId,
-      amountInPaise: order.amountPaise,
-      description: description,
-      userEmail: user.email ?? '',
-      userName: user.displayName ?? '',
-    );
+    // The cubit's listener will release `isPaymentInProgress` once it
+    // sees the IAP outcome (success / error / cancel). We release the
+    // local sync-lock here so a same-frame double-tap stays blocked
+    // until then.
+    setState(() => _isPaymentInProgress = false);
   }
 
   void _proceedToPay() {
@@ -271,32 +105,7 @@ class _WalletPageState extends State<WalletPage> {
     final state = _cubit.state;
     if (state is! WalletLoaded || state.selectedPack == null) return;
 
-    final pack = state.selectedPack!;
-    _startPurchase(pack, '${pack.coins} Gospel Vox Coins');
-  }
-
-  void _claimWelcomeOffer() {
-    if (_isPaymentInProgress) return;
-
-    final state = _cubit.state;
-    if (state is! WalletLoaded) return;
-
-    // Wrap the welcome-offer values in a synthetic CoinPackModel so
-    // the rest of the flow (_onPaymentSuccess → verifyAndCreditPurchase)
-    // doesn't need a special-case branch for welcome offers. The CF
-    // identifies the offer by the packId 'welcome_offer' and resolves
-    // the authoritative price/coins from app_config/settings.
-    final pack = CoinPackModel(
-      id: 'welcome_offer',
-      coins: state.welcomeOfferCoins,
-      price: state.welcomeOfferPrice,
-      label: 'Welcome Offer',
-      order: 0,
-      isPopular: false,
-      isActive: true,
-    );
-
-    _startPurchase(pack, '${state.welcomeOfferCoins} Coins — Welcome Offer');
+    _startPurchase(state.selectedPack!);
   }
 
   // ── Build ──────────────────────────────────────────────────────
@@ -339,24 +148,15 @@ class _WalletPageState extends State<WalletPage> {
 
   void _onStateChanged(BuildContext context, WalletState state) {
     if (state is WalletError) {
-      // Only fire the Payment Failed sheet if a verify was actually
-      // in flight. A WalletError from the initial loadWallet call
-      // (no network, Firestore rules, etc.) is NOT a payment failure
-      // — surfacing "don't worry about your refund" to a user who
-      // never paid is worse than the original error. Those errors
-      // still reach the user via _buildErrorBody's retry screen.
-      if (_verifyInFlight) {
-        _verifyInFlight = false;
-        _lastErrorWasAfterCapture = true;
-        _showPaymentFailure();
-      }
+      // Surface payment-side errors as a transient snackbar so the
+      // wallet body itself isn't replaced for a verification failure.
+      // Unlike the Razorpay flow, IAP failures never put money in a
+      // captured-but-uncredited state — the server is idempotent and
+      // the plugin re-delivers transient failures on next launch, so
+      // we don't need a dedicated "Payment Failed — don't worry about
+      // refunds" sheet here.
+      AppSnackBar.error(context, state.message);
     } else if (state is WalletPurchaseSuccess) {
-      // Clear the failure context on success so a later unrelated
-      // error doesn't inherit the wrong paymentId.
-      _verifyInFlight = false;
-      _lastPaymentId = null;
-      _lastErrorWasAfterCapture = false;
-
       // Navigate. The cubit itself awaits reloadAfterPurchase right
       // after emitting WalletPurchaseSuccess, so by the time the user
       // taps Continue on the success page, the state has already
@@ -590,17 +390,12 @@ class _WalletPageState extends State<WalletPage> {
               children: [
                 const SizedBox(height: 32),
                 _HeroReceiveSection(selectedPack: selectedPack),
-                if (state.showWelcomeOffer) ...[
-                  const SizedBox(height: 24),
-                  Padding(
-                    padding: const EdgeInsets.symmetric(horizontal: 20),
-                    child: _WelcomeOfferCard(
-                      coins: state.welcomeOfferCoins,
-                      price: state.welcomeOfferPrice,
-                      onTap: _claimWelcomeOffer,
-                    ),
-                  ),
-                ],
+                // Welcome offer card removed for this slice — the
+                // server's welcome-offer special case was dropped
+                // when coin purchase migrated to Play Billing, and
+                // there's no live SKU to back the synthetic pack.
+                // The card returns in a future slice once the
+                // introductory-offer SKU is wired in Play Console.
                 const SizedBox(height: 28),
                 _buildSectionDivider("Choose a pack"),
                 const SizedBox(height: 20),
@@ -899,213 +694,10 @@ class _HeroReceiveSection extends StatelessWidget {
   }
 }
 
-// ============================================================
-// WELCOME OFFER CARD — warm, inviting, premium
-// ============================================================
-
-class _WelcomeOfferCard extends StatefulWidget {
-  final int coins;
-  final int price;
-  final VoidCallback onTap;
-
-  const _WelcomeOfferCard({
-    required this.coins,
-    required this.price,
-    required this.onTap,
-  });
-
-  @override
-  State<_WelcomeOfferCard> createState() => _WelcomeOfferCardState();
-}
-
-class _WelcomeOfferCardState extends State<_WelcomeOfferCard> {
-  double _scale = 1.0;
-
-  String _format(int v) {
-    if (v >= 1000) return NumberFormat('#,###').format(v);
-    return v.toString();
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      onTapDown: (_) => setState(() => _scale = 0.98),
-      onTapUp: (_) => setState(() => _scale = 1.0),
-      onTapCancel: () => setState(() => _scale = 1.0),
-      onTap: widget.onTap,
-      child: AnimatedScale(
-        scale: _scale,
-        duration: const Duration(milliseconds: 120),
-        child: Container(
-          padding: const EdgeInsets.all(20),
-          decoration: BoxDecoration(
-            gradient: const LinearGradient(
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-              colors: [
-                Color(0xFFFFFBF0),
-                Color(0xFFFFF1D6),
-              ],
-            ),
-            borderRadius: BorderRadius.circular(20),
-            border: Border.all(
-              color: AppColors.amberGold.withValues(alpha: 0.35),
-              width: 1.2,
-            ),
-            boxShadow: [
-              BoxShadow(
-                color: AppColors.amberGold.withValues(alpha: 0.12),
-                blurRadius: 20,
-                offset: const Offset(0, 8),
-              ),
-            ],
-          ),
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Row(
-                children: [
-                  Container(
-                    width: 32,
-                    height: 32,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      gradient: LinearGradient(
-                        begin: Alignment.topLeft,
-                        end: Alignment.bottomRight,
-                        colors: [
-                          AppColors.amberGold,
-                          const Color(0xFFBF8840),
-                        ],
-                      ),
-                      boxShadow: [
-                        BoxShadow(
-                          color: AppColors.amberGold.withValues(alpha: 0.3),
-                          blurRadius: 8,
-                          offset: const Offset(0, 3),
-                        ),
-                      ],
-                    ),
-                    child: const AppIcon(
-                      AppIcons.gift,
-                      size: 18,
-                      color: Colors.white,
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Text(
-                    "WELCOME BONUS",
-                    style: GoogleFonts.inter(
-                      fontSize: 11,
-                      fontWeight: FontWeight.w700,
-                      color: AppColors.amberGold,
-                      letterSpacing: 1.2,
-                    ),
-                  ),
-                ],
-              ),
-              const SizedBox(height: 14),
-              RichText(
-                text: TextSpan(
-                  children: [
-                    TextSpan(
-                      text: _format(widget.coins),
-                      style: GoogleFonts.inter(
-                        fontSize: 30,
-                        fontWeight: FontWeight.w800,
-                        color: AppColors.deepDarkBrown,
-                        height: 1.1,
-                        letterSpacing: -0.8,
-                      ),
-                    ),
-                    TextSpan(
-                      text: "  coins",
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w500,
-                        color: AppColors.deepDarkBrown,
-                        height: 1.1,
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 6),
-              RichText(
-                text: TextSpan(
-                  children: [
-                    TextSpan(
-                      text: "for just ",
-                      style: GoogleFonts.inter(
-                        fontSize: 13,
-                        fontWeight: FontWeight.w400,
-                        color: AppColors.muted,
-                      ),
-                    ),
-                    TextSpan(
-                      text: "₹${widget.price}",
-                      style: GoogleFonts.inter(
-                        fontSize: 15,
-                        fontWeight: FontWeight.w700,
-                        color: AppColors.primaryBrown,
-                      ),
-                    ),
-                    TextSpan(
-                      text: "  ·  one-time offer",
-                      style: GoogleFonts.inter(
-                        fontSize: 12,
-                        fontWeight: FontWeight.w400,
-                        color: AppColors.muted.withValues(alpha: 0.75),
-                      ),
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 16),
-              Container(
-                width: double.infinity,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: AppColors.primaryBrown,
-                  borderRadius: BorderRadius.circular(12),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppColors.primaryBrown.withValues(alpha: 0.25),
-                      blurRadius: 12,
-                      offset: const Offset(0, 5),
-                    ),
-                  ],
-                ),
-                child: Center(
-                  child: Row(
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        "Claim Offer",
-                        style: GoogleFonts.inter(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: Colors.white,
-                          letterSpacing: 0.1,
-                        ),
-                      ),
-                      const SizedBox(width: 6),
-                      const AppIcon(
-                        AppIcons.arrowRight,
-                        size: 16,
-                        color: Colors.white,
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ],
-          ),
-        ),
-      ),
-    );
-  }
-}
+// Note: the welcome-offer card widget was removed in the Play
+// Billing migration slice — the synthetic 'welcome_offer' SKU has
+// no Play product to back it. The widget returns once the
+// introductory-offer product is wired in Play Console.
 
 // ============================================================
 // COIN PACK CARD — content truly centered via StackFit.expand
