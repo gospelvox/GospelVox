@@ -2,19 +2,11 @@ import 'dart:async';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
+import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/features/user/wallet/bloc/wallet_state.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
-
-// Maps a Firestore pack doc id (pack_<N>) to the matching Play
-// product id (coins_<N>). The two are kept aligned by convention:
-// the admin who edits one must also edit the other in Play Console.
-String? _packIdToProductId(String packId) {
-  final match = RegExp(r'^pack_(\d+)$').firstMatch(packId);
-  if (match == null) return null;
-  return 'coins_${match.group(1)}';
-}
 
 class WalletCubit extends Cubit<WalletState> {
   final WalletRepository _repository;
@@ -22,6 +14,13 @@ class WalletCubit extends Cubit<WalletState> {
   StreamSubscription<int>? _balanceSubscription;
   StreamSubscription<IapOutcome>? _iapOutcomeSubscription;
   Map<String, ProductDetails> _storeProducts = const {};
+  // Last uid passed to loadWallet. Cached so _onIapOutcome can fire
+  // reloadAfterPurchase on success without forcing the call site to
+  // thread the uid through a second time. Set on every loadWallet
+  // entry; remains null only in the (impossible-in-practice) window
+  // between cubit construction and the wallet page calling loadWallet
+  // in its initState.
+  String? _uid;
 
   WalletCubit(this._repository, this._iap) : super(WalletInitial()) {
     // Listen for IAP outcomes for the WHOLE cubit lifetime. The
@@ -33,6 +32,7 @@ class WalletCubit extends Cubit<WalletState> {
   }
 
   Future<void> loadWallet(String uid) async {
+    _uid = uid;
     try {
       emit(WalletLoading());
 
@@ -91,7 +91,7 @@ class WalletCubit extends Cubit<WalletState> {
   Future<void> _warmProductCache(List<CoinPackModel> packs) async {
     final productIds = <String>{};
     for (final p in packs) {
-      final productId = _packIdToProductId(p.id);
+      final productId = IapProducts.packIdToProductId(p.id);
       if (productId != null) productIds.add(productId);
     }
     if (productIds.isEmpty) return;
@@ -120,7 +120,7 @@ class WalletCubit extends Cubit<WalletState> {
       return;
     }
 
-    final productId = _packIdToProductId(packId);
+    final productId = IapProducts.packIdToProductId(packId);
     if (productId == null) {
       emit(WalletError("Couldn't find this coin pack. Please refresh."));
       return;
@@ -161,6 +161,22 @@ class WalletCubit extends Cubit<WalletState> {
   void _onIapOutcome(IapOutcome outcome) {
     if (isClosed) return;
 
+    // Ignore outcomes for products this cubit doesn't own. After
+    // the IapService multi-product refactor, every surface listens
+    // to the same broadcast stream — activation/bible outcomes
+    // would otherwise fan out here and the success branch would
+    // emit WalletPurchaseSuccess with `coinsPurchased = 0`,
+    // navigating to a celebratory "+0 coins" success screen.
+    //
+    // `unavailable` outcomes carry no productId (they're emitted
+    // globally when the store isn't available) and we still want
+    // to surface those — so the null-productId case falls through
+    // to the switch below intentionally.
+    final pid = outcome.productId;
+    if (pid != null && !IapProducts.allCoinPacks.contains(pid)) {
+      return;
+    }
+
     switch (outcome.kind) {
       case IapOutcomeKind.success:
         final productId = outcome.productId;
@@ -179,6 +195,20 @@ class WalletCubit extends Cubit<WalletState> {
         }
         final newBalance = outcome.newBalance ?? 0;
         emit(WalletPurchaseSuccess(newBalance, coinsPurchased));
+        // Refresh balance + packs so when the user pops back from
+        // the payment-success screen the wallet is already in a
+        // populated WalletLoaded state. Without this, the body
+        // stays on WalletPurchaseSuccess — which wallet_page
+        // renders as shimmer — until something else (pull-to-
+        // refresh, tab switch) forces a reload. Fire-and-forget:
+        // reloadAfterPurchase catches its own failures and falls
+        // back to loadWallet internally, and the success page's
+        // celebration animation runs longer than the round-trip
+        // in practice.
+        final uid = _uid;
+        if (uid != null) {
+          unawaited(reloadAfterPurchase(uid));
+        }
         break;
 
       case IapOutcomeKind.pending:

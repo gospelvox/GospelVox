@@ -10,56 +10,41 @@ class ActivationInitial extends ActivationState {}
 
 class ActivationLoading extends ActivationState {}
 
-// Fee loaded, ready for the priest to pay. `isPaymentInProgress` is
-// an in-place flag — we don't transition to a separate "Purchasing"
-// state because that would unmount the page layout behind Razorpay's
-// checkout sheet, and the back-transition would flash empty.
+// Fee loaded, ready for the priest to tap Activate. The Play
+// sheet is opened from the cubit's `activate()` method; this
+// state has no in-flight flag because the verifying state
+// (below) covers the "purchase dispatched, awaiting outcome"
+// window.
 class ActivationReady extends ActivationState {
   final int fee;
-  final bool isPaymentInProgress;
 
-  ActivationReady({
-    required this.fee,
-    this.isPaymentInProgress = false,
-  });
-
-  ActivationReady copyWith({
-    int? fee,
-    bool? isPaymentInProgress,
-  }) {
-    return ActivationReady(
-      fee: fee ?? this.fee,
-      isPaymentInProgress: isPaymentInProgress ?? this.isPaymentInProgress,
-    );
-  }
+  ActivationReady({required this.fee});
 }
 
-// The Cloud Function is performing HMAC verification and flipping
-// isActivated. Separate state so the page can show a blocking
-// overlay and disable any interaction.
+// Either the Play sheet is open, the server is verifying the
+// purchase token, or Play is sitting in `pending` (deferred
+// payment). The page renders a blocking overlay and disables
+// any interaction.
 class ActivationVerifying extends ActivationState {
   final int fee;
-  ActivationVerifying(this.fee);
+  ActivationVerifying({required this.fee});
 }
 
 class ActivationSuccess extends ActivationState {}
 
-// Errors always carry the fee so the paywall can keep rendering the
-// right price when the page rebuilds from an error state.
+// Errors always carry the fee so the paywall can keep rendering
+// the right price when the page rebuilds from an error state.
+// Unlike the legacy Razorpay flow, Play has no
+// capture-before-verify race — Play won't finalise the charge
+// against the user's payment method until acknowledge — so the
+// "after-capture stuck screen" branching the legacy state used
+// is gone. Every error is genuinely retryable.
 class ActivationError extends ActivationState {
   final String message;
-  final String? paymentId;
   final int fee;
-  // true when the error happened AFTER Razorpay captured the payment
-  // (i.e. verify failed). In that path the "Retry Payment" button is
-  // hidden because retrying creates a duplicate charge — Razorpay has
-  // no concept of "retry the same verify call".
-  final bool afterCapture;
 
-  ActivationError(
-    this.message, {
+  ActivationError({
+    required this.message,
     required this.fee,
-    this.paymentId,
-    this.afterCapture = false,
   });
 }

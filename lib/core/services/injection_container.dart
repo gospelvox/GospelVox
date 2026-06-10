@@ -2,6 +2,7 @@
 
 import 'package:get_it/get_it.dart';
 
+import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/features/admin/dashboard/bloc/dashboard_cubit.dart';
 import 'package:gospel_vox/features/admin/dashboard/data/dashboard_repository.dart';
@@ -43,6 +44,24 @@ import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 
 final sl = GetIt.instance;
 
+// Adapter from WalletRepository's coin-flavoured verify call to the
+// product-agnostic IapVerifier contract IapService expects. Keeps
+// the per-product wiring in one place rather than threading
+// IapVerifyResult through WalletRepository (which has no business
+// knowing about the IapService abstraction layer).
+IapVerifier _coinVerifier(WalletRepository wallet) {
+  return ({required productId, required purchaseToken}) async {
+    final result = await wallet.verifyCoinPurchase(
+      productId: productId,
+      purchaseToken: purchaseToken,
+    );
+    return IapVerifyResult(
+      consumeMode: IapConsumeMode.consume,
+      newBalance: result.newBalance,
+    );
+  };
+}
+
 Future<void> initDependencies() async {
   // Auth
   sl.registerLazySingleton<AuthRepository>(() => AuthRepository());
@@ -65,16 +84,38 @@ Future<void> initDependencies() async {
 
   // In-app purchase service. Single instance owns the global
   // purchase stream — see iap_service.dart for the rationale.
-  // Registered before WalletRepository so the cubit factory below
-  // can resolve it. `init()` is called from main.dart after this
-  // function returns.
-  sl.registerLazySingleton<IapService>(
-      () => IapService(sl<WalletRepository>()));
+  // No-arg constructor: the service is verifier-agnostic by design
+  // and each product domain registers its own verifier through
+  // `registerVerifier(...)` further down. `init()` is called from
+  // main.dart after this function returns. Registration order
+  // between IapService and the repositories that register
+  // verifiers is irrelevant because `registerLazySingleton` is
+  // lazy — what matters is that all `registerVerifier` calls
+  // happen here, before any UI mounts and starts buying.
+  sl.registerLazySingleton<IapService>(() => IapService());
 
   // User wallet
   sl.registerLazySingleton<WalletRepository>(() => WalletRepository());
   sl.registerFactory<WalletCubit>(
       () => WalletCubit(sl<WalletRepository>(), sl<IapService>()));
+
+  // Wire the coin verifier into IapService for every Play SKU in
+  // the catalogue. Resolving both singletons here forces their
+  // construction; the registerVerifier calls populate the
+  // dispatch map before `init()` runs in main(), so the very
+  // first restored purchase finds its verifier ready.
+  //
+  // Each coin pack registers the SAME verifier closure — the
+  // server's verifyCoinPurchase CF resolves the coin count from
+  // the productId itself, so the closure is product-agnostic.
+  {
+    final iap = sl<IapService>();
+    final walletRepo = sl<WalletRepository>();
+    final verifier = _coinVerifier(walletRepo);
+    for (final sku in IapProducts.allCoinPacks) {
+      iap.registerVerifier(sku, verifier);
+    }
+  }
 
   // User home — repo is a singleton (stateless), but the cubit is a
   // factory because each home-tab mount should own its own stream
@@ -124,11 +165,35 @@ Future<void> initDependencies() async {
       () => PriestRegistrationCubit(sl<PriestRegistrationRepository>()));
 
   // Priest activation — same shape: stateless repo + fresh cubit per
-  // paywall mount so a back-and-forth re-entry starts clean.
+  // paywall mount so a back-and-forth re-entry starts clean. The
+  // cubit owns its own IapService subscription (Pattern A, mirrors
+  // wallet_cubit), so the factory passes the IapService singleton
+  // in alongside the repository.
   sl.registerLazySingleton<ActivationRepository>(
       () => ActivationRepository());
   sl.registerFactory<ActivationCubit>(
-      () => ActivationCubit(sl<ActivationRepository>()));
+      () => ActivationCubit(
+            sl<ActivationRepository>(),
+            sl<IapService>(),
+          ));
+
+  // Wire the activation verifier into IapService. Mirrors the coin
+  // verifier block above. Re-resolves sl<IapService>() — it's the
+  // same singleton — to keep the registration block local to the
+  // activation registrations rather than threading the iap handle
+  // 60 lines down from the coin block.
+  {
+    final iap = sl<IapService>();
+    final activationRepo = sl<ActivationRepository>();
+    iap.registerVerifier(
+      IapProducts.priestActivation,
+      ({required productId, required purchaseToken}) =>
+          activationRepo.verifyActivationPurchase(
+        productId: productId,
+        purchaseToken: purchaseToken,
+      ),
+    );
+  }
 
   // Priest wallet — stateless repo (singleton) + factory cubit so
   // each wallet page mount gets a fresh balance subscription. The

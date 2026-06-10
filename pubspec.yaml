@@ -1,7 +1,7 @@
 name: gospel_vox
 description: "Gospel Vox — Global Christian Spiritual Consultation Platform"
 publish_to: 'none'
-version: 1.1.2+11
+version: 1.1.7+16
 
 environment:
   sdk: ^3.11.4

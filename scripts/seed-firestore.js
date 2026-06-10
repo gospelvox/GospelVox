@@ -24,8 +24,12 @@ async function seed() {
     // Priest one-time activation fee (INR)
     priestActivationFee: 500,
 
-    // Bible session — platform commission on user payment
-    bibleSessionCommissionPercent: 15,
+    // Bible session — platform commission on user payment.
+    // 40 → 60/40 priest/platform split locked alongside the Play
+    // migration. Field name must match what the Bible CFs read
+    // (bibleCommissionPercent); the prior bibleSessionCommissionPercent
+    // key was a silent no-op because no CF ever read it.
+    bibleCommissionPercent: 40,
 
     // Matrimony fees (INR)
     matrimonyListingFee: 1500,

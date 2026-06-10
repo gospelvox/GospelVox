@@ -1,15 +1,25 @@
-// Talks to the two activation Cloud Functions + the settings doc.
+// Talks to the activation Cloud Functions + the settings doc.
 //
-// The flow mirrors the wallet coin-purchase flow intentionally:
+// Play Billing flow (live):
+//   1. Cubit calls verifyActivationPurchase below with the
+//      productId + Play purchaseToken collected after the Play
+//      sheet returns success.
+//   2. The CF acknowledges (NOT consumes — activation is a
+//      non-consumable, permanent entitlement) on the Play side
+//      and flips priests/{uid}.isActivated.
+//
+// Razorpay flow (legacy, kept until Step 5 deletes it):
 //   1. createActivationOrder → server-signed Razorpay order
 //   2. client opens Razorpay checkout
 //   3. verifyActivationFee → HMAC check + flip isActivated
-// Skipping step 1 would break the entire "prove this payment is
-// genuine" chain, so the repo surfaces both callables side by side
-// and the cubit is the one that decides when to call each.
+// The two Razorpay methods (createOrder + verifyPayment) below are
+// orphaned — no live caller — but kept to avoid touching the
+// retired CF wiring before its dedicated cleanup step.
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
+
+import 'package:gospel_vox/core/services/iap_service.dart';
 
 // Matches functions/src/config/constants.ts. Hard-coded because a
 // region mismatch would surface as a confusing "function not found"
@@ -74,5 +84,38 @@ class ActivationRepository {
           'razorpaySignature': razorpaySignature,
         })
         .timeout(const Duration(seconds: 15));
+  }
+
+  // Adapter to the IapService verifier contract. Calls the new
+  // verifyActivationPurchase CF with the Play purchaseToken and
+  // returns an `acknowledge`-mode IapVerifyResult — activation is
+  // a NON-consumable, so the SKU stays "owned" forever and the
+  // entitlement is restored on a fresh install via
+  // restorePurchases. NEVER returns consume-mode here; consuming
+  // would let the priest "buy" activation a second time.
+  //
+  // The CF returns {success, isActivated, alreadyProcessed}.
+  // `isActivated` is true on both fresh activation and idempotent
+  // re-delivery (the CF guarantees this). The `?? true` is a
+  // belt-and-suspenders fallback for an unexpectedly-shaped
+  // response — if the CF's contract ever changes shape, the worst
+  // outcome is we treat the response as activated, which is what
+  // the user is paying for.
+  Future<IapVerifyResult> verifyActivationPurchase({
+    required String productId,
+    required String purchaseToken,
+  }) async {
+    final result = await _functions
+        .httpsCallable('verifyActivationPurchase')
+        .call({
+          'productId': productId,
+          'verificationData': purchaseToken,
+        })
+        .timeout(const Duration(seconds: 20));
+    final data = Map<String, dynamic>.from(result.data as Map);
+    return IapVerifyResult(
+      consumeMode: IapConsumeMode.acknowledge,
+      isActivated: data['isActivated'] as bool? ?? true,
+    );
   }
 }

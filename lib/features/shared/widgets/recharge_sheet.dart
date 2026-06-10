@@ -28,6 +28,7 @@ import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
@@ -227,7 +228,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
       return;
     }
 
-    final productId = _packIdToProductId(pack.id);
+    final productId = IapProducts.packIdToProductId(pack.id);
     if (productId == null) {
       _pendingPack = null;
       if (!mounted) return;
@@ -266,6 +267,22 @@ class _RechargeSheetState extends State<RechargeSheet> {
 
   void _onIapOutcome(IapOutcome outcome) {
     if (!mounted) return;
+
+    // Ignore outcomes for products this sheet doesn't own. The
+    // recharge sheet is a coin-pack surface only; activation /
+    // bible outcomes share the same broadcast stream after the
+    // IapService multi-product refactor and would otherwise fire
+    // the success snackbar / pop(true) when an unrelated purchase
+    // landed elsewhere in the app.
+    //
+    // `unavailable` carries no productId and falls through so the
+    // sheet still shows the "in-app purchases aren't available"
+    // message if the store dies mid-session.
+    final pid = outcome.productId;
+    if (pid != null && !IapProducts.allCoinPacks.contains(pid)) {
+      return;
+    }
+
     switch (outcome.kind) {
       case IapOutcomeKind.success:
         final pack = _pendingPack;
@@ -315,16 +332,6 @@ class _RechargeSheetState extends State<RechargeSheet> {
         );
         break;
     }
-  }
-
-  // Mirrors the wallet cubit's mapping. Kept local rather than
-  // exposed because the recharge sheet is currently the only other
-  // caller and a top-level helper would split ownership of the
-  // SKU contract.
-  String? _packIdToProductId(String packId) {
-    final match = RegExp(r'^pack_(\d+)$').firstMatch(packId);
-    if (match == null) return null;
-    return 'coins_${match.group(1)}';
   }
 
   // Picks the 4 packs to show and arranges them so the popular one

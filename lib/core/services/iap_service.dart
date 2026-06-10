@@ -4,40 +4,55 @@
 // `InAppPurchase.instance.purchaseStream` is a process-wide stream.
 // Subscribing to it from multiple widgets means each subscriber
 // receives every purchase event — they'd all race to send the same
-// {productId, purchaseToken} to verifyCoinPurchase, and we'd get N
-// duplicate server calls per real purchase. The server is
-// idempotent on purchaseToken so duplicates wouldn't double-credit,
-// but they're wasted round-trips and the UX would flicker as N
-// success toasts fire.
+// {productId, purchaseToken} to a verifier, and we'd get N duplicate
+// server calls per real purchase. The server is idempotent on
+// purchaseToken so duplicates wouldn't double-credit, but they're
+// wasted round-trips and the UX would flicker as N success toasts
+// fire.
 //
 // The fix: one listener, owned by this service, started in main()
-// before any UI mounts. The service does the server round-trip and
-// publishes a high-level outcome via its OWN broadcast stream.
-// Wallet page + recharge sheet subscribe to the outcome stream,
-// not to the raw purchase stream.
+// before any UI mounts. The service dispatches each purchase to the
+// verifier registered for its productId (a CF round-trip), and
+// publishes a high-level outcome via its OWN broadcast stream. UI
+// surfaces subscribe to the outcome stream — not to the raw
+// purchaseStream — and FILTER by productId so a coin-related surface
+// doesn't react to an activation outcome that happened elsewhere.
+//
+// Multi-product:
+//   • Coin packs are consumables. Verifier returns consume-mode and
+//     newBalance; client calls consumeAsync after success.
+//   • Priest activation is a non-consumable. Verifier returns
+//     acknowledge-mode and isActivated=true; client calls
+//     acknowledgePurchase after success (NOT consume — consuming a
+//     non-consumable would let the priest "buy" activation again).
+//   • Bible session entry is a consumable. Same pattern as coins,
+//     but verifier returns meetingLink instead of newBalance.
 //
 // Scope of THIS slice:
 //   • Android only. iOS path is gated and shows a friendly
-//     "Coming soon" — the Cloud Function only verifies Play tokens.
-//   • Consumables only (coin packs). Non-consumables / subscriptions
-//     are not modelled.
+//     "Coming soon" — the Cloud Functions only verify Play tokens.
 //
-// Why we consume on BOTH client and server:
-//   The server's verifyCoinPurchase calls Android Publisher's
-//   purchases.products.consume after crediting. The client also
-//   calls Play Billing's consumeAsync after the server returns
-//   success. Both are needed because:
-//     (a) The plugin's `completePurchase` on Android only
-//         ACKNOWLEDGES — for an autoConsume:false buy it does NOT
-//         consume. Acknowledged-but-unconsumed consumables stay
-//         "owned" by Google → ITEM_ALREADY_OWNED on the next buy
-//         of the same SKU.
-//     (b) If the server-side consume silently fails (Play API
-//         transient), only the client-side consume unsticks the
-//         purchase.
-//   The race between the two consumes is benign — whichever loses
-//   surfaces as "already consumed" / ITEM_NOT_OWNED and is
-//   swallowed at the call site.
+// Why we consume / acknowledge on BOTH client and server:
+//   The server's verify CFs each call Android Publisher's
+//   purchases.products.{consume,acknowledge} after crediting. The
+//   client also calls the matching Play Billing API after the
+//   server returns success. Both are needed because:
+//     (a) The plugin's `completePurchase` on Android maps to
+//         `acknowledgePurchase`. For consumables that is the WRONG
+//         API — acknowledged-but-unconsumed consumables stay
+//         "owned" by Google → ITEM_ALREADY_OWNED on the next buy.
+//     (b) If the server-side call silently fails (Play API
+//         transient), only the client-side call unsticks the SKU.
+//   The race between the two is benign — whichever loses surfaces
+//   as "already consumed" / ITEM_NOT_OWNED and is swallowed.
+//
+// IMPORTANT — pendingCompletePurchase guard:
+//   The Android plugin sets `pendingCompletePurchase = !isAcknowledged`.
+//   A restored purchase that was previously acknowledged-but-never-
+//   consumed arrives with pendingCompletePurchase = false. The guard
+//   stays OUT of `_safeConsume` specifically because that's the
+//   exact case where we need to consume. The guard is preserved in
+//   `_safeComplete` and `_safeAcknowledge` where it's correct.
 
 import 'dart:async';
 import 'dart:io' show Platform;
@@ -46,15 +61,16 @@ import 'package:cloud_functions/cloud_functions.dart';
 import 'package:flutter/foundation.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:in_app_purchase_android/in_app_purchase_android.dart';
-import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 
 // ─── Public types ────────────────────────────────────────────
 
 /// What kind of outcome we emit to UI subscribers.
 enum IapOutcomeKind {
   /// Server confirmed and credited (or recognised the purchase as
-  /// already-credited via the idempotency check). `coinsBalance` is
-  /// the authoritative new balance to display.
+  /// already-processed via the idempotency check). The relevant
+  /// field on `IapOutcome` (newBalance / meetingLink / isActivated)
+  /// will be populated by the verifier for the corresponding
+  /// product type.
   success,
 
   /// User cancelled the Play sheet. Not an error — UI should
@@ -78,25 +94,72 @@ enum IapOutcomeKind {
   unavailable,
 }
 
+/// Result emitted on the outcomes broadcast stream. Field
+/// population is product-type-specific:
+///   • Coin purchase success → `newBalance` set.
+///   • Priest activation success → `isActivated` set.
+///   • Bible session success → `meetingLink` set.
+///   • Error / cancel / pending / unavailable → those three are
+///     null; `message` carries any user-facing text.
 class IapOutcome {
   final IapOutcomeKind kind;
   final String? productId;
   final int? newBalance;
   final String? message;
+  final String? meetingLink;
+  final bool? isActivated;
 
   const IapOutcome._({
     required this.kind,
     this.productId,
     this.newBalance,
     this.message,
+    this.meetingLink,
+    this.isActivated,
   });
 
   bool get isSuccess => kind == IapOutcomeKind.success;
 }
 
+/// What to do on Play after a successful server-side credit.
+///   • `consume` — releases the SKU at Google so it can be
+///     repurchased (coin packs, bible session entry).
+///   • `acknowledge` — keeps the SKU "owned" forever (priest
+///     activation, any non-consumable). Acknowledged purchases
+///     are restored on a fresh install via `restorePurchases`.
+enum IapConsumeMode { consume, acknowledge }
+
+/// Carrier for what a verifier hands back to IapService. The
+/// verifier owns the server-side concerns (which CF to call, what
+/// to do with the returned shape); this struct is the bridge that
+/// lets IapService decide which fields to populate on the outcome
+/// and whether to consume vs acknowledge on Play.
+class IapVerifyResult {
+  final IapConsumeMode consumeMode;
+  final int? newBalance;
+  final String? meetingLink;
+  final bool? isActivated;
+
+  const IapVerifyResult({
+    required this.consumeMode,
+    this.newBalance,
+    this.meetingLink,
+    this.isActivated,
+  });
+}
+
+/// One verifier per SKU. Calls its domain's CF, returns the
+/// IapVerifyResult, THROWS on failure — `_verifyAndEmit`'s
+/// FirebaseFunctionsException / TimeoutException / generic catch
+/// blocks are the single place all verifier failures get
+/// classified into terminal vs transient.
+typedef IapVerifier = Future<IapVerifyResult> Function({
+  required String productId,
+  required String purchaseToken,
+});
+
 class IapService {
   final InAppPurchase _iap = InAppPurchase.instance;
-  final WalletRepository _wallet;
 
   StreamSubscription<List<PurchaseDetails>>? _sub;
   final StreamController<IapOutcome> _outcomes =
@@ -111,7 +174,16 @@ class IapService {
   // recharge sheet (a different surface) doesn't re-query.
   final Map<String, ProductDetails> _productCache = {};
 
-  IapService(this._wallet);
+  // Per-productId verifier registry. Populated by DI after both
+  // this service and each per-domain repository are constructed
+  // (see injection_container.dart). Exact-match keying — no regex
+  // — because the catalogue is a fixed allowlist (IapProducts).
+  // A purchase whose productId is missing here is treated as
+  // unknown-and-terminal (see `_verifyAndEmit`) so it doesn't
+  // loop forever on every app launch.
+  final Map<String, IapVerifier> _verifiers = {};
+
+  IapService();
 
   /// Final outcomes after the server round-trip. UI subscribes here.
   Stream<IapOutcome> get outcomes => _outcomes.stream;
@@ -120,6 +192,14 @@ class IapService {
   /// iOS returns false in this slice by design (server cannot
   /// verify StoreKit receipts yet).
   bool get isStoreAvailable => _storeAvailable;
+
+  /// Register a verifier for a specific SKU. Call after DI has
+  /// constructed both this service and the verifier's owning
+  /// repository. Idempotent — re-registering replaces the prior
+  /// verifier.
+  void registerVerifier(String productId, IapVerifier verifier) {
+    _verifiers[productId] = verifier;
+  }
 
   /// Initialise the global listener. MUST be called exactly once,
   /// before any UI tries to buy. Idempotent — safe to call twice.
@@ -157,18 +237,19 @@ class IapService {
       },
     );
 
-    // Pull any unconsumed purchases through the stream so they can
-    // be verified + credited + consumed. Critical for two scenarios:
+    // Pull any unconsumed/unacknowledged purchases through the
+    // stream so they can be verified + credited + finalised.
+    // Critical for two scenarios:
     //   1. App-kill mid-purchase — the user paid, app died before
     //      we could verify, Google still considers the SKU "owned"
-    //      until we consume.
+    //      until we consume/acknowledge.
     //   2. Server-side credit failed (e.g. misconfigured secret) on
     //      an earlier build — Google has an unconsumed purchase,
     //      our DB has no record, the user sees ITEM_ALREADY_OWNED
     //      on every retry until we explicitly ask Google for the
     //      pending tokens here.
-    // queryPurchases only returns active/unconsumed entries, so this
-    // is a no-op once the user has no stuck purchases.
+    // queryPurchases only returns active entries, so this is a
+    // no-op once the user has no stuck purchases.
     try {
       await _iap.restorePurchases();
     } catch (e) {
@@ -214,16 +295,16 @@ class IapService {
     };
   }
 
-  /// Starts a consumable purchase. Returns true if the buy was
-  /// dispatched to the store; false if the store is unavailable or
-  /// the SKU isn't loaded.
+  /// Starts a consumable purchase (coin packs, bible session entry).
+  /// Returns true if the buy was dispatched to the store; false if
+  /// the store is unavailable or the buy threw.
   ///
   /// `autoConsume: false` is critical — without it the Android
   /// plugin auto-consumes the purchase before we verify with the
   /// server, which both invalidates the token (verify would fail)
-  /// and grants Google "no idea this token even existed" if our
-  /// server later wants to consume it. We want the server to be the
-  /// authority on whether to grant + consume.
+  /// and leaves Google with "no idea this token even existed" if
+  /// our server later wants to consume it. We want the server to
+  /// be the authority on whether to grant + consume.
   Future<bool> buyConsumable(ProductDetails product) async {
     if (!_storeAvailable) {
       _outcomes.add(const IapOutcome._(kind: IapOutcomeKind.unavailable));
@@ -242,6 +323,36 @@ class IapService {
       );
     } catch (e) {
       debugPrint('[Iap] buyConsumable threw: $e');
+      _outcomes.add(IapOutcome._(
+        kind: IapOutcomeKind.error,
+        productId: product.id,
+        message: "Couldn't open the Play sheet. Please try again.",
+      ));
+      return false;
+    }
+  }
+
+  /// Starts a non-consumable purchase (priest activation). Returns
+  /// true if the buy was dispatched to the store; false if the
+  /// store is unavailable or the buy threw.
+  ///
+  /// Mirrors `buyConsumable` exactly, but underlying call is
+  /// `_iap.buyNonConsumable` so Play's local-purchase tracking
+  /// treats the SKU as a permanent entitlement instead of a
+  /// repurchasable consumable. The corresponding post-credit
+  /// finalisation is `_safeAcknowledge` (NOT `_safeConsume`) —
+  /// dispatched in `_verifyAndEmit` based on the verifier's
+  /// returned `IapConsumeMode`.
+  Future<bool> buyNonConsumable(ProductDetails product) async {
+    if (!_storeAvailable) {
+      _outcomes.add(const IapOutcome._(kind: IapOutcomeKind.unavailable));
+      return false;
+    }
+    try {
+      final purchaseParam = PurchaseParam(productDetails: product);
+      return await _iap.buyNonConsumable(purchaseParam: purchaseParam);
+    } catch (e) {
+      debugPrint('[Iap] buyNonConsumable threw: $e');
       _outcomes.add(IapOutcome._(
         kind: IapOutcomeKind.error,
         productId: product.id,
@@ -314,8 +425,27 @@ class IapService {
       return;
     }
 
+    final verifier = _verifiers[productId];
+    if (verifier == null) {
+      // Unknown product — no domain registered a verifier for this
+      // SKU. Terminal so the purchase doesn't loop on every app
+      // launch. The most likely cause is a Play Console SKU that
+      // the current client version doesn't know about yet (e.g. a
+      // newly launched product whose client constants haven't
+      // shipped), so the user-facing copy hints at the fix.
+      debugPrint('[Iap] no verifier registered for productId="$productId"');
+      _outcomes.add(IapOutcome._(
+        kind: IapOutcomeKind.error,
+        productId: productId,
+        message: "This product isn't supported by your app version. "
+            "Please update and try again.",
+      ));
+      await _safeComplete(purchase);
+      return;
+    }
+
     try {
-      final result = await _wallet.verifyCoinPurchase(
+      final result = await verifier(
         productId: productId,
         purchaseToken: token,
       );
@@ -323,27 +453,40 @@ class IapService {
         kind: IapOutcomeKind.success,
         productId: productId,
         newBalance: result.newBalance,
+        meetingLink: result.meetingLink,
+        isActivated: result.isActivated,
       ));
-      // Terminal success — consume the purchase at Play so the
-      // consumable is repurchasable AND the local pending flag is
-      // cleared. `_safeConsume` uses the Android-specific consume
-      // (acknowledge alone leaves the SKU "owned" and produces
-      // ITEM_ALREADY_OWNED on the next buy). A race with the
-      // server-side consumeProduct manifests as ITEM_NOT_OWNED on
-      // whichever loses — swallowed inside.
-      await _safeConsume(purchase);
+      // Finalise on Play per the verifier's verdict. Consume for
+      // consumables (coins, bible), acknowledge for non-consumables
+      // (priest activation). See the IapConsumeMode comment for
+      // why these are distinct.
+      switch (result.consumeMode) {
+        case IapConsumeMode.consume:
+          await _safeConsume(purchase);
+          break;
+        case IapConsumeMode.acknowledge:
+          await _safeAcknowledge(purchase);
+          break;
+      }
     } on FirebaseFunctionsException catch (e) {
-      // Terminal server-side rejections that won't fix themselves
-      // on retry. Clear the queue so the user doesn't see the same
+      // Terminal server-side rejections won't fix themselves on
+      // retry. Clear the queue so the user doesn't see the same
       // error every app launch. Transient codes (internal,
       // unavailable, unauthenticated) deliberately leave the
       // purchase on the queue so the next launch re-verifies.
+      //
+      // All `failed-precondition` codes are now terminal — multiple
+      // product types share this path, and a server-side
+      // precondition failure means the server definitively rejected
+      // this token (e.g. unknown_or_inactive_pack for coins,
+      // purchase_not_valid for any product, "Unsupported product
+      // for activation" for activation). Safe for coins because
+      // every failed-precondition path the coin CF emits is genuinely
+      // terminal.
       final terminal = e.code == 'invalid-argument' ||
           e.code == 'permission-denied' ||
           e.code == 'not-found' ||
-          (e.code == 'failed-precondition' &&
-              (e.message == 'purchase_not_valid' ||
-                  e.message == 'unknown_or_inactive_pack'));
+          e.code == 'failed-precondition';
       _outcomes.add(IapOutcome._(
         kind: IapOutcomeKind.error,
         productId: productId,
@@ -370,17 +513,26 @@ class IapService {
     }
   }
 
-  // Success path: explicit Play Billing consume. Required because
-  // the plugin's `completePurchase` on Android only ACKNOWLEDGES
-  // for an autoConsume:false buy — and acknowledged-but-unconsumed
-  // consumables stay "owned" by Google, producing ITEM_ALREADY_OWNED
-  // on the next buy of the same SKU. Falls back to completePurchase
-  // on non-Android (iOS coin purchases are gated until the StoreKit
-  // slice ships). The ITEM_NOT_OWNED race with the server-side
-  // consumeProduct is swallowed — Google considers the purchase
-  // consumed either way.
+  // Success-on-CONSUMABLE path: explicit Play Billing consume.
+  // Required because the plugin's `completePurchase` on Android
+  // only ACKNOWLEDGES for an autoConsume:false buy — and
+  // acknowledged-but-unconsumed consumables stay "owned" by
+  // Google, producing ITEM_ALREADY_OWNED on the next buy of the
+  // same SKU. Falls back to completePurchase on non-Android (iOS
+  // coin / bible purchases are gated until the StoreKit slice
+  // ships).
+  //
+  // Critical: we DO NOT early-exit on `!pendingCompletePurchase`
+  // here. The Android plugin computes
+  // `pendingCompletePurchase = !isAcknowledged` — so a restored
+  // purchase that was previously acknowledged-but-never-consumed
+  // (the exact state every early broken-secret test left behind)
+  // arrives with `pendingCompletePurchase == false`. Honouring
+  // that guard would short-circuit the very rescue this method
+  // exists to perform. consumeAsync is idempotent server-side —
+  // a duplicate call on an already-consumed token errors with
+  // "already consumed", which the catch below swallows.
   Future<void> _safeConsume(PurchaseDetails purchase) async {
-    if (!purchase.pendingCompletePurchase) return;
     try {
       if (Platform.isAndroid) {
         final addition =
@@ -388,10 +540,28 @@ class IapService {
         await addition.consumePurchase(purchase);
         return;
       }
-      await _iap.completePurchase(purchase);
+      if (purchase.pendingCompletePurchase) {
+        await _iap.completePurchase(purchase);
+      }
     } catch (e) {
       debugPrint('[Iap] consume failed (likely server-already-consumed '
-          'race, safe to ignore): $e');
+          'race or already-consumed token, safe to ignore): $e');
+    }
+  }
+
+  // Success-on-NON-CONSUMABLE path: acknowledge only. The plugin's
+  // `completePurchase` IS the acknowledge call on Android, which is
+  // the right API for a non-consumable. We KEEP the
+  // `pendingCompletePurchase` guard here — for non-consumables it
+  // tracks acknowledge state correctly, and skipping the no-op
+  // round-trip is a small win. `_safeConsume` is the special case
+  // that has to ignore the guard, not this method.
+  Future<void> _safeAcknowledge(PurchaseDetails purchase) async {
+    if (!purchase.pendingCompletePurchase) return;
+    try {
+      await _iap.completePurchase(purchase);
+    } catch (e) {
+      debugPrint('[Iap] acknowledge failed (safe to ignore): $e');
     }
   }
 

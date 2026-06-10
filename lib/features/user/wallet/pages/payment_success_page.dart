@@ -82,12 +82,13 @@ class _PaymentSuccessPageState extends State<PaymentSuccessPage>
   }
 
   void _onContinue() {
-    // No reload needed here. The WalletCubit awaits reloadAfterPurchase
-    // internally right after emitting WalletPurchaseSuccess, so by the
-    // time the user taps Continue the wallet state has already
-    // transitioned back to WalletLoaded with fresh balance + packs.
-    // A context.read<WalletCubit>() here would fail anyway because
-    // this route sits outside the wallet page's BlocProvider scope.
+    // No reload needed here. The WalletCubit fires reloadAfterPurchase
+    // in the background right after emitting WalletPurchaseSuccess, so
+    // by the time the user taps Continue the wallet state has
+    // typically already transitioned back to WalletLoaded with fresh
+    // balance + packs. A context.read<WalletCubit>() here would fail
+    // anyway because this route sits outside the wallet page's
+    // BlocProvider scope.
     context.pop();
   }
 

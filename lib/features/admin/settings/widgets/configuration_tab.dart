@@ -28,7 +28,7 @@ class _ConfigurationTabState extends State<ConfigurationTab>
     'chatRatePerMinute',
     'voiceRatePerMinute',
     'commissionPercent',
-    'bibleSessionCommissionPercent',
+    'bibleCommissionPercent',
     'priestActivationFee',
     'matrimonyListingFee',
     'matrimonyUnlockFee',
@@ -78,7 +78,7 @@ class _ConfigurationTabState extends State<ConfigurationTab>
       'chatRatePerMinute': ('Chat Rate', 'coins/min'),
       'voiceRatePerMinute': ('Voice Rate', 'coins/min'),
       'commissionPercent': ('Commission', '%'),
-      'bibleSessionCommissionPercent': ('Bible Session Commission', '%'),
+      'bibleCommissionPercent': ('Bible Session Commission', '%'),
       'priestActivationFee': ('Speaker Activation', '₹'),
       'matrimonyListingFee': ('Matrimony Listing', '₹'),
       'matrimonyUnlockFee': ('Matrimony Unlock', '₹'),
@@ -161,7 +161,7 @@ class _ConfigurationTabState extends State<ConfigurationTab>
               _section('BIBLE SESSIONS', [
                 _row('Bible Commission',
                     'Platform cut from bookings',
-                    'bibleSessionCommissionPercent', '%'),
+                    'bibleCommissionPercent', '%'),
               ]),
               _section('FEES', [
                 _row('Speaker Activation', 'One-time unlock fee',

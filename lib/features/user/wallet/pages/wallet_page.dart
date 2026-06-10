@@ -157,10 +157,14 @@ class _WalletPageState extends State<WalletPage> {
       // refunds" sheet here.
       AppSnackBar.error(context, state.message);
     } else if (state is WalletPurchaseSuccess) {
-      // Navigate. The cubit itself awaits reloadAfterPurchase right
-      // after emitting WalletPurchaseSuccess, so by the time the user
-      // taps Continue on the success page, the state has already
-      // transitioned back to WalletLoaded — no stranded-on-shimmer.
+      // Navigate. The cubit fires reloadAfterPurchase in the
+      // background right after emitting WalletPurchaseSuccess, so by
+      // the time the user taps Continue on the success page the
+      // state has typically already transitioned back to WalletLoaded
+      // — no stranded-on-shimmer. In the rare case the reload is
+      // still in flight when the user returns, _buildBody renders
+      // the shimmer briefly until the new WalletLoaded lands (a few
+      // hundred ms).
       context.push('/user/payment-success', extra: <String, dynamic>{
         'coins': state.coinsPurchased,
         'newBalance': state.newBalance,
