@@ -1,0 +1,258 @@
+// Verifies a Google Play purchase of the priest_activation
+// non-consumable and flips priests/{uid}.isActivated = true.
+//
+// Mirrors verifyCoinPurchase's structure, but with three departures
+// that matter for a non-consumable:
+//   • Strict productId allowlist — exactly 'priest_activation'.
+//     Anything else is rejected before we touch Play.
+//   • ACKNOWLEDGE on the Play side, never CONSUME. Activation is a
+//     permanent entitlement; consuming would let the priest "buy"
+//     activation again (which Play would happily charge for).
+//   • Idempotency key is the new top-level `purchases/{token}`
+//     collection rather than wallet_transactions. The activation
+//     flow doesn't credit a wallet, so a dedicated dedupe doc keeps
+//     the ledger clean and the dedupe explicit.
+//
+// Defences (in order):
+//   1. Auth required.
+//   2. Strict productId allowlist (early-fail before Play call).
+//   3. Priest profile must exist and be `status === 'approved'`.
+//   4. If priests/{uid}.isActivated === true → idempotent OK +
+//      best-effort acknowledge to rescue an earlier acknowledge
+//      that silently failed.
+//   5. purchases/{purchaseToken} doc → if the token was already
+//      processed for THIS priest, idempotent OK. If it was already
+//      processed for a DIFFERENT priest, permission-denied (replay
+//      attempt).
+//   6. Play purchase verification (verifyProductPurchase). A
+//      tampered client cannot fabricate a token that resolves to a
+//      successful purchaseState=0 priest_activation purchase.
+//
+// After verification, atomically:
+//   • flip priests/{uid}.isActivated = true + activatedAt
+//   • mirror users/{uid}.isActivated = true (role-gated UI reads
+//     from the user doc, not the priest doc)
+//   • write purchases/{token} idempotency doc
+//   • write a wallet_transactions audit row (kept for the admin
+//     transactions view; mirrors the legacy verifyActivationFee
+//     row shape)
+//   • write a notifications inbox doc
+// then ACKNOWLEDGE the Play purchase, then best-effort push the
+// priest's device.
+
+import {onCall, HttpsError} from "firebase-functions/v2/https";
+import * as admin from "firebase-admin";
+import {REGION} from "../config/constants";
+import {verifyProductPurchase, acknowledgeProduct} from "./playVerify";
+import {sendPushNotification} from "../notifications/sendPush";
+
+const db = admin.firestore();
+
+const ACTIVATION_PRODUCT_ID = "priest_activation";
+
+export const verifyActivationPurchase = onCall(
+  {region: REGION, secrets: ["GOOGLE_PLAY_SERVICE_ACCOUNT"]},
+  async (request) => {
+    const uid = request.auth?.uid;
+    if (!uid) {
+      throw new HttpsError("unauthenticated", "Must be logged in");
+    }
+
+    const {productId, verificationData} = request.data as {
+      productId?: string;
+      verificationData?: string;
+    };
+
+    if (
+      !productId ||
+      typeof productId !== "string" ||
+      !verificationData ||
+      typeof verificationData !== "string"
+    ) {
+      throw new HttpsError(
+        "invalid-argument",
+        "productId and verificationData are required",
+      );
+    }
+
+    // ── 1. Strict productId allowlist ───────────────────────────
+    // Activation has exactly one SKU. A coin-pack token submitted
+    // here must be rejected before we burn an Android Publisher
+    // round-trip on it.
+    if (productId !== ACTIVATION_PRODUCT_ID) {
+      throw new HttpsError(
+        "failed-precondition",
+        "Unsupported product for activation",
+      );
+    }
+
+    const purchaseToken = verificationData;
+
+    // ── 2. Priest profile must exist and be approved ────────────
+    // The legacy verifyActivationFee enforces both gates. Keeping
+    // them here as defence-in-depth — without `status === 'approved'`
+    // a rejected applicant could short-circuit moderation by paying
+    // directly through Play.
+    const priestRef = db.doc(`priests/${uid}`);
+    const priestSnap = await priestRef.get();
+    if (!priestSnap.exists) {
+      throw new HttpsError("not-found", "Speaker profile not found");
+    }
+    const priestData = priestSnap.data() ?? {};
+    if (priestData.status !== "approved") {
+      throw new HttpsError(
+        "failed-precondition",
+        "Your application must be approved before activation",
+      );
+    }
+
+    // ── 3. Already-activated idempotent path ────────────────────
+    // Possible in two scenarios: (a) legitimate retry from the
+    // client after a network blip on the previous response, or
+    // (b) priest activated via the legacy Razorpay flow before the
+    // Play migration. In either case the entitlement is real; we
+    // just need to make sure the Play token is acknowledged so
+    // Google doesn't auto-refund it in 72h.
+    if (priestData.isActivated === true) {
+      try {
+        await acknowledgeProduct({productId, purchaseToken});
+      } catch (err) {
+        console.error(
+          "[verifyActivationPurchase] idempotent acknowledge rescue failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      return {
+        success: true,
+        isActivated: true,
+        alreadyProcessed: true,
+      };
+    }
+
+    // ── 4. purchases/{token} idempotency / replay check ─────────
+    // The token is globally unique per Play purchase. The dedupe
+    // doc lives at purchases/{token}; if it's present for THIS
+    // priest, this is a retry — return OK. If it's present for
+    // a DIFFERENT priest, the client is replaying someone else's
+    // purchase token to activate themselves for free.
+    const purchaseRef = db.doc(`purchases/${purchaseToken}`);
+    const purchaseSnap = await purchaseRef.get();
+    if (purchaseSnap.exists) {
+      const existingUid = purchaseSnap.data()?.userId;
+      if (existingUid && existingUid !== uid) {
+        throw new HttpsError(
+          "permission-denied",
+          "Purchase token already used by another user",
+        );
+      }
+      try {
+        await acknowledgeProduct({productId, purchaseToken});
+      } catch (err) {
+        console.error(
+          "[verifyActivationPurchase] idempotent acknowledge rescue failed:",
+          err instanceof Error ? err.message : String(err),
+        );
+      }
+      return {
+        success: true,
+        isActivated: true,
+        alreadyProcessed: true,
+      };
+    }
+
+    // ── 5. Verify with Google Play ──────────────────────────────
+    // Throws HttpsError on any failure (network, invalid token,
+    // wrong productId, purchaseState != 0).
+    await verifyProductPurchase({productId, purchaseToken});
+
+    // ── 6. Atomic: flip isActivated + audit + idempotency doc ──
+    const batch = db.batch();
+
+    batch.update(priestRef, {
+      isActivated: true,
+      activatedAt: admin.firestore.FieldValue.serverTimestamp(),
+      activationPurchaseToken: purchaseToken,
+    });
+
+    // Mirror on users/{uid} so role-gated UI doesn't need a second
+    // read to check activation. Admin SDK bypasses the locked-field
+    // rule on this doc.
+    const userRef = db.doc(`users/${uid}`);
+    batch.update(userRef, {
+      isActivated: true,
+    });
+
+    // Canonical purchase record. Doc id IS the purchaseToken so any
+    // future replay attempt collides on the doc id and resolves
+    // deterministically via step 4 above.
+    batch.set(purchaseRef, {
+      userId: uid,
+      productId,
+      kind: "priest_activation",
+      provider: "play",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Audit row — mirrors the legacy verifyActivationFee shape so
+    // the admin transactions view continues to surface activations
+    // alongside coin and bible-session rows. `amountPaid` is the
+    // configured INR fee (not the user's local-currency Play
+    // charge, which the Android Publisher API doesn't expose).
+    const settingsDoc = await db.doc("app_config/settings").get();
+    const feeRupees = Number(
+      settingsDoc.data()?.priestActivationFee ?? 500,
+    );
+    const txRef = db.collection("wallet_transactions").doc();
+    batch.set(txRef, {
+      userId: uid,
+      type: "activation_fee",
+      provider: "play",
+      productId,
+      purchaseToken,
+      amountPaid: feeRupees,
+      description: "Speaker activation fee",
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    const notifRef = db.collection("notifications").doc();
+    batch.set(notifRef, {
+      userId: uid,
+      type: "account_activated",
+      title: "Account Activated!",
+      body:
+        "Your speaker account is now active. " +
+        "You can start accepting sessions.",
+      isRead: false,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    await batch.commit();
+
+    // ── 7. Acknowledge (NOT consume) the non-consumable ─────────
+    // Non-consumables stay "owned" forever — acknowledging only
+    // satisfies Google's 3-day rule. Consuming would re-enable
+    // re-purchase, which is wrong for a permanent entitlement.
+    // Best-effort: a failure here is logged but does not roll back
+    // the activation that has already landed.
+    await acknowledgeProduct({productId, purchaseToken});
+
+    // ── 8. Push the priest's device (best-effort, post-commit) ──
+    await sendPushNotification({
+      userId: uid,
+      title: "Account Activated!",
+      body:
+        "Your speaker account is now active. " +
+        "You can start accepting sessions.",
+      data: {
+        type: "account_activated",
+        route: "/priest",
+      },
+    });
+
+    return {
+      success: true,
+      isActivated: true,
+      alreadyProcessed: false,
+    };
+  },
+);

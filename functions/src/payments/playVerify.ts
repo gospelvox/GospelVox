@@ -155,3 +155,48 @@ export async function consumeProduct(args: {
     console.error("[playVerify] consume failed:", msg);
   }
 }
+
+// Acknowledges a non-consumable product after we've granted the
+// entitlement.
+//
+// Why this is distinct from consumeProduct:
+//   • Consumables (coin packs, bible-session entry) get CONSUMED —
+//     removing the SKU from "owned" state so the user can repurchase.
+//   • Non-consumables (priest activation) get ACKNOWLEDGED only —
+//     the entitlement is permanent, the SKU SHOULD stay in "owned"
+//     state so restorePurchases on a fresh install brings the
+//     entitlement back without forcing a re-pay.
+//
+// Like consumeProduct, this satisfies Google's 3-day acknowledgement
+// requirement (avoids the auto-refund chargeback path). A second
+// call against an already-acknowledged token errors with a
+// recognisable message which we treat as success.
+//
+// Best-effort: same swallowing pattern as consumeProduct — the
+// entitlement has already landed in Firestore, the user must NOT
+// see an error because of a downstream Play call.
+export async function acknowledgeProduct(args: {
+  productId: string;
+  purchaseToken: string;
+}): Promise<void> {
+  const client = getAndroidPublisher();
+  try {
+    await client.purchases.products.acknowledge({
+      packageName: PACKAGE_NAME,
+      productId: args.productId,
+      token: args.purchaseToken,
+    });
+  } catch (err) {
+    const msg = err instanceof Error ? err.message : String(err);
+    const lower = msg.toLowerCase();
+    if (
+      lower.includes("already consumed") ||
+      lower.includes("already acknowledged") ||
+      lower.includes("already been consumed") ||
+      lower.includes("already been acknowledged")
+    ) {
+      return;
+    }
+    console.error("[playVerify] acknowledge failed:", msg);
+  }
+}

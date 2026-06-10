@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onBibleSessionRated = exports.createBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = void 0;
+exports.onBibleSessionRated = exports.createBibleSession = exports.verifyAndJoinBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationPurchase = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -17,6 +17,12 @@ var createActivationOrder_1 = require("./payments/createActivationOrder");
 Object.defineProperty(exports, "createActivationOrder", { enumerable: true, get: function () { return createActivationOrder_1.createActivationOrder; } });
 var verifyActivationFee_1 = require("./payments/verifyActivationFee");
 Object.defineProperty(exports, "verifyActivationFee", { enumerable: true, get: function () { return verifyActivationFee_1.verifyActivationFee; } });
+// Play-backed activation. Shipped alongside the Razorpay pair so the
+// client can be migrated in a separate slice; once the new flow is
+// wired and verified, createActivationOrder + verifyActivationFee
+// will be retired.
+var verifyActivationPurchase_1 = require("./payments/verifyActivationPurchase");
+Object.defineProperty(exports, "verifyActivationPurchase", { enumerable: true, get: function () { return verifyActivationPurchase_1.verifyActivationPurchase; } });
 var verifyBibleSessionPayment_1 = require("./payments/verifyBibleSessionPayment");
 Object.defineProperty(exports, "verifyBibleSessionPayment", { enumerable: true, get: function () { return verifyBibleSessionPayment_1.verifyBibleSessionPayment; } });
 // Matrimony payments intentionally not exported — the feature is not
@@ -87,6 +93,11 @@ var startBibleSession_1 = require("./bible/startBibleSession");
 Object.defineProperty(exports, "startBibleSession", { enumerable: true, get: function () { return startBibleSession_1.startBibleSession; } });
 var payAndJoinBibleSession_1 = require("./bible/payAndJoinBibleSession");
 Object.defineProperty(exports, "payAndJoinBibleSession", { enumerable: true, get: function () { return payAndJoinBibleSession_1.payAndJoinBibleSession; } });
+// Play-backed pay-to-join. Shipped alongside payAndJoinBibleSession
+// so the client can be migrated in a separate slice; once the new
+// flow is wired and verified, payAndJoinBibleSession will be retired.
+var verifyAndJoinBibleSession_1 = require("./bible/verifyAndJoinBibleSession");
+Object.defineProperty(exports, "verifyAndJoinBibleSession", { enumerable: true, get: function () { return verifyAndJoinBibleSession_1.verifyAndJoinBibleSession; } });
 var createBibleSession_1 = require("./bible/createBibleSession");
 Object.defineProperty(exports, "createBibleSession", { enumerable: true, get: function () { return createBibleSession_1.createBibleSession; } });
 var onBibleSessionRated_1 = require("./bible/onBibleSessionRated");
