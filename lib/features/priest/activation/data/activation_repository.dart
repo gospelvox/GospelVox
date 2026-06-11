@@ -86,13 +86,21 @@ class ActivationRepository {
         .timeout(const Duration(seconds: 15));
   }
 
-  // Adapter to the IapService verifier contract. Calls the new
+  // Adapter to the IapService verifier contract. Calls the
   // verifyActivationPurchase CF with the Play purchaseToken and
-  // returns an `acknowledge`-mode IapVerifyResult — activation is
-  // a NON-consumable, so the SKU stays "owned" forever and the
-  // entitlement is restored on a fresh install via
-  // restorePurchases. NEVER returns consume-mode here; consuming
-  // would let the priest "buy" activation a second time.
+  // returns a `consume`-mode IapVerifyResult — activation is a
+  // CONSUMABLE flow at the Play layer (the server's
+  // priests/{uid}.isActivated flag is the source of truth for the
+  // entitlement). Consuming releases the SKU at Play so different
+  // Firebase users on the same Play account can each pay for their
+  // own activation — without consume, Play would block any second
+  // activation on the account with ITEM_ALREADY_OWNED.
+  //
+  // Reinstall / fresh-device recovery does NOT depend on Play
+  // remembering activation: the app reads isActivated from
+  // Firestore on launch, and an already-activated priest never
+  // reaches the paywall. Per-entitlement state lives on the
+  // server, not on Play.
   //
   // The CF returns {success, isActivated, alreadyProcessed}.
   // `isActivated` is true on both fresh activation and idempotent
@@ -114,7 +122,7 @@ class ActivationRepository {
         .timeout(const Duration(seconds: 20));
     final data = Map<String, dynamic>.from(result.data as Map);
     return IapVerifyResult(
-      consumeMode: IapConsumeMode.acknowledge,
+      consumeMode: IapConsumeMode.consume,
       isActivated: data['isActivated'] as bool? ?? true,
     );
   }

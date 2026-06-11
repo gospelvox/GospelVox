@@ -1,13 +1,29 @@
 // Verifies a Google Play purchase of the priest_activation
-// non-consumable and flips priests/{uid}.isActivated = true.
+// product and flips priests/{uid}.isActivated = true.
 //
-// Mirrors verifyCoinPurchase's structure, but with three departures
-// that matter for a non-consumable:
+// Activation is now a CONSUMABLE flow at the Play layer — the
+// server is the source of truth for "is this priest activated"
+// (via priests/{uid}.isActivated in Firestore). Play's role is
+// purely the payment receipt. We CONSUME the token after credit
+// so the same Play account can re-purchase activation for a
+// DIFFERENT Firebase user (e.g. shared family device, fresh test
+// priest on the same Play tester account). Without consume, Play
+// would treat the SKU as "owned" forever and block any other
+// priest signed into that Play account from activating —
+// ITEM_ALREADY_OWNED on every retry.
+//
+// Reinstall recovery on a new device does NOT require Play to
+// remember activation: the app reads `priests/{uid}.isActivated`
+// from Firestore on launch, and a priest who's already activated
+// never reaches the paywall. Per-entitlement state lives where
+// it belongs — on the server, not on Play.
+//
+// Mirrors verifyCoinPurchase's structure, with three departures:
 //   • Strict productId allowlist — exactly 'priest_activation'.
 //     Anything else is rejected before we touch Play.
-//   • ACKNOWLEDGE on the Play side, never CONSUME. Activation is a
-//     permanent entitlement; consuming would let the priest "buy"
-//     activation again (which Play would happily charge for).
+//   • CONSUME on the Play side (not acknowledge), to let
+//     different Firebase users re-purchase on the same Play
+//     account. See header above for why.
 //   • Idempotency key is the new top-level `purchases/{token}`
 //     collection rather than wallet_transactions. The activation
 //     flow doesn't credit a wallet, so a dedicated dedupe doc keeps
@@ -18,12 +34,15 @@
 //   2. Strict productId allowlist (early-fail before Play call).
 //   3. Priest profile must exist and be `status === 'approved'`.
 //   4. If priests/{uid}.isActivated === true → idempotent OK +
-//      best-effort acknowledge to rescue an earlier acknowledge
-//      that silently failed.
+//      best-effort consume to release the SKU at Play even if an
+//      earlier consume silently failed.
 //   5. purchases/{purchaseToken} doc → if the token was already
 //      processed for THIS priest, idempotent OK. If it was already
-//      processed for a DIFFERENT priest, permission-denied (replay
-//      attempt).
+//      processed for a DIFFERENT priest, permission-denied — but
+//      we still attempt a consume on the way out so the SKU is
+//      released at Play (otherwise it stays "owned" forever and
+//      blocks the rightful Play account holder from any other
+//      activation purchase).
 //   6. Play purchase verification (verifyProductPurchase). A
 //      tampered client cannot fabricate a token that resolves to a
 //      successful purchaseState=0 priest_activation purchase.
@@ -37,13 +56,13 @@
 //     transactions view; mirrors the legacy verifyActivationFee
 //     row shape)
 //   • write a notifications inbox doc
-// then ACKNOWLEDGE the Play purchase, then best-effort push the
+// then CONSUME the Play purchase, then best-effort push the
 // priest's device.
 
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
-import {verifyProductPurchase, acknowledgeProduct} from "./playVerify";
+import {verifyProductPurchase, consumeProduct} from "./playVerify";
 import {sendPushNotification} from "../notifications/sendPush";
 
 const db = admin.firestore();
@@ -111,14 +130,16 @@ export const verifyActivationPurchase = onCall(
     // client after a network blip on the previous response, or
     // (b) priest activated via the legacy Razorpay flow before the
     // Play migration. In either case the entitlement is real; we
-    // just need to make sure the Play token is acknowledged so
-    // Google doesn't auto-refund it in 72h.
+    // just need to consume the Play token so it doesn't stay
+    // "owned" on the Play account (blocking other priests on the
+    // same account from activating) and so Google doesn't auto-
+    // refund it in 72h.
     if (priestData.isActivated === true) {
       try {
-        await acknowledgeProduct({productId, purchaseToken});
+        await consumeProduct({productId, purchaseToken});
       } catch (err) {
         console.error(
-          "[verifyActivationPurchase] idempotent acknowledge rescue failed:",
+          "[verifyActivationPurchase] idempotent consume rescue failed:",
           err instanceof Error ? err.message : String(err),
         );
       }
@@ -140,16 +161,31 @@ export const verifyActivationPurchase = onCall(
     if (purchaseSnap.exists) {
       const existingUid = purchaseSnap.data()?.userId;
       if (existingUid && existingUid !== uid) {
+        // Cross-user replay attempt. Reject — we won't credit this
+        // priest. But ALSO release the SKU at Play (defensive
+        // consume) so the rightful Play account holder isn't stuck
+        // with an owned-but-unusable SKU. The credit already
+        // happened for `existingUid`; consuming here just frees
+        // Play's ownership state for future purchases on this
+        // account by any Firebase user.
+        try {
+          await consumeProduct({productId, purchaseToken});
+        } catch (err) {
+          console.error(
+            "[verifyActivationPurchase] cross-user rescue consume failed:",
+            err instanceof Error ? err.message : String(err),
+          );
+        }
         throw new HttpsError(
           "permission-denied",
           "Purchase token already used by another user",
         );
       }
       try {
-        await acknowledgeProduct({productId, purchaseToken});
+        await consumeProduct({productId, purchaseToken});
       } catch (err) {
         console.error(
-          "[verifyActivationPurchase] idempotent acknowledge rescue failed:",
+          "[verifyActivationPurchase] idempotent consume rescue failed:",
           err instanceof Error ? err.message : String(err),
         );
       }
@@ -228,13 +264,16 @@ export const verifyActivationPurchase = onCall(
 
     await batch.commit();
 
-    // ── 7. Acknowledge (NOT consume) the non-consumable ─────────
-    // Non-consumables stay "owned" forever — acknowledging only
-    // satisfies Google's 3-day rule. Consuming would re-enable
-    // re-purchase, which is wrong for a permanent entitlement.
-    // Best-effort: a failure here is logged but does not roll back
-    // the activation that has already landed.
-    await acknowledgeProduct({productId, purchaseToken});
+    // ── 7. Consume the activation purchase on Play ──────────────
+    // Releases the SKU at Play so future activations on this Play
+    // account work (e.g. a shared family device where a different
+    // Firebase user signs in and needs to activate their own
+    // priest profile). The server-side priests/{uid}.isActivated
+    // flag is the persistent source of truth — Play's "ownership"
+    // tracking is not used to remember activation. Best-effort:
+    // a failure here is logged but does not roll back the
+    // activation that has already landed in Firestore.
+    await consumeProduct({productId, purchaseToken});
 
     // ── 8. Push the priest's device (best-effort, post-commit) ──
     await sendPushNotification({

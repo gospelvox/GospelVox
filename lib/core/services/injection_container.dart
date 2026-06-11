@@ -1,5 +1,6 @@
 // GetIt service locator setup for dependency injection
 
+import 'package:cloud_functions/cloud_functions.dart';
 import 'package:get_it/get_it.dart';
 
 import 'package:gospel_vox/core/config/iap_products.dart';
@@ -49,8 +50,13 @@ final sl = GetIt.instance;
 // the per-product wiring in one place rather than threading
 // IapVerifyResult through WalletRepository (which has no business
 // knowing about the IapService abstraction layer).
+//
+// Accepts the optional `sessionId` from the IapVerifier typedef and
+// ignores it — coin purchases are per-SKU and don't carry any
+// session context. The parameter is here purely so this closure
+// type-matches the typedef after the Bible flow added it.
 IapVerifier _coinVerifier(WalletRepository wallet) {
-  return ({required productId, required purchaseToken}) async {
+  return ({required productId, required purchaseToken, String? sessionId}) async {
     final result = await wallet.verifyCoinPurchase(
       productId: productId,
       purchaseToken: purchaseToken,
@@ -187,7 +193,11 @@ Future<void> initDependencies() async {
     final activationRepo = sl<ActivationRepository>();
     iap.registerVerifier(
       IapProducts.priestActivation,
-      ({required productId, required purchaseToken}) =>
+      // `sessionId` accepted to match the IapVerifier typedef and
+      // ignored — activation is a single non-consumable SKU with no
+      // session context. The CF cross-checks the priest's identity
+      // via the auth token, not via any client-supplied id.
+      ({required productId, required purchaseToken, String? sessionId}) =>
           activationRepo.verifyActivationPurchase(
         productId: productId,
         purchaseToken: purchaseToken,
@@ -238,6 +248,41 @@ Future<void> initDependencies() async {
       () => BibleSessionRepository());
   sl.registerFactory<BibleSessionCubit>(
       () => BibleSessionCubit(sl<BibleSessionRepository>()));
+
+  // Wire the Bible verifier into IapService. Mirrors the coin +
+  // activation blocks above. The bible flow is the only product
+  // type that consumes the optional `sessionId` parameter on the
+  // IapVerifier typedef — sourced from Play's obfuscatedAccountId,
+  // which the bible detail page set via PurchaseParam
+  // .applicationUserName at buy time. A null/empty sessionId here
+  // means a Bible purchase arrived with no session context (the
+  // detail page didn't set applicationUserName, or the purchase
+  // was somehow stripped of it). Throwing FirebaseFunctionsException
+  // 'invalid-argument' makes _verifyAndEmit treat the failure as
+  // terminal (clears the queue via _safeComplete) so the purchase
+  // doesn't loop forever on every app launch — preferable to a
+  // CF rejection that would just confuse the user with a generic
+  // server error.
+  {
+    final iap = sl<IapService>();
+    final bibleRepo = sl<BibleSessionRepository>();
+    iap.registerVerifier(
+      IapProducts.bibleSession199,
+      ({required productId, required purchaseToken, String? sessionId}) async {
+        if (sessionId == null || sessionId.isEmpty) {
+          throw FirebaseFunctionsException(
+            code: 'invalid-argument',
+            message: 'sessionId required for bible purchase',
+          );
+        }
+        return await bibleRepo.verifyBibleSessionPurchase(
+          sessionId: sessionId,
+          productId: productId,
+          purchaseToken: purchaseToken,
+        );
+      },
+    );
+  }
 
   // Note: RazorpayService is intentionally NOT registered here.
   // Its callbacks hold references to BuildContext, so a singleton

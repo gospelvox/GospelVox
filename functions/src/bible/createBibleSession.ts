@@ -8,10 +8,15 @@ const db = admin.firestore();
 // previous direct-from-client Firestore write so we can enforce:
 //
 //   1. Server-validated input shape (title length, description
-//      length, duration whitelist, price band ₹49–₹499). Same
-//      checks the client form already enforces — the CF is the
+//      length, duration whitelist, fixed ₹199 price). Same checks
+//      the client form already enforces — the CF is the
 //      authoritative copy in case a tampered client tries to slip
 //      past them.
+//
+//   Pricing: every Bible session is fixed at ₹199 to match the
+//   single bible_session_199 Play SKU. Anything else from the
+//   client is rejected with a clear error rather than silently
+//   coerced — drift on either side surfaces immediately.
 //
 //   2. Overlap detection against the priest's existing UPCOMING +
 //      LIVE sessions. The priest UI prevents most accidental
@@ -82,10 +87,14 @@ export const createBibleSession = onCall(
         "Duration must be 30, 45, 60, 90, or 120 minutes",
       );
     }
-    if (!Number.isInteger(price) || price < 49 || price > 499) {
+    // Fixed price — matches the single bible_session_199 Play SKU.
+    // A drifted client (older build, tampered payload) will surface
+    // here with a clear error rather than silently creating a
+    // mispriced session.
+    if (price !== 199) {
       throw new HttpsError(
         "invalid-argument",
-        "Price must be between ₹49 and ₹499",
+        "Bible session price must be ₹199",
       );
     }
     if (!Number.isInteger(maxParticipants) || maxParticipants < 0) {

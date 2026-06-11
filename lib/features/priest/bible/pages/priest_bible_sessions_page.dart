@@ -15,6 +15,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 import 'package:shimmer/shimmer.dart';
 
+import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
@@ -673,7 +674,6 @@ class _CreateBibleSessionSheetState
   final BibleSessionRepository _repository = BibleSessionRepository();
   final _titleCtrl = TextEditingController();
   final _descCtrl = TextEditingController();
-  final _priceCtrl = TextEditingController();
   final _maxCtrl = TextEditingController();
   final _linkCtrl = TextEditingController();
 
@@ -691,14 +691,6 @@ class _CreateBibleSessionSheetState
   // user-side card show a tidy "1 hour" instead of arbitrary numbers.
   static const _durationOptions = [30, 45, 60, 90, 120];
 
-  // V2 pricing band. Tightened from the old ₹10–5,000 range to reduce
-  // priest variance and keep the bar high enough that users feel
-  // committed once they pay. Enforced both in the UI helper text and
-  // in the publish-button gate; the CF doesn't enforce a max so the
-  // UI is the only place holding this guardrail.
-  static const int _minPrice = 49;
-  static const int _maxPrice = 499;
-
   String? _category;
   DateTime? _date;
   TimeOfDay? _time;
@@ -710,7 +702,6 @@ class _CreateBibleSessionSheetState
   void dispose() {
     _titleCtrl.dispose();
     _descCtrl.dispose();
-    _priceCtrl.dispose();
     _maxCtrl.dispose();
     _linkCtrl.dispose();
     super.dispose();
@@ -724,10 +715,10 @@ class _CreateBibleSessionSheetState
     if (_descCtrl.text.trim().length < 20) return false;
     if (_category == null) return false;
     if (_date == null || _time == null) return false;
-    final price = int.tryParse(_priceCtrl.text.trim());
-    if (price == null || price < _minPrice || price > _maxPrice) {
-      return false;
-    }
+    // Price is no longer priest-controlled — every session is the
+    // fixed IapProducts.bibleSessionPriceRupees value. The CF
+    // re-validates server-side so a tampered client can't slip an
+    // arbitrary price past us.
     return true;
   }
 
@@ -754,12 +745,7 @@ class _CreateBibleSessionSheetState
     if (_date == null) issues.add('Date');
     if (_time == null) issues.add('Time');
 
-    final price = int.tryParse(_priceCtrl.text.trim());
-    if (price == null) {
-      issues.add('Price');
-    } else if (price < _minPrice || price > _maxPrice) {
-      issues.add('Price ₹$_minPrice–$_maxPrice');
-    }
+    // Price guard removed — fixed at IapProducts.bibleSessionPriceRupees.
 
     return issues;
   }
@@ -788,27 +774,6 @@ class _CreateBibleSessionSheetState
       return 'Need $need more character${need == 1 ? '' : 's'} · $len/300';
     }
     return 'Looks good · $len/300';
-  }
-
-  ({String text, _HelperMood mood}) _priceHelper() {
-    final raw = _priceCtrl.text.trim();
-    if (raw.isEmpty) {
-      return (
-        text: 'Minimum ₹$_minPrice · Maximum ₹$_maxPrice',
-        mood: _HelperMood.neutral,
-      );
-    }
-    final p = int.tryParse(raw);
-    if (p == null) {
-      return (text: 'Enter a valid number', mood: _HelperMood.error);
-    }
-    if (p < _minPrice) {
-      return (text: 'At least ₹$_minPrice', mood: _HelperMood.error);
-    }
-    if (p > _maxPrice) {
-      return (text: 'Up to ₹$_maxPrice', mood: _HelperMood.error);
-    }
-    return (text: 'Looks good · ₹$p', mood: _HelperMood.success);
   }
 
   // Link is optional, so empty is neutral (not an error). We auto-
@@ -968,7 +933,10 @@ class _CreateBibleSessionSheetState
 
     final maxRaw = _maxCtrl.text.trim();
     final maxAttendees = maxRaw.isEmpty ? 0 : (int.tryParse(maxRaw) ?? 0);
-    final price = int.parse(_priceCtrl.text.trim());
+    // Fixed platform-wide Bible price. The createBibleSession CF
+    // rejects anything other than this value, so a stale client
+    // surfaces as an explicit error rather than silently mispricing.
+    const price = IapProducts.bibleSessionPriceRupees;
 
     final confirmed = await showModalBottomSheet<bool>(
       context: context,
@@ -1269,27 +1237,6 @@ class _CreateBibleSessionSheetState
               ),
               const SizedBox(height: 16),
 
-              // Price
-              const _FormLabel("PRICE (₹)", required: true),
-              const SizedBox(height: 8),
-              _FormField(
-                controller: _priceCtrl,
-                hint: "e.g. 99",
-                keyboardType: TextInputType.number,
-                inputFormatters: [
-                  FilteringTextInputFormatter.digitsOnly,
-                ],
-                prefixText: "₹ ",
-                onChanged: (_) => setState(() {}),
-              ),
-              Builder(
-                builder: (_) {
-                  final h = _priceHelper();
-                  return _FieldHelper(text: h.text, mood: h.mood);
-                },
-              ),
-              const SizedBox(height: 16),
-
               // Max attendees
               const _FormLabel("MAX ATTENDEES"),
               const SizedBox(height: 8),
@@ -1305,9 +1252,9 @@ class _CreateBibleSessionSheetState
               const SizedBox(height: 16),
 
               const _InfoTip(
-                "Price, title, and description cannot be edited after "
-                "publishing. You'll be able to add or change the meeting "
-                "link any time before Start Meeting.",
+                "Title and description cannot be edited after publishing. "
+                "You'll be able to add or change the meeting link any time "
+                "before Start Meeting.",
               ),
 
               if (_formError != null) ...[
@@ -1817,7 +1764,6 @@ class _FormField extends StatelessWidget {
   final int maxLines;
   final int? maxLength;
   final TextInputType? keyboardType;
-  final String? prefixText;
   final List<TextInputFormatter>? inputFormatters;
   final ValueChanged<String>? onChanged;
 
@@ -1827,7 +1773,6 @@ class _FormField extends StatelessWidget {
     this.maxLines = 1,
     this.maxLength,
     this.keyboardType,
-    this.prefixText,
     this.inputFormatters,
     this.onChanged,
   });
@@ -1849,7 +1794,6 @@ class _FormField extends StatelessWidget {
       cursorColor: AppColors.primaryBrown,
       decoration: InputDecoration(
         hintText: hint,
-        prefixText: prefixText,
         prefixStyle: GoogleFonts.inter(
           fontSize: 14,
           fontWeight: FontWeight.w600,

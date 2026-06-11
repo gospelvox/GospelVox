@@ -16,6 +16,7 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 
+import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 
 class BibleSessionRepository {
@@ -591,6 +592,45 @@ class BibleSessionRepository {
     // payment but treat as a soft failure rather than silently
     // succeed-with-empty.
     throw Exception('Meeting link not returned by server');
+  }
+
+  // Adapter to the IapService verifier contract. Calls the Play-
+  // backed verifyAndJoinBibleSession CF with the sessionId
+  // (extracted by IapService from Play's obfuscatedAccountId, set
+  // by the detail page via PurchaseParam.applicationUserName at
+  // buy time) + the purchaseToken. Returns an IapVerifyResult with
+  // `consume` mode (bible session entry is a consumable SKU; user
+  // can pay to join another session next time) and the meeting
+  // link the page renders / auto-opens.
+  //
+  // The CF returns {meetingLink, success, alreadyProcessed}. We
+  // surface meetingLink only — `alreadyProcessed` is a server-side
+  // implementation detail (idempotent retry path), invisible to
+  // the page. If the CF returns an empty/missing meetingLink we
+  // throw rather than emit an outcome with an empty link, because
+  // the success branch of the detail page assumes a usable URL to
+  // launch.
+  Future<IapVerifyResult> verifyBibleSessionPurchase({
+    required String sessionId,
+    required String productId,
+    required String purchaseToken,
+  }) async {
+    final result = await FirebaseFunctions.instanceFor(region: 'asia-south1')
+        .httpsCallable('verifyAndJoinBibleSession')
+        .call({
+      'sessionId': sessionId,
+      'productId': productId,
+      'verificationData': purchaseToken,
+    }).timeout(const Duration(seconds: 30));
+    final data = Map<String, dynamic>.from(result.data as Map);
+    final meetingLink = data['meetingLink'] as String?;
+    if (meetingLink == null || meetingLink.isEmpty) {
+      throw Exception('Meeting link not returned by server');
+    }
+    return IapVerifyResult(
+      consumeMode: IapConsumeMode.consume,
+      meetingLink: meetingLink,
+    );
   }
 
   // Post-session rating. Direct Firestore write — rules permit the

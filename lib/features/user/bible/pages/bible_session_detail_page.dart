@@ -8,28 +8,30 @@
 // loaded one-shot (then refreshed after any user-initiated mutation
 // + after a successful payment).
 //
-// The page owns its own RazorpayService instance — matches the wallet
-// page pattern: init in initState, dispose in dispose. Razorpay's
-// listener registry is per-instance, so giving each page its own
-// instance keeps the success/failure handlers tied to this page's
-// BuildContext without leaking.
+// The page subscribes to the global IapService outcomes stream for
+// the bible payment flow (Pattern B — page owns the IAP wiring,
+// like recharge_sheet). The sessionId rides on the purchase itself
+// via PurchaseParam.applicationUserName → Play's obfuscatedAccountId
+// → IapService extracts it from the returned PurchaseDetails and
+// hands it to the bible verifier. That means a crash-and-recover
+// after payment still credits the right session.
 
 import 'dart:async';
 import 'dart:ui';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
-import 'package:cloud_functions/cloud_functions.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
-import 'package:razorpay_flutter/razorpay_flutter.dart';
 import 'package:share_plus/share_plus.dart';
 import 'package:shimmer/shimmer.dart';
 import 'package:url_launcher/url_launcher.dart';
 
-import 'package:gospel_vox/core/services/razorpay_service.dart';
+import 'package:gospel_vox/core/config/iap_products.dart';
+import 'package:gospel_vox/core/services/iap_service.dart';
+import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
@@ -53,8 +55,15 @@ class BibleSessionDetailPage extends StatefulWidget {
 }
 
 class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
-  final BibleSessionRepository _repository = BibleSessionRepository();
-  late final RazorpayService _razorpayService;
+  // Resolved from the singleton so the same instance the IapService
+  // bible verifier uses (registered against `sl<BibleSessionRepository>()`
+  // in injection_container.dart) is what this page reads/writes
+  // through. Previously this was an inline `BibleSessionRepository()`
+  // construction — harmless for stateless reads but a footgun once the
+  // verifier wiring depends on the singleton.
+  late final BibleSessionRepository _repository = sl<BibleSessionRepository>();
+  late final IapService _iap = sl<IapService>();
+  StreamSubscription<IapOutcome>? _iapOutcomeSubscription;
   late final Stream<BibleSessionModel> _sessionStream;
 
   // Latest known session model. Mirrored from the stream so widgets
@@ -95,10 +104,12 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   @override
   void initState() {
     super.initState();
-    _razorpayService = RazorpayService();
-    _razorpayService.init();
-    _razorpayService.onSuccess = _onPaymentSuccess;
-    _razorpayService.onFailure = _onPaymentFailure;
+    // Subscribe to the global IapService outcomes stream for the
+    // bible payment flow. _onIapOutcome filters by productId so the
+    // page only reacts to bible_session_199 outcomes — coin /
+    // activation purchases that happen on other surfaces while this
+    // page is open are silently ignored.
+    _iapOutcomeSubscription = _iap.outcomes.listen(_onIapOutcome);
     _sessionStream = _repository.watchSession(widget.sessionId);
     _refreshTimer = Timer.periodic(
       const Duration(seconds: 30),
@@ -112,7 +123,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   @override
   void dispose() {
     _refreshTimer?.cancel();
-    _razorpayService.dispose();
+    _iapOutcomeSubscription?.cancel();
     super.dispose();
   }
 
@@ -200,16 +211,19 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
     }
   }
 
-  // Pay-and-join entry point. Opens Razorpay in direct-amount mode
-  // (no pre-created order); the success handler calls the new
-  // payAndJoinBibleSession CF which verifies via Razorpay's
-  // payments.fetch API and returns the meeting link.
+  // Pay-and-join entry point. Opens the Play sheet for the single
+  // bible_session_199 SKU. The sessionId is encoded onto the
+  // purchase via PurchaseParam.applicationUserName (mapped to
+  // Play's obfuscatedAccountId), which IapService extracts on the
+  // way back and hands to the bible verifier. That round-trip
+  // means an app-crash mid-purchase still credits the right
+  // session when the restored purchase emits on the next launch.
   //
-  // Works for BOTH cases:
-  //   • Registered user paying to join the live session
+  // Works for BOTH cases (handled by verifyAndJoinBibleSession CF):
+  //   • Registered user paying to join the live session.
   //   • Non-registered user paying directly (CF creates the reg
-  //     as 'paid' in one step with paidOnCreate: true)
-  void _payAndJoin() {
+  //     as 'paid' in one step with paidOnCreate: true).
+  Future<void> _payAndJoin() async {
     final session = _latestSession;
     if (session == null || _isPaying) return;
     if (!session.isLive) return;
@@ -224,98 +238,108 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
       return;
     }
 
+    if (!_iap.isStoreAvailable) {
+      AppSnackBar.error(
+        context,
+        "In-app purchases aren't available on this device yet. "
+        "Please use an Android device with Google Play.",
+      );
+      return;
+    }
+
     setState(() => _isPaying = true);
 
-    _razorpayService.openCheckoutWithoutOrder(
-      amountInPaise: session.price * 100,
-      // Plain hyphen (NOT em dash). Razorpay's description field is
-      // ASCII-only — an em dash here would surface as the user-facing
-      // "description contains invalid characters" error and block
-      // every payment. The service-level sanitizer also strips non-
-      // ASCII from session.title (priest may type emoji / smart
-      // quotes), so this hyphen is the only literal we control.
-      description: 'Bible Session - ${session.title}',
-      userEmail: user.email ?? '',
-      userName: user.displayName ?? '',
-      // Notes flow back to Razorpay's dashboard so support can trace
-      // a payment to a specific session without joining tables.
-      notes: <String, String>{
-        'sessionId': widget.sessionId,
-        'uid': user.uid,
-      },
+    final products = await _iap.queryProducts(
+      {IapProducts.bibleSession199},
     );
+    if (!mounted) return;
+    final product = products[IapProducts.bibleSession199];
+    if (product == null) {
+      setState(() => _isPaying = false);
+      AppSnackBar.error(
+        context,
+        "Bible session entry isn't available right now. "
+        "Please try again later.",
+      );
+      return;
+    }
+
+    final started = await _iap.buyConsumable(
+      product,
+      // Encode sessionId on the purchase so the verifier can read
+      // it back via obfuscatedAccountId even after a crash + restore.
+      applicationUserName: widget.sessionId,
+    );
+    if (!mounted) return;
+    if (!started) {
+      // IapService already emitted an unavailable/error outcome
+      // which _onIapOutcome will handle. Reset locally so the UI
+      // unlocks immediately rather than waiting on the async
+      // outcome.
+      setState(() => _isPaying = false);
+    }
   }
 
-  Future<void> _onPaymentSuccess(PaymentSuccessResponse response) async {
-    final paymentId = response.paymentId;
-    if (paymentId == null) {
-      if (mounted) {
+  // Handles outcomes from the global IapService.outcomes broadcast
+  // stream. Filters by productId so this page only reacts to
+  // bible_session_199 outcomes — coin / activation purchases that
+  // fire while this page is open are silently ignored.
+  //
+  // Preserves the legacy Razorpay success flow byte-for-byte:
+  //   meetingLink from server → _changed = true → _loadRegistration()
+  //   → success snackbar → _launchUrl(meetingLink). Only the
+  // TRIGGER changes (IAP outcome instead of Razorpay callback).
+  Future<void> _onIapOutcome(IapOutcome outcome) async {
+    if (!mounted) return;
+    if (outcome.productId != IapProducts.bibleSession199) return;
+
+    switch (outcome.kind) {
+      case IapOutcomeKind.success:
+        final meetingLink = outcome.meetingLink ?? '';
+        _changed = true;
+        // Same call sequence as the legacy Razorpay success path:
+        // CF flipped (or created) the registration to 'paid';
+        // re-read it so STATE D unlocks and the link card renders.
+        // The session stream has been live the whole time so it
+        // doesn't need a refresh.
+        await _loadRegistration();
+        if (!mounted) return;
+        setState(() => _isPaying = false);
+        AppSnackBar.success(
+          context,
+          "You're in! Opening meeting…",
+        );
+        // Auto-launch the meeting for convenience. Best-effort — a
+        // failure surfaces a non-blocking snackbar inside _launchUrl
+        // and the user can tap "Open Meeting" on the now-visible
+        // link card.
+        await _launchUrl(meetingLink);
+        break;
+      case IapOutcomeKind.pending:
+        setState(() => _isPaying = false);
+        AppSnackBar.info(
+          context,
+          "Payment is processing. We'll let you in as soon as it clears.",
+        );
+        break;
+      case IapOutcomeKind.canceled:
+        setState(() => _isPaying = false);
+        break;
+      case IapOutcomeKind.error:
         setState(() => _isPaying = false);
         AppSnackBar.error(
           context,
-          "Payment captured but verification failed. "
-          "Contact support with paymentId if amount was deducted.",
+          outcome.message ?? "Couldn't complete your purchase.",
         );
-      }
-      return;
+        break;
+      case IapOutcomeKind.unavailable:
+        setState(() => _isPaying = false);
+        AppSnackBar.error(
+          context,
+          "In-app purchases aren't available on this device yet.",
+        );
+        break;
     }
-
-    try {
-      // V1 direct-amount checkout — Razorpay only returns paymentId,
-      // not orderId/signature. The CF accepts empty strings for the
-      // forward-compat fields and verifies via payments.fetch using
-      // our key_secret. Returned `meetingLink` is the source of truth.
-      final meetingLink = await _repository.payAndJoinBibleSession(
-        sessionId: widget.sessionId,
-        paymentId: paymentId,
-        orderId: response.orderId ?? '',
-        signature: response.signature ?? '',
-      );
-      if (!mounted) return;
-      _changed = true;
-      // The CF flipped (or created) the registration to 'paid'.
-      // Re-read it so STATE D unlocks. The session stream has already
-      // been live the whole time, so we don't need to refresh that.
-      await _loadRegistration();
-      if (!mounted) return;
-      setState(() => _isPaying = false);
-      AppSnackBar.success(
-        context,
-        "You're in! Opening meeting…",
-      );
-      // Auto-launch the meeting for convenience. Best-effort — a
-      // failure surfaces a non-blocking snackbar and the user can
-      // tap "Open Meeting" on the now-visible link card.
-      await _launchUrl(meetingLink);
-    } on FirebaseFunctionsException catch (e) {
-      if (!mounted) return;
-      setState(() => _isPaying = false);
-      AppSnackBar.error(
-        context,
-        // Surface the CF's message verbatim — it's already user-
-        // facing ("Session is completed — cannot pay to join", etc.)
-        // and gives support something to grep.
-        e.message ?? "Payment verification failed. Contact support.",
-      );
-    } catch (_) {
-      if (!mounted) return;
-      setState(() => _isPaying = false);
-      AppSnackBar.error(
-        context,
-        "Couldn't verify payment. Contact support if amount was deducted.",
-      );
-    }
-  }
-
-  void _onPaymentFailure(PaymentFailureResponse response) {
-    if (!mounted) {
-      _isPaying = false;
-      return;
-    }
-    setState(() => _isPaying = false);
-    // Code 2 = user dismissed the sheet — not a failure.
-    if (response.code == 2) return;
-    AppSnackBar.error(context, "Payment failed. Please try again.");
   }
 
   Future<void> _launchUrl(String url) async {

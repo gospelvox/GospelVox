@@ -87,10 +87,18 @@ class ActivationCubit extends Cubit<ActivationState> {
     }
   }
 
-  /// Kicks off a Play Billing non-consumable purchase for the
+  /// Kicks off a Play Billing consumable purchase for the
   /// priest_activation SKU. UI flips to verifying immediately; the
   /// final outcome lands via `_onIapOutcome` (success / pending /
   /// error / canceled).
+  ///
+  /// Activation is consumable at the Play layer so different
+  /// Firebase users on the same Play account can each pay for
+  /// their own priest activation — the server-side
+  /// priests/{uid}.isActivated flag is the persistent source of
+  /// truth, and Play's "ownership" tracking is consumed away after
+  /// every successful credit so it doesn't block future purchases
+  /// with ITEM_ALREADY_OWNED.
   Future<void> activate() async {
     final fee = _currentFee;
 
@@ -120,7 +128,7 @@ class ActivationCubit extends Cubit<ActivationState> {
       return;
     }
 
-    final started = await _iap.buyNonConsumable(product);
+    final started = await _iap.buyConsumable(product);
     if (isClosed) return;
     if (!started) {
       // Couldn't open the Play sheet — the IapService outcome

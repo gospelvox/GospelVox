@@ -153,9 +153,20 @@ class IapVerifyResult {
 /// FirebaseFunctionsException / TimeoutException / generic catch
 /// blocks are the single place all verifier failures get
 /// classified into terminal vs transient.
+///
+/// `sessionId` is the optional per-product context — currently used
+/// only by the Bible verifier, which requires it (the CF needs the
+/// session to credit). `_verifyAndEmit` extracts it from the
+/// purchase's `obfuscatedAccountId` (Android `applicationUserName`
+/// set at buy time). Coin and activation verifiers ignore it.
+/// Adding it as an optional named parameter is purely additive on
+/// the typedef — closures that already accepted only productId +
+/// purchaseToken need a one-line signature update with sessionId
+/// ignored.
 typedef IapVerifier = Future<IapVerifyResult> Function({
   required String productId,
   required String purchaseToken,
+  String? sessionId,
 });
 
 class IapService {
@@ -305,18 +316,26 @@ class IapService {
   /// and leaves Google with "no idea this token even existed" if
   /// our server later wants to consume it. We want the server to
   /// be the authority on whether to grant + consume.
-  Future<bool> buyConsumable(ProductDetails product) async {
+  ///
+  /// `applicationUserName` is forwarded to the plugin as the Play
+  /// `obfuscatedAccountId`. Used by the Bible flow to encode the
+  /// sessionId on the purchase itself — survives app crashes and
+  /// restored deliveries, so `_verifyAndEmit` can route credit to
+  /// the right session on recovery. Coins don't pass it (null →
+  /// no-op at Play's side).
+  Future<bool> buyConsumable(
+    ProductDetails product, {
+    String? applicationUserName,
+  }) async {
     if (!_storeAvailable) {
       _outcomes.add(const IapOutcome._(kind: IapOutcomeKind.unavailable));
       return false;
     }
     try {
-      // Base `PurchaseParam` is platform-routed correctly by the
-      // plugin on Android — no need for the Android-specific
-      // GooglePlayPurchaseParam wrapper since we're not setting
-      // obfuscatedAccountId or any subscription-change params for a
-      // simple consumable.
-      final purchaseParam = PurchaseParam(productDetails: product);
+      final purchaseParam = PurchaseParam(
+        productDetails: product,
+        applicationUserName: applicationUserName,
+      );
       return await _iap.buyConsumable(
         purchaseParam: purchaseParam,
         autoConsume: false,
@@ -444,10 +463,24 @@ class IapService {
       return;
     }
 
+    // Extract Play's obfuscatedAccountId (Android — set via
+    // PurchaseParam.applicationUserName at buy time). The Bible
+    // verifier needs the sessionId persisted with the purchase so
+    // that an app-crash-and-restore-purchases round-trip still
+    // credits the right session on recovery. Android-only because
+    // the plugin's iOS path doesn't expose an equivalent field;
+    // coins and activation pass null here either way (they ignore
+    // sessionId).
+    String? sessionId;
+    if (Platform.isAndroid && purchase is GooglePlayPurchaseDetails) {
+      sessionId = purchase.billingClientPurchase.obfuscatedAccountId;
+    }
+
     try {
       final result = await verifier(
         productId: productId,
         purchaseToken: token,
+        sessionId: sessionId,
       );
       _outcomes.add(IapOutcome._(
         kind: IapOutcomeKind.success,

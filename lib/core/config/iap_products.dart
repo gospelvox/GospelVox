@@ -50,28 +50,29 @@ class IapProducts {
   };
 
   // ─── Priest activation (non-consumable) ──────────────────────
-  // Not yet wired — Razorpay still owns this flow until the
-  // activation Phase 2 migration lands.
+  // Wired through ActivationCubit → IapService.buyNonConsumable
+  // → verifyActivationPurchase CF (acknowledge mode on Play, so
+  // the SKU stays "owned" forever and restorePurchases brings
+  // activation back on a fresh install).
 
   static const priestActivation = 'priest_activation';
 
-  // ─── Bible session tiers (consumable) ─────────────────────────
-  // Not yet wired — Razorpay still owns these until the
-  // Bible-session Phase 2 migration lands. Pre-declaring the SKUs
-  // here so the Play Console catalogue can be authored upfront
-  // and the Phase 2 client wiring is a one-line lookup.
+  // ─── Bible session entry (consumable, fixed ₹199) ────────────
+  // Every Bible session uses the same single SKU regardless of
+  // who the priest is or what topic they teach — collapsing the
+  // tier model into a single product to keep the Play Console
+  // catalogue and the commission-split arithmetic anchored to
+  // one number. The Bible detail page's payment rail is wired
+  // through verifyAndJoinBibleSession (live on the server,
+  // client wiring is the in-progress Step 4 migration).
 
-  static const bibleSession49 = 'bible_session_49';
-  static const bibleSession99 = 'bible_session_99';
   static const bibleSession199 = 'bible_session_199';
-  static const bibleSession499 = 'bible_session_499';
 
-  static const Set<String> allBibleTiers = {
-    bibleSession49,
-    bibleSession99,
-    bibleSession199,
-    bibleSession499,
-  };
+  // Rupee price for the Bible session SKU. The single source of
+  // truth client-side — the createBibleSession CF enforces the
+  // same number, and the priest create form passes this constant
+  // through to the repo (no priest-controlled price input).
+  static const int bibleSessionPriceRupees = 199;
 
   // Union of every Play product the app might query — used by
   // IapService.queryProducts to warm the store cache in a single
@@ -79,7 +80,7 @@ class IapProducts {
   static const Set<String> allProductIds = {
     ...allCoinPacks,
     priestActivation,
-    ...allBibleTiers,
+    bibleSession199,
   };
 
   // ─── Helpers ──────────────────────────────────────────────────
