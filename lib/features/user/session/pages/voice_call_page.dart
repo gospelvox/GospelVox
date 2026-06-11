@@ -5,9 +5,9 @@
 //
 // AgoraService and VoiceCallCubit are constructed inline (not from
 // the DI container) because the engine holds native audio resources
-// that must be lifecycle-bound to this widget instance. See the
-// note in injection_container.dart for the same reason RazorpayService
-// is constructed per-page rather than registered globally.
+// that must be lifecycle-bound to this widget instance. A singleton
+// would leak the first page that used it — any stateful native
+// service with widget-bound callbacks needs per-page construction.
 
 import 'package:flutter/material.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';

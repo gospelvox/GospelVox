@@ -24,7 +24,9 @@ class BibleSessionModel {
   final int durationMinutes;
   // 0 means unlimited.
   final int maxParticipants;
-  // Price in rupees (the Razorpay amount is price * 100 paise).
+  // Price in rupees. Currently fixed at 199 (every Bible session
+  // uses the bible_session_199 Play SKU); the field is retained for
+  // server-stamped display and ledger consistency.
   final int price;
   final String meetingLink;
   // "upcoming" / "live" / "completed" / "cancelled"

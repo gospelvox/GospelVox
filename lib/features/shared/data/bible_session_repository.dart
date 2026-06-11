@@ -513,26 +513,7 @@ class BibleSessionRepository {
     return regs;
   }
 
-  // ── Payment ─────────────────────────────────────────────────────
-
-  // Hands the captured paymentId to the CF. The CF re-fetches the
-  // payment from Razorpay (trust no client value) and flips the
-  // registration to "paid" if everything matches the session price.
-  Future<void> verifyPayment({
-    required String sessionId,
-    required String paymentId,
-    required int amount,
-  }) async {
-    final callable = FirebaseFunctions.instanceFor(region: 'asia-south1')
-        .httpsCallable('verifyBibleSessionPayment');
-    await callable.call({
-      'sessionId': sessionId,
-      'paymentId': paymentId,
-      'amount': amount,
-    }).timeout(const Duration(seconds: 15));
-  }
-
-  // ── New-flow CFs ───────────────────────────────────────────────
+  // ── Lifecycle CFs ──────────────────────────────────────────────
 
   // Priest "Start Meeting" → server-side status flip + call-like
   // push to every active registrant. The CF re-checks ownership +
@@ -554,44 +535,6 @@ class BibleSessionRepository {
       if (notified is num) return notified.toInt();
     }
     return 0;
-  }
-
-  // User pays to join a LIVE session. Handles two shapes inside the
-  // CF:
-  //   (a) user was already registered → flips their reg to "paid"
-  //   (b) user was never registered → creates the reg as "paid" in
-  //       one step (this is the "non-registered user joins by paying
-  //       directly" path from the new flow).
-  // Both shapes are idempotent: a retry with the same paymentId
-  // returns the meeting link without re-charging.
-  //
-  // Returns the meeting link on success. The CF throws
-  // `failed-precondition` if the session is not live (e.g. priest
-  // already marked it completed) so the UI can show the right error.
-  Future<String> payAndJoinBibleSession({
-    required String sessionId,
-    required String paymentId,
-    required String orderId,
-    required String signature,
-  }) async {
-    final result = await FirebaseFunctions.instanceFor(region: 'asia-south1')
-        .httpsCallable('payAndJoinBibleSession')
-        .call({
-      'sessionId': sessionId,
-      'paymentId': paymentId,
-      'orderId': orderId,
-      'signature': signature,
-    }).timeout(const Duration(seconds: 30));
-
-    final data = result.data;
-    if (data is Map) {
-      final link = data['meetingLink'];
-      if (link is String && link.isNotEmpty) return link;
-    }
-    // CF returned without a link — shouldn't happen on a captured
-    // payment but treat as a soft failure rather than silently
-    // succeed-with-empty.
-    throw Exception('Meeting link not returned by server');
   }
 
   // Adapter to the IapService verifier contract. Calls the Play-

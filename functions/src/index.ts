@@ -3,25 +3,20 @@ import * as admin from "firebase-admin";
 admin.initializeApp();
 
 // ═══ Payments ═══
-// Coin purchases migrated from Razorpay → Google Play Billing.
-// Activation + Bible session unlocks still go through Razorpay for
-// now; they migrate to Play/StoreKit in later slices. There is no
-// `createCoinOrder` equivalent any more — Play handles the order
-// lifecycle entirely on the device + Play servers, and the client
-// hands us back a purchaseToken that verifyCoinPurchase resolves
-// against the Android Publisher API.
-export {verifyCoinPurchase} from "./payments/verifyCoinPurchase";
-export {createActivationOrder} from "./payments/createActivationOrder";
-export {verifyActivationFee} from "./payments/verifyActivationFee";
-// Play-backed activation. Shipped alongside the Razorpay pair so the
-// client can be migrated in a separate slice; once the new flow is
-// wired and verified, createActivationOrder + verifyActivationFee
-// will be retired.
-export {verifyActivationPurchase} from "./payments/verifyActivationPurchase";
-export {verifyBibleSessionPayment} from "./payments/verifyBibleSessionPayment";
+// Every paid product flows through Google Play Billing:
+//   • verifyCoinPurchase — consumable coin packs.
+//   • verifyActivationPurchase — consumable priest activation.
+//     (Server's priests/{uid}.isActivated is the source of truth;
+//      Play's SKU is consumed after credit so multi-priest-per-Play-
+//      account scenarios work without ITEM_ALREADY_OWNED.)
+// Each CF resolves a Play purchaseToken against the Android
+// Publisher API. There is no "create order" equivalent — Play
+// handles the order lifecycle entirely on the device + Play servers.
 // Matrimony payments intentionally not exported — the feature is not
 // shipping in v1, and exporting a stub that throws `unimplemented`
 // surfaces as a real runtime crash if anything ever invokes it.
+export {verifyCoinPurchase} from "./payments/verifyCoinPurchase";
+export {verifyActivationPurchase} from "./payments/verifyActivationPurchase";
 
 // ═══ Sessions ═══
 export {createSessionRequest} from "./sessions/createSessionRequest";
@@ -51,7 +46,7 @@ export {onReportResolved} from "./admin/onReportResolved";
 
 // ═══ Priest ═══
 // activatePriestAccount is orphaned — the live activation flow runs
-// through verifyActivationFee (Razorpay-signed). Keeping the stub
+// through verifyActivationPurchase (Play-verified). Keeping the stub
 // exported would deploy a CF that only throws.
 export {requestWithdrawal} from "./priest/requestWithdrawal";
 
@@ -66,10 +61,9 @@ export {notifyMeetLinkAdded} from "./bible/notifyMeetLinkAdded";
 export {completeBibleSession} from "./bible/completeBibleSession";
 export {bibleSessionReminders} from "./bible/bibleSessionReminders";
 export {startBibleSession} from "./bible/startBibleSession";
-export {payAndJoinBibleSession} from "./bible/payAndJoinBibleSession";
-// Play-backed pay-to-join. Shipped alongside payAndJoinBibleSession
-// so the client can be migrated in a separate slice; once the new
-// flow is wired and verified, payAndJoinBibleSession will be retired.
+// Play-backed pay-to-join. Fixed bible_session_199 SKU; the sessionId
+// is carried on the Play purchase via obfuscatedAccountId so even an
+// app-crash-mid-purchase recovers cleanly on the next launch.
 export {verifyAndJoinBibleSession} from "./bible/verifyAndJoinBibleSession";
 export {createBibleSession} from "./bible/createBibleSession";
 export {onBibleSessionRated} from "./bible/onBibleSessionRated";

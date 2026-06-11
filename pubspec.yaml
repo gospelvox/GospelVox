@@ -1,7 +1,7 @@
 name: gospel_vox
 description: "Gospel Vox — Global Christian Spiritual Consultation Platform"
 publish_to: 'none'
-version: 1.2.0+19
+version: 1.2.1+20
 
 environment:
   sdk: ^3.11.4
@@ -35,12 +35,10 @@ dependencies:
   google_sign_in: any
   sign_in_with_apple: any
 
-  # Payments
-  # razorpay_flutter is kept until the activation + Bible-session
-  # flows migrate in later slices. The COIN purchase flow has moved
-  # to Google Play Billing via in_app_purchase (Android only — iOS
-  # coin purchases are gated until the StoreKit slice ships).
-  razorpay_flutter: any
+  # Payments — all paid surfaces (coins, activation, bible session)
+  # flow through Google Play Billing via the in_app_purchase plugin.
+  # Android only — iOS purchases are gated until the StoreKit slice
+  # ships (the CFs only verify Play tokens today).
   in_app_purchase: ^3.2.0
   # Direct dep on the Android federated plugin so the IAP service
   # can reach InAppPurchaseAndroidPlatformAddition.consumePurchase.

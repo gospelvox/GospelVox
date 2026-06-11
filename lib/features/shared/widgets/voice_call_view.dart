@@ -297,11 +297,11 @@ class _VoiceCallViewState extends State<VoiceCallView>
 
   // Mid-call recharge — fired from the low-balance strip's
   // "Add Coins" button. The user's balance stream the cubit
-  // subscribes to picks up the new balance the moment Razorpay
-  // credits the wallet — no extra plumbing needed here. Billing
-  // continues running during the sheet (the cubit's timers don't
-  // pause), which is the correct behaviour: audio is still
-  // flowing, the user is still being heard.
+  // subscribes to picks up the new balance the moment the
+  // verifyCoinPurchase CF credits the wallet — no extra plumbing
+  // needed here. Billing continues running during the sheet (the
+  // cubit's timers don't pause), which is the correct behaviour:
+  // audio is still flowing, the user is still being heard.
   //
   // Single-line headline: just the deficit math. We dropped the
   // verbose "Minimum balance: ₹X (for 5 minutes)" line and the

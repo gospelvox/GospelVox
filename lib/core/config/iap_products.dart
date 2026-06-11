@@ -49,11 +49,14 @@ class IapProducts {
     coins10000,
   };
 
-  // ─── Priest activation (non-consumable) ──────────────────────
-  // Wired through ActivationCubit → IapService.buyNonConsumable
-  // → verifyActivationPurchase CF (acknowledge mode on Play, so
-  // the SKU stays "owned" forever and restorePurchases brings
-  // activation back on a fresh install).
+  // ─── Priest activation (consumable, per-priest entitlement) ──
+  // Wired through ActivationCubit → IapService.buyConsumable →
+  // verifyActivationPurchase CF (consume mode on Play). The server's
+  // priests/{uid}.isActivated flag is the persistent source of
+  // truth — Play's "ownership" tracking is consumed away after every
+  // successful credit so different Firebase users on the same Play
+  // account can each pay for their own priest activation. Reinstall
+  // on a new device reads isActivated from Firestore, not from Play.
 
   static const priestActivation = 'priest_activation';
 

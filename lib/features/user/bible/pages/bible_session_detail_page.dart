@@ -67,7 +67,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   late final Stream<BibleSessionModel> _sessionStream;
 
   // Latest known session model. Mirrored from the stream so widgets
-  // outside the StreamBuilder (the Razorpay handlers) can read it.
+  // and the IAP outcome handler can read it outside the StreamBuilder.
   BibleSessionModel? _latestSession;
   BibleRegistration? _registration;
   bool _registrationLoaded = false;

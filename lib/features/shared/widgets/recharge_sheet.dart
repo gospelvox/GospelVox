@@ -12,7 +12,7 @@
 //      on the dedicated Wallet page, reachable via "See all plans".
 //
 // What this file owns vs delegates:
-//   • Owns: the visual sheet, local pack selection state, Razorpay
+//   • Owns: the visual sheet, local pack selection state, IAP
 //     bridge, success/failure handling.
 //   • Delegates: the contextual subtitle ("Add ₹X to continue...")
 //     is passed in by the caller via `infoHeadline` — voice/chat

@@ -1,9 +1,9 @@
 // Full-screen overlay shown while the server verifies a completed
-// Razorpay payment.
+// Play Billing purchase.
 //
 // Why a full-screen modal rather than an inline spinner on the Pay
-// button: between Razorpay closing and the CF returning with a new
-// balance, the user is in the most anxious ~3 seconds of the flow
+// button: between the Play sheet closing and the CF returning with a
+// new balance, the user is in the most anxious ~3 seconds of the flow
 // — money has left their account but nothing has been credited yet.
 // Blocking the whole surface prevents accidental back-taps that
 // would navigate away from the in-flight verification, and gives

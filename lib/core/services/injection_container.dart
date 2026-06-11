@@ -284,12 +284,6 @@ Future<void> initDependencies() async {
     );
   }
 
-  // Note: RazorpayService is intentionally NOT registered here.
-  // Its callbacks hold references to BuildContext, so a singleton
-  // would leak the first page that uses it. Each widget that needs
-  // Razorpay constructs its own instance in initState and disposes
-  // it in dispose — see WalletPage for the pattern.
-
   // Note: AgoraService is intentionally NOT registered here. The
   // RTC engine holds native audio resources that must be lifecycle-
   // bound to the page that uses them; reusing a singleton across
