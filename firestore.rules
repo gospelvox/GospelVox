@@ -83,6 +83,8 @@ service cloud.firestore {
                               'startedAt',
                               'endedAt',
                               'lastHeartbeat',
+                              'userConnectedAt',
+                              'userPresenceAt',
                               'userRating',
                               'userFeedback',
                               'userTyping',
@@ -99,6 +101,8 @@ service cloud.firestore {
                               'startedAt',
                               'endedAt',
                               'lastHeartbeat',
+                              'priestConnectedAt',
+                              'priestPresenceAt',
                               'priestTyping',
                               'priestTypingSince'
                             ]))

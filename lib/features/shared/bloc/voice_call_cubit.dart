@@ -87,6 +87,13 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   // whose remote actually did join.
   bool _remoteEverJoined = false;
 
+  // Latch for the connection-confirmation write. Stays true once the
+  // stamp SUCCEEDS — so a later Agora rejoin never re-stamps and pushes
+  // the billing epoch later. It only drops back to false when a write
+  // FAILS, so the 30s heartbeat can retry until the stamp lands. See
+  // _confirmConnectionOnce.
+  bool _connectionConfirmed = false;
+
   // Latch for the urgent recharge sheet. True after the sheet has
   // been shown for the current low-balance phase; resets back to
   // false when the user's balance climbs above the 2-minute
@@ -352,6 +359,13 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       // flag survives the state transition and is read on the
       // first VoiceCallActive emit in _onSessionSnapshot.
       _remoteEverJoined = true;
+      // Real two-way connection established — stamp the connect marker
+      // so the billing CFs may charge from here. Until it lands the
+      // user is never billed and the priest never earns. The shared
+      // helper writes at most once and, on failure, the 30s heartbeat
+      // retries it (see _confirmConnectionOnce) — so a single transient
+      // write failure can never strand a real call unbillable.
+      _confirmConnectionOnce();
       // Flag #7: they made it within the window — kill the
       // remote-join supervisor and dismiss any "trouble connecting"
       // banner we may have already surfaced.
@@ -366,20 +380,21 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       }
     };
 
-    // Other party left the channel — could be a network blip, a
-    // backgrounded app, or a real drop. Show "Reconnecting…" but
-    // DON'T end the session here: the watchdog catches a real
-    // 2-minute disconnect, and the user might still want to hold
-    // the line for a momentary network glitch.
+    // Other party left the Agora channel. PRODUCT RULE: a kill must
+    // cut the call INSTANTLY. Agora fires this either on a clean leave
+    // (their app called leaveChannel — e.g. it was swiped away / our
+    // detached handler ran) or AFTER its own lost-peer timeout (their
+    // app was force-killed, crashed, or lost the network for good) —
+    // so it is never a momentary blip. End the call now and settle up
+    // to this moment, rather than holding the line for the 2-minute
+    // watchdog.
     _agoraService.onUserOffline = (connection, remoteUid, reason) {
       if (isClosed) return;
       final current = state;
       if (current is VoiceCallActive) {
-        emit(current.copyWith(
-          isRemoteUserJoined: false,
-          isReconnecting: true,
-        ));
+        emit(current.copyWith(isRemoteUserJoined: false));
       }
+      endCall(reason: 'remote_left');
     };
 
     // Token is about to expire — fetch a fresh one and hand it to
@@ -514,6 +529,24 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     await _agoraService.resumeAudio();
   }
 
+  // Stamps the connection marker. The latch is BOTH a "write at most
+  // once" guard and an in-flight guard: while a write is pending the
+  // latch is true so re-entry is a no-op; on FAILURE the latch drops
+  // so the next caller retries. Called from onUserJoined (the moment
+  // we connect) AND from the 30s heartbeat — so even if every early
+  // write fails, the heartbeat keeps retrying until it lands. This is
+  // what stops a single transient write failure from leaving a real,
+  // connected call unbillable (which the server ends free at 75s).
+  void _confirmConnectionOnce() {
+    if (_connectionConfirmed) return;
+    _connectionConfirmed = true;
+    _repository
+        .confirmConnection(_sessionId, isUserSide: _isUserSide)
+        .catchError((_) {
+      _connectionConfirmed = false;
+    });
+  }
+
   void _startTimers(String sessionId) {
     _stopwatch.start();
 
@@ -538,6 +571,11 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       _heartbeatTimer = Timer.periodic(
         const Duration(seconds: 30),
         (_) {
+          // Safety net: if the connect stamp from onUserJoined never
+          // landed (transient write failure), keep retrying it here
+          // until it does — otherwise the server ends the call free at
+          // 75s. No-op once confirmed.
+          _confirmConnectionOnce();
           // Silent failure — the next 30s tick retries. If we stay
           // offline long enough the watchdog marks the session
           // stale.

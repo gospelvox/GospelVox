@@ -117,13 +117,29 @@ class _VoiceCallViewState extends State<VoiceCallView>
 
   @override
   void didChangeAppLifecycleState(AppLifecycleState appState) {
-    if (appState != AppLifecycleState.resumed) return;
     // The cubit may already be closed (call ended while we were
     // backgrounded) — read defensively.
     if (!mounted) return;
-    final cubit = context.read<VoiceCallCubit>();
+    final VoiceCallCubit cubit;
+    try {
+      cubit = context.read<VoiceCallCubit>();
+    } catch (_) {
+      return;
+    }
     if (cubit.isClosed) return;
-    cubit.onAppResumed();
+
+    if (appState == AppLifecycleState.resumed) {
+      cubit.onAppResumed();
+    } else if (appState == AppLifecycleState.detached) {
+      // PRODUCT RULE: killing / closing the app must cut the call
+      // instantly. The app is being terminated — end the call NOW so
+      // we leave the Agora channel (the other side stops hearing us),
+      // the meter stops, and the session settles at the kill moment.
+      // Best-effort: if the process dies before this finishes, the
+      // other side's onUserOffline handler ends the call as a backstop
+      // and endSession is idempotent, so neither side double-charges.
+      cubit.endCall(reason: 'app_terminated');
+    }
   }
 
   @override

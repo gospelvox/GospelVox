@@ -35,6 +35,13 @@ class SessionRepository {
         .call({
           'priestId': priestId,
           'type': type,
+          // Marks this session gate-aware: THIS build stamps
+          // userConnectedAt on a real connection, so the server may
+          // safely withhold billing until that stamp lands. Old
+          // builds don't send this, so their sessions stay on the
+          // legacy "bill from accept" model and never get force-ended
+          // by the connection gate.
+          'connectionGated': true,
         })
         .timeout(const Duration(seconds: 15));
 
@@ -98,6 +105,21 @@ class SessionRepository {
           'endedAt': FieldValue.serverTimestamp(),
         })
         .timeout(const Duration(seconds: 10));
+  }
+
+  // Fresh read of the priest's activation flag. Used as a safety
+  // re-check on the Accept path: the isActivated bool handed into the
+  // incoming-request screen can be STALE — on a cold app launch (the
+  // priest reopened after a kill) the activation stream hadn't loaded
+  // yet and defaulted to false. Re-reading the live doc before showing
+  // the ₹500 paywall stops a genuinely-activated priest from being
+  // blocked from accepting their own incoming call.
+  Future<bool> isPriestActivated(String priestId) async {
+    final snap = await _db
+        .doc('priests/$priestId')
+        .get()
+        .timeout(const Duration(seconds: 5));
+    return (snap.data()?['isActivated'] as bool?) ?? false;
   }
 
   // User taps Cancel while waiting. Best-effort — the session may
@@ -387,6 +409,46 @@ class SessionRepository {
         .doc('sessions/$sessionId')
         .update({
           'lastHeartbeat': FieldValue.serverTimestamp(),
+        })
+        .timeout(const Duration(seconds: 5));
+  }
+
+  // Stamp this side's "real connection confirmed" marker. The user
+  // writes userConnectedAt, the priest writes priestConnectedAt; the
+  // billing CFs only charge once BOTH exist. Called exactly once per
+  // session (the cubit latches it) the moment the client confirms a
+  // genuine two-way connection — voice: the remote joined the Agora
+  // channel; chat: both chat screens are open. Writing only the one
+  // allowed key keeps it within the per-side Firestore rules.
+  Future<void> confirmConnection(
+    String sessionId, {
+    required bool isUserSide,
+  }) async {
+    final field = isUserSide ? 'userConnectedAt' : 'priestConnectedAt';
+    await _db
+        .doc('sessions/$sessionId')
+        .update({
+          field: FieldValue.serverTimestamp(),
+        })
+        .timeout(const Duration(seconds: 5));
+  }
+
+  // Periodic chat presence ping. Each side stamps its own field
+  // (userPresenceAt / priestPresenceAt) every few seconds while its
+  // chat screen is open; the OTHER side watches it and ends the chat
+  // if it goes stale — the chat-equivalent of voice's onUserOffline.
+  // Separate from sendHeartbeat (user-only, drives the watchdog) so a
+  // priest's presence can't keep a user-abandoned session looking
+  // alive. Best-effort, short timeout — called on a periodic timer.
+  Future<void> sendChatPresence(
+    String sessionId, {
+    required bool isUserSide,
+  }) async {
+    final field = isUserSide ? 'userPresenceAt' : 'priestPresenceAt';
+    await _db
+        .doc('sessions/$sessionId')
+        .update({
+          field: FieldValue.serverTimestamp(),
         })
         .timeout(const Duration(seconds: 5));
   }

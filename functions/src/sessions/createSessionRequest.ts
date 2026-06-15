@@ -304,6 +304,14 @@ export const createSessionRequest = onCall(
 
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
       lastHeartbeat: admin.firestore.FieldValue.serverTimestamp(),
+
+      // Gate-awareness flag, echoed from the client. Only builds that
+      // actually stamp userConnectedAt on a real connection send this.
+      // The billing CFs enforce the connection gate ONLY when it is
+      // true; every other session falls back to the legacy "billable
+      // from startedAt" model, so old-app traffic is never force-ended
+      // by the gate. See connectionEpochMs().
+      connectionGated: data.connectionGated === true,
     });
     createBatch.update(db.doc(`priests/${priestId}`), {
       isBusy: true,

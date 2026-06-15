@@ -4,6 +4,14 @@ exports.billingTick = void 0;
 const https_1 = require("firebase-functions/v2/https");
 const admin = require("firebase-admin");
 const constants_1 = require("../config/constants");
+const connection_1 = require("./connection");
+const notifyConnectionFailed_1 = require("./notifyConnectionFailed");
+const sendPush_1 = require("../notifications/sendPush");
+// How long a session may sit "active" without BOTH sides confirming a
+// real connection before we treat it as failed-to-connect and end it
+// free. Comfortably longer than a healthy Agora handshake (a few
+// seconds) so we never void a call that genuinely connected slowly.
+const CONNECT_GRACE_MS = 75 * 1000;
 const db = admin.firestore();
 // Deducts one minute's worth of coins from the user and credits the
 // priest's share. Called by the USER'S client every 60s while the
@@ -18,7 +26,7 @@ const db = admin.firestore();
 // another minute — the client treats that as the authoritative
 // signal to stop its local timers and navigate to the summary.
 exports.billingTick = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t, _u;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -59,6 +67,46 @@ exports.billingTick = (0, https_1.onCall)({ region: constants_1.REGION }, async 
     const userRef = db.doc(`users/${session.userId}`);
     const userSnap = await userRef.get();
     const currentBalance = Number((_h = (_g = userSnap.data()) === null || _g === void 0 ? void 0 : _g.coinBalance) !== null && _h !== void 0 ? _h : 0);
+    // CONNECTION GATE — never charge until BOTH sides confirmed a real
+    // two-way connection. Until then the user pays nothing and the
+    // priest earns nothing, no matter how long the session sits
+    // "active". This is what kills the "billed for a call that never
+    // connected" bug and stops a priest farming commission on dead
+    // calls.
+    const connectedEpochMs = (0, connection_1.connectionEpochMs)(session);
+    if (connectedEpochMs === null) {
+        const startedAtMs = (_j = session.startedAt) === null || _j === void 0 ? void 0 : _j.toMillis();
+        const ageMs = startedAtMs ? Date.now() - startedAtMs : 0;
+        // Past the connect window with no confirmation → the call never
+        // connected. End it free: 0 charge, 0 commission.
+        if (ageMs >= CONNECT_GRACE_MS) {
+            await sessionRef.update({
+                status: "completed",
+                endedAt: admin.firestore.FieldValue.serverTimestamp(),
+                endReason: "connection_failed",
+                durationMinutes: 0,
+                totalCharged: 0,
+                priestEarnings: 0,
+            });
+            // Tell both sides clearly: the call never connected and no
+            // coins were taken. Without this the user's screen would just
+            // close with no explanation for the (zero) balance change.
+            await (0, notifyConnectionFailed_1.notifyConnectionFailed)({ session: session, sessionId: sessionId });
+            return {
+                remainingBalance: currentBalance,
+                totalCharged: 0,
+                durationMinutes: 0,
+                shouldEnd: true,
+            };
+        }
+        // Still inside the connect window — don't charge, keep waiting.
+        return {
+            remainingBalance: currentBalance,
+            totalCharged: 0,
+            durationMinutes: Number((_k = session.durationMinutes) !== null && _k !== void 0 ? _k : 0),
+            shouldEnd: false,
+        };
+    }
     // Not enough coins for another minute — settle the session
     // right here. We still return the current totals so the client
     // renders the correct final state without a second round trip.
@@ -68,17 +116,75 @@ exports.billingTick = (0, https_1.onCall)({ region: constants_1.REGION }, async 
             endedAt: admin.firestore.FieldValue.serverTimestamp(),
             endReason: "balance_zero",
         });
+        // Notify both sides. billingTick settles this end itself, so
+        // endSession's idempotent fast-path returns before its own notify
+        // block — without this, a "ran out of coins" end would be the ONE
+        // ending that leaves no inbox entry / push, unlike every other.
+        // Fully wrapped + best-effort: a notify failure must NEVER roll
+        // back the settle above. (sendPushNotification already swallows
+        // its own errors; the try/catch guards the inbox-batch commit.)
+        // Fires once — later billingTicks short-circuit on status!=active
+        // and endSession's idempotent path doesn't notify.
+        const durationMinutes = Number((_l = session.durationMinutes) !== null && _l !== void 0 ? _l : 0);
+        const totalCharged = Number((_m = session.totalCharged) !== null && _m !== void 0 ? _m : 0);
+        const priestEarnings = Number((_o = session.priestEarnings) !== null && _o !== void 0 ? _o : 0);
+        const sessionType = (_p = session.type) !== null && _p !== void 0 ? _p : "chat";
+        try {
+            const notifBatch = db.batch();
+            notifBatch.set(db.collection("notifications").doc(), {
+                userId: session.userId,
+                type: "session_ended",
+                title: "Session Ended",
+                body: `Your ${sessionType} session ended — your coins ran out. ` +
+                    `Duration: ${durationMinutes} min. ${totalCharged} coins used.`,
+                sessionId: sessionId,
+                isRead: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            notifBatch.set(db.collection("notifications").doc(), {
+                userId: session.priestId,
+                type: "session_ended",
+                title: "Session Ended",
+                body: `Your ${sessionType} session ended ` +
+                    `(the user's balance ran out). ` +
+                    `Duration: ${durationMinutes} min. ₹${priestEarnings} earned.`,
+                sessionId: sessionId,
+                isRead: false,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            await notifBatch.commit();
+            await (0, sendPush_1.sendPushNotification)({
+                userId: session.userId,
+                title: "Session Ended",
+                body: `Your ${sessionType} session ended — coins ran out. ` +
+                    `${totalCharged} coins used.`,
+                data: { type: "session_ended", sessionId: sessionId, route: "/user" },
+            });
+            await (0, sendPush_1.sendPushNotification)({
+                userId: session.priestId,
+                title: "Session Ended",
+                body: `Your ${sessionType} session ended. ₹${priestEarnings} earned.`,
+                data: {
+                    type: "session_ended",
+                    sessionId: sessionId,
+                    route: "/priest",
+                },
+            });
+        }
+        catch (e) {
+            console.error("[billingTick] balance_zero notify failed:", e);
+        }
         return {
             remainingBalance: currentBalance,
-            totalCharged: Number((_j = session.totalCharged) !== null && _j !== void 0 ? _j : 0),
-            durationMinutes: Number((_k = session.durationMinutes) !== null && _k !== void 0 ? _k : 0),
+            totalCharged: Number((_q = session.totalCharged) !== null && _q !== void 0 ? _q : 0),
+            durationMinutes: Number((_r = session.durationMinutes) !== null && _r !== void 0 ? _r : 0),
             shouldEnd: true,
         };
     }
     const priestRef = db.doc(`priests/${session.priestId}`);
-    const newDuration = Number((_l = session.durationMinutes) !== null && _l !== void 0 ? _l : 0) + 1;
-    const newTotalCharged = Number((_m = session.totalCharged) !== null && _m !== void 0 ? _m : 0) + rate;
-    const newPriestEarnings = Number((_o = session.priestEarnings) !== null && _o !== void 0 ? _o : 0) + priestEarningPerMinute;
+    const newDuration = Number((_s = session.durationMinutes) !== null && _s !== void 0 ? _s : 0) + 1;
+    const newTotalCharged = Number((_t = session.totalCharged) !== null && _t !== void 0 ? _t : 0) + rate;
+    const newPriestEarnings = Number((_u = session.priestEarnings) !== null && _u !== void 0 ? _u : 0) + priestEarningPerMinute;
     const batch = db.batch();
     batch.update(userRef, {
         coinBalance: admin.firestore.FieldValue.increment(-rate),

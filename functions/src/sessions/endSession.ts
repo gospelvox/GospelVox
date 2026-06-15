@@ -2,6 +2,8 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
 import {sendPushNotification} from "../notifications/sendPush";
+import {connectionEpochMs} from "./connection";
+import {notifyConnectionFailed} from "./notifyConnectionFailed";
 
 const db = admin.firestore();
 
@@ -43,8 +45,8 @@ export const endSession = onCall(
       );
     }
 
-    // Idempotent path: session is already completed. Re-fetch the
-    // user doc so the returned newBalance reflects any other writes
+    // Idempotent fast-path: session already settled long ago. Re-fetch
+    // the user doc so the returned newBalance reflects any other writes
     // (e.g. a coin purchase) that happened since the session ended.
     if (session.status === "completed") {
       const userSnap = await db.doc(`users/${session.userId}`).get();
@@ -56,6 +58,39 @@ export const endSession = onCall(
       };
     }
 
+    // CONCURRENCY CLAIM — settle exactly once. Two calls can race here:
+    // when a call ends, one side taps End (→ endSession) AND leaving
+    // the Agora channel makes the other side's onUserOffline fire
+    // (→ endSession too). Both could read status="active" before
+    // either finishes, each run the round-up, and DOUBLE-charge the
+    // user + DOUBLE-push both sides. This transaction lets only ONE
+    // call win the active→settling flip; the loser falls through to the
+    // read-only summary path and never bills or notifies again. Leaves
+    // every non-active status (declined/expired/cancelled/pending)
+    // untouched — only an active session is settle-able here.
+    const claimed = await db.runTransaction(async (tx) => {
+      const snap = await tx.get(sessionRef);
+      const s = snap.data();
+      if (!s) return false;
+      if (s.status !== "active" || s.settling === true) return false;
+      tx.update(sessionRef, {settling: true});
+      return true;
+    });
+
+    if (!claimed) {
+      // Another call already settled (or is settling) this session.
+      // Return the latest summary without billing or notifying again.
+      const freshSnap = await sessionRef.get();
+      const fresh = freshSnap.data() ?? session;
+      const userSnap = await db.doc(`users/${fresh.userId}`).get();
+      return {
+        durationMinutes: Number(fresh.durationMinutes ?? 0),
+        totalCharged: Number(fresh.totalCharged ?? 0),
+        priestEarnings: Number(fresh.priestEarnings ?? 0),
+        newBalance: Number(userSnap.data()?.coinBalance ?? 0),
+      };
+    }
+
     const rate = Number(session.ratePerMinute ?? 10);
     const commission = Number(session.commissionPercent ?? 20);
 
@@ -63,11 +98,24 @@ export const endSession = onCall(
     let finalTotalCharged = Number(session.totalCharged ?? 0);
     let finalPriestEarnings = Number(session.priestEarnings ?? 0);
 
+    // CONNECTION GATE — only sessions that reached a confirmed
+    // two-way connection may be charged. If this is null the call
+    // never connected: skip the minimum charge AND the round-up
+    // below, and settle with 0 cost / 0 commission. connectedEpochMs
+    // is also the billing epoch for the round-up — partial minutes
+    // are measured from the real connection, never from the priest's
+    // "Accept" tap.
+    const connectedEpochMs = connectionEpochMs(session);
+
     // Minimum 1 minute for any active session where no billing tick
     // has run yet. If the user genuinely can't afford that one
     // minute we skip — the CF already flipped them to balance_zero
     // via billingTick in that case, so we wouldn't reach here.
-    if (session.status === "active" && finalDuration === 0) {
+    if (
+      session.status === "active" &&
+      finalDuration === 0 &&
+      connectedEpochMs !== null
+    ) {
       const userRef = db.doc(`users/${session.userId}`);
       const userSnap = await userRef.get();
       const currentBalance = Number(userSnap.data()?.coinBalance ?? 0);
@@ -111,12 +159,28 @@ export const endSession = onCall(
     // of work on every session. Gated on balance — if the user
     // can't afford the rollup, they get the partial minute free
     // rather than going negative.
-    const startedAtTs = session.startedAt as
-      admin.firestore.Timestamp | undefined;
-    if (session.status === "active" && startedAtTs) {
+    //
+    // Cap the billable window at the user's LAST PROOF OF PRESENCE,
+    // never at "now". The user's client refreshes lastHeartbeat
+    // every 30s (and on every billingTick); when their app dies it
+    // freezes. Measuring the round-up up to lastHeartbeat (+ one
+    // heartbeat interval of grace) guarantees a user is never billed
+    // for time after they vanished — even if the priest leaves the
+    // call open and taps End minutes later. On a live call the
+    // heartbeat is always fresh, so this cap equals "now" and normal
+    // billing is unchanged.
+    const HEARTBEAT_GRACE_MS = 45 * 1000;
+    const lastHeartbeatMs = (
+      session.lastHeartbeat as admin.firestore.Timestamp | undefined
+    )?.toMillis();
+    const billableUntilMs = lastHeartbeatMs ?
+      Math.min(Date.now(), lastHeartbeatMs + HEARTBEAT_GRACE_MS) :
+      Date.now();
+
+    if (session.status === "active" && connectedEpochMs !== null) {
       const elapsedSec = Math.max(
         0,
-        Math.floor((Date.now() - startedAtTs.toMillis()) / 1000)
+        Math.floor((billableUntilMs - connectedEpochMs) / 1000)
       );
       const totalMinutesUsed = Math.ceil(elapsedSec / 60);
       const unbilledMinutes = totalMinutesUsed - finalDuration;
@@ -175,6 +239,11 @@ export const endSession = onCall(
       totalCharged: finalTotalCharged,
       priestEarnings: finalPriestEarnings,
       endedBy: uid === session.userId ? "user" : "priest",
+      // Clear the concurrency claim now that we're terminal.
+      settling: admin.firestore.FieldValue.delete(),
+      // Tag never-connected calls so post-session screens / history
+      // can show "couldn't connect" rather than a normal summary.
+      ...(connectedEpochMs === null ? {endReason: "connection_failed"} : {}),
     });
 
     // Bump the priest's session count on the priest doc so the
@@ -192,6 +261,20 @@ export const endSession = onCall(
     const finalUserSnap = await db.doc(`users/${session.userId}`).get();
     const finalUserBalance =
       Number(finalUserSnap.data()?.coinBalance ?? 0);
+
+    // Never-connected call ended by a party (e.g. the priest's 60s
+    // remote-join timer firing): send the clear "couldn't connect, no
+    // charge" copy instead of a "Session Complete · 0 min" summary,
+    // then return. finalDuration / totals are all 0 here.
+    if (connectedEpochMs === null) {
+      await notifyConnectionFailed({session: session, sessionId: sessionId});
+      return {
+        durationMinutes: finalDuration,
+        totalCharged: finalTotalCharged,
+        priestEarnings: finalPriestEarnings,
+        newBalance: finalUserBalance,
+      };
+    }
 
     // Drop in-app inbox entries for both sides BEFORE pushing. The
     // notification doc is the source of truth — push is best-effort

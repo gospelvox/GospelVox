@@ -1,6 +1,15 @@
 import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
+import {connectionEpochMs} from "./connection";
+import {notifyConnectionFailed} from "./notifyConnectionFailed";
+import {sendPushNotification} from "../notifications/sendPush";
+
+// How long a session may sit "active" without BOTH sides confirming a
+// real connection before we treat it as failed-to-connect and end it
+// free. Comfortably longer than a healthy Agora handshake (a few
+// seconds) so we never void a call that genuinely connected slowly.
+const CONNECT_GRACE_MS = 75 * 1000;
 
 const db = admin.firestore();
 
@@ -73,6 +82,53 @@ export const billingTick = onCall(
     const userSnap = await userRef.get();
     const currentBalance = Number(userSnap.data()?.coinBalance ?? 0);
 
+    // CONNECTION GATE — never charge until BOTH sides confirmed a real
+    // two-way connection. Until then the user pays nothing and the
+    // priest earns nothing, no matter how long the session sits
+    // "active". This is what kills the "billed for a call that never
+    // connected" bug and stops a priest farming commission on dead
+    // calls.
+    const connectedEpochMs = connectionEpochMs(session);
+    if (connectedEpochMs === null) {
+      const startedAtMs = (
+        session.startedAt as admin.firestore.Timestamp | undefined
+      )?.toMillis();
+      const ageMs = startedAtMs ? Date.now() - startedAtMs : 0;
+
+      // Past the connect window with no confirmation → the call never
+      // connected. End it free: 0 charge, 0 commission.
+      if (ageMs >= CONNECT_GRACE_MS) {
+        await sessionRef.update({
+          status: "completed",
+          endedAt: admin.firestore.FieldValue.serverTimestamp(),
+          endReason: "connection_failed",
+          durationMinutes: 0,
+          totalCharged: 0,
+          priestEarnings: 0,
+        });
+
+        // Tell both sides clearly: the call never connected and no
+        // coins were taken. Without this the user's screen would just
+        // close with no explanation for the (zero) balance change.
+        await notifyConnectionFailed({session: session, sessionId: sessionId});
+
+        return {
+          remainingBalance: currentBalance,
+          totalCharged: 0,
+          durationMinutes: 0,
+          shouldEnd: true,
+        };
+      }
+
+      // Still inside the connect window — don't charge, keep waiting.
+      return {
+        remainingBalance: currentBalance,
+        totalCharged: 0,
+        durationMinutes: Number(session.durationMinutes ?? 0),
+        shouldEnd: false,
+      };
+    }
+
     // Not enough coins for another minute — settle the session
     // right here. We still return the current totals so the client
     // renders the correct final state without a second round trip.
@@ -82,6 +138,68 @@ export const billingTick = onCall(
         endedAt: admin.firestore.FieldValue.serverTimestamp(),
         endReason: "balance_zero",
       });
+
+      // Notify both sides. billingTick settles this end itself, so
+      // endSession's idempotent fast-path returns before its own notify
+      // block — without this, a "ran out of coins" end would be the ONE
+      // ending that leaves no inbox entry / push, unlike every other.
+      // Fully wrapped + best-effort: a notify failure must NEVER roll
+      // back the settle above. (sendPushNotification already swallows
+      // its own errors; the try/catch guards the inbox-batch commit.)
+      // Fires once — later billingTicks short-circuit on status!=active
+      // and endSession's idempotent path doesn't notify.
+      const durationMinutes = Number(session.durationMinutes ?? 0);
+      const totalCharged = Number(session.totalCharged ?? 0);
+      const priestEarnings = Number(session.priestEarnings ?? 0);
+      const sessionType = session.type ?? "chat";
+      try {
+        const notifBatch = db.batch();
+        notifBatch.set(db.collection("notifications").doc(), {
+          userId: session.userId,
+          type: "session_ended",
+          title: "Session Ended",
+          body:
+            `Your ${sessionType} session ended — your coins ran out. ` +
+            `Duration: ${durationMinutes} min. ${totalCharged} coins used.`,
+          sessionId: sessionId,
+          isRead: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        notifBatch.set(db.collection("notifications").doc(), {
+          userId: session.priestId,
+          type: "session_ended",
+          title: "Session Ended",
+          body:
+            `Your ${sessionType} session ended ` +
+            `(the user's balance ran out). ` +
+            `Duration: ${durationMinutes} min. ₹${priestEarnings} earned.`,
+          sessionId: sessionId,
+          isRead: false,
+          createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+        await notifBatch.commit();
+
+        await sendPushNotification({
+          userId: session.userId,
+          title: "Session Ended",
+          body:
+            `Your ${sessionType} session ended — coins ran out. ` +
+            `${totalCharged} coins used.`,
+          data: {type: "session_ended", sessionId: sessionId, route: "/user"},
+        });
+        await sendPushNotification({
+          userId: session.priestId,
+          title: "Session Ended",
+          body: `Your ${sessionType} session ended. ₹${priestEarnings} earned.`,
+          data: {
+            type: "session_ended",
+            sessionId: sessionId,
+            route: "/priest",
+          },
+        });
+      } catch (e) {
+        console.error("[billingTick] balance_zero notify failed:", e);
+      }
 
       return {
         remainingBalance: currentBalance,

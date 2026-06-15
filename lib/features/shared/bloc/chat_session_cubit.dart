@@ -60,12 +60,51 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // silent immediately.
   DateTime? _lastOtherActivityAt;
 
+  // ─── Mutual presence (chat-equivalent of voice onUserOffline) ───
+  // _presenceTimer stamps MY presence; _presenceCheckTimer watches the
+  // PEER's. Both run on BOTH sides (unlike billing/heartbeat which are
+  // user-only). When the peer's presence goes stale we end the chat so
+  // the meter stops and both are freed.
+  Timer? _presenceTimer;
+  Timer? _presenceCheckTimer;
+  // Client-clock instant we last saw the peer's presence stamp ADVANCE.
+  // Tracked in LOCAL time (not the server timestamp) so the staleness
+  // check never trips on user↔server clock skew. Null until the peer
+  // pings for the first time.
+  DateTime? _peerLastSeenLocal;
+  // The peer's last presence value we've observed — used only to detect
+  // when it advances (the snapshot fires on our own writes too).
+  DateTime? _peerLastPresenceValue;
+  // Client-clock instant MY OWN presence write last SUCCEEDED. Proves
+  // my connection to Firestore is actually healthy. Used to avoid
+  // blaming the peer for what is really MY network being down: if I
+  // can't even write my own presence, I also can't receive theirs, so
+  // a "peer looks stale" reading is untrustworthy and must NOT end the
+  // chat. Null until my first write lands.
+  DateTime? _myLastPresenceOkLocal;
+
+  static const int _kPresenceWriteSeconds = 8;
+  // Peer considered gone after this much silence following their LAST
+  // seen ping. ~3 missed pings: generous enough to ride out a brief
+  // background/network blip, tight enough that an abandoned chat stops
+  // billing within ~half a minute.
+  static const int _kPeerStaleSeconds = 25;
+  // How recently MY OWN presence write must have succeeded for me to
+  // trust the peer-stale signal. If my writes have been failing longer
+  // than this, my connection is the suspect — defer the decision to
+  // the side with the healthy link rather than false-ending the chat.
+  static const int _kMyPresenceStaleSeconds = 15;
+
   final Stopwatch _stopwatch = Stopwatch();
   int _lastKnownBalance = 0;
   String _sessionId = '';
   bool _isUserSide = true;
   bool _timersStarted = false;
   bool _endingDispatched = false;
+  // Connection-stamp latch: true once userConnectedAt/priestConnectedAt
+  // has been written. Doubles as an in-flight guard; drops on failure
+  // so the 30s heartbeat retries (see _confirmConnectionOnce).
+  bool _connectionConfirmed = false;
 
   // Tracks whether we've reported "actively typing" to the server.
   // Lets us debounce: a single transition write covers the whole
@@ -257,6 +296,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       return;
     }
 
+    // Note when the peer's presence stamp advances (in LOCAL time) so
+    // _checkPeerPresence can tell "still here" from "gone".
+    _trackPeerPresence(session);
+
     final current = state;
     if (current is ChatSessionActive) {
       emit(current.copyWith(session: session));
@@ -273,6 +316,15 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     if (!_timersStarted) {
       _timersStarted = true;
       _startTimers(_sessionId);
+      // Real connection for a chat = both chat screens are open and
+      // the session is active. This side is here now, so stamp its
+      // connect marker ONCE. Billing CFs only charge once BOTH sides
+      // have stamped, so a priest who accepted but never opened the
+      // chat (app died) never causes a charge. The helper writes at
+      // most once and, on failure, the 30s heartbeat retries it — so a
+      // transient write failure can't strand a real chat unbillable
+      // (the server would otherwise end it free at 75s).
+      _confirmConnectionOnce();
       // User-side: subscribe to live wallet balance so an in-chat
       // top-up reflects in `remainingBalance` within ~1 second
       // without waiting for the next minute's billingTick.
@@ -436,6 +488,23 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     emit(current.copyWith(showLowBalancePrompt: false));
   }
 
+  // Stamps the connection marker. The latch is BOTH a "write at most
+  // once" guard and an in-flight guard: while a write is pending the
+  // latch is true so re-entry is a no-op; on FAILURE it drops so the
+  // next caller retries. Called when the chat goes active AND from the
+  // 30s heartbeat, so even if early writes fail the heartbeat keeps
+  // retrying until it lands — a transient failure can't strand a real
+  // chat unbillable (which the server would end free at 75s).
+  void _confirmConnectionOnce() {
+    if (_connectionConfirmed) return;
+    _connectionConfirmed = true;
+    _repository
+        .confirmConnection(_sessionId, isUserSide: _isUserSide)
+        .catchError((_) {
+      _connectionConfirmed = false;
+    });
+  }
+
   void _startTimers(String sessionId) {
     _stopwatch.start();
 
@@ -464,11 +533,31 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
       (_) => _evaluateIdleWarning(),
     );
 
+    // Mutual presence — BOTH sides. Stamp my own presence right away,
+    // then every few seconds, AND watch the peer's. If the peer goes
+    // stale (killed the app / lost network / never showed up), end the
+    // chat so the meter stops and both sides are freed — the chat
+    // equivalent of voice's onUserOffline.
+    _sendPresence();
+    _presenceTimer = Timer.periodic(
+      const Duration(seconds: _kPresenceWriteSeconds),
+      (_) => _sendPresence(),
+    );
+    _presenceCheckTimer = Timer.periodic(
+      const Duration(seconds: 5),
+      (_) => _checkPeerPresence(),
+    );
+
     // Heartbeat + billing are user-side only (see top comment).
     if (_isUserSide) {
       _heartbeatTimer = Timer.periodic(
         const Duration(seconds: 30),
         (_) {
+          // Safety net: if the connect stamp never landed (transient
+          // write failure), keep retrying it here until it does —
+          // otherwise the server ends the chat free at 75s. No-op once
+          // confirmed.
+          _confirmConnectionOnce();
           // Silent — a failed heartbeat just means the next 30s
           // tick retries. If we stay offline long enough the
           // watchdog will mark the session stale.
@@ -480,6 +569,75 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
         const Duration(seconds: 60),
         (_) => _runBillingTick(),
       );
+    }
+  }
+
+  // Writes MY presence and, on success, records that my link to
+  // Firestore is healthy (_myLastPresenceOkLocal). Fire-and-forget — a
+  // failed write just means the next tick retries; and a SUSTAINED
+  // failure is exactly the signal _checkPeerPresence uses to NOT trust
+  // a "peer looks stale" reading (it may be my own network down).
+  void _sendPresence() {
+    _repository
+        .sendChatPresence(_sessionId, isUserSide: _isUserSide)
+        .then((_) {
+      _myLastPresenceOkLocal = DateTime.now();
+    }).catchError((_) {});
+  }
+
+  // Records, in LOCAL client time, the instant the peer's presence
+  // stamp last advanced. The session snapshot fires on our OWN writes
+  // too, so we only move the marker when the peer's value genuinely
+  // moves forward. Comparing local-time-to-local-time in
+  // _checkPeerPresence avoids any user↔server clock-skew false trips.
+  void _trackPeerPresence(SessionModel session) {
+    final peer = _isUserSide
+        ? session.priestPresenceAt
+        : session.userPresenceAt;
+    if (peer == null) return;
+    if (_peerLastPresenceValue == null ||
+        peer.isAfter(_peerLastPresenceValue!)) {
+      _peerLastPresenceValue = peer;
+      _peerLastSeenLocal = DateTime.now();
+    }
+  }
+
+  // Ends the chat when a peer who WAS present goes quiet on the wire —
+  // the chat equivalent of voice's onUserOffline.
+  //
+  // ROLLOUT SAFETY: we only ever end after we've SEEN the peer ping at
+  // least once (_peerLastSeenLocal != null). A peer on an older build
+  // never writes presence at all; if we treated "no ping" as "gone",
+  // we'd falsely kill every new-side ↔ old-side chat. By acting only
+  // on a peer who was pinging and then STOPPED, an old-build peer
+  // simply never triggers this path — that chat falls back to the
+  // existing heartbeat/watchdog behaviour, with zero false ends.
+  //
+  // endSession is guarded (_endingDispatched) and the server settle is
+  // transactional, so a simultaneous end from both sides is safe.
+  void _checkPeerPresence() {
+    if (isClosed) return;
+    final current = state;
+    if (current is! ChatSessionActive || current.isEnding) return;
+
+    final seen = _peerLastSeenLocal;
+    if (seen == null) return;
+
+    // FALSE-END GUARD: never blame the peer if it might be MY OWN
+    // connection that's down. If my own presence writes aren't landing,
+    // I also can't receive the peer's — so a "peer looks stale" reading
+    // is untrustworthy. Stay in the chat; the side with the healthy
+    // link makes the call. This stops a brief local blip from killing a
+    // perfectly healthy chat (important on flaky mobile networks).
+    final myOk = _myLastPresenceOkLocal;
+    final now = DateTime.now();
+    if (myOk == null ||
+        now.difference(myOk).inSeconds > _kMyPresenceStaleSeconds) {
+      return;
+    }
+
+    if (now.difference(seen).inSeconds > _kPeerStaleSeconds) {
+      endSession(reason: 'peer_left');
     }
   }
 
@@ -807,6 +965,10 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
     _typingIdleTimer = null;
     _idleWarningTimer?.cancel();
     _idleWarningTimer = null;
+    _presenceTimer?.cancel();
+    _presenceTimer = null;
+    _presenceCheckTimer?.cancel();
+    _presenceCheckTimer = null;
   }
 
   @override

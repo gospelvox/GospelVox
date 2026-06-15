@@ -55,11 +55,17 @@ exports.expireSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
             return { kind: "alreadyTerminal" };
         }
         const session = snap.data();
-        // Only the user who owns the request can expire it. Priests
-        // decline via their own status write; admins don't expire
-        // requests through this CF.
-        if (session.userId !== uid) {
-            throw new https_1.HttpsError("permission-denied", "Only the requester can expire this session");
+        // The user who owns the request, OR the priest it's addressed
+        // to, may expire it on timeout. The priest path is essential
+        // when the USER's app was killed mid-ring: the user's countdown
+        // can no longer fire, so the priest's own 60s countdown becomes
+        // the thing that releases the request — and clears the priest's
+        // isBusy flag via onSessionTerminal. Without it the priest would
+        // stay Busy until the 5-minute watchdog. The transaction below
+        // still guarantees exactly-one missed_request even if the user's
+        // and priest's countdowns race. Admins don't expire here.
+        if (session.userId !== uid && session.priestId !== uid) {
+            throw new https_1.HttpsError("permission-denied", "Only a participant can expire this session");
         }
         // Only pending sessions are eligible. Anything else is
         // already terminal — succeed quietly so a late cubit call

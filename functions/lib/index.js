@@ -1,33 +1,25 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onBibleSessionRated = exports.createBibleSession = exports.verifyAndJoinBibleSession = exports.payAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyBibleSessionPayment = exports.verifyActivationPurchase = exports.verifyActivationFee = exports.createActivationOrder = exports.verifyCoinPurchase = void 0;
+exports.onBibleSessionRated = exports.createBibleSession = exports.verifyAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyActivationPurchase = exports.verifyCoinPurchase = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
-// Coin purchases migrated from Razorpay → Google Play Billing.
-// Activation + Bible session unlocks still go through Razorpay for
-// now; they migrate to Play/StoreKit in later slices. There is no
-// `createCoinOrder` equivalent any more — Play handles the order
-// lifecycle entirely on the device + Play servers, and the client
-// hands us back a purchaseToken that verifyCoinPurchase resolves
-// against the Android Publisher API.
-var verifyCoinPurchase_1 = require("./payments/verifyCoinPurchase");
-Object.defineProperty(exports, "verifyCoinPurchase", { enumerable: true, get: function () { return verifyCoinPurchase_1.verifyCoinPurchase; } });
-var createActivationOrder_1 = require("./payments/createActivationOrder");
-Object.defineProperty(exports, "createActivationOrder", { enumerable: true, get: function () { return createActivationOrder_1.createActivationOrder; } });
-var verifyActivationFee_1 = require("./payments/verifyActivationFee");
-Object.defineProperty(exports, "verifyActivationFee", { enumerable: true, get: function () { return verifyActivationFee_1.verifyActivationFee; } });
-// Play-backed activation. Shipped alongside the Razorpay pair so the
-// client can be migrated in a separate slice; once the new flow is
-// wired and verified, createActivationOrder + verifyActivationFee
-// will be retired.
-var verifyActivationPurchase_1 = require("./payments/verifyActivationPurchase");
-Object.defineProperty(exports, "verifyActivationPurchase", { enumerable: true, get: function () { return verifyActivationPurchase_1.verifyActivationPurchase; } });
-var verifyBibleSessionPayment_1 = require("./payments/verifyBibleSessionPayment");
-Object.defineProperty(exports, "verifyBibleSessionPayment", { enumerable: true, get: function () { return verifyBibleSessionPayment_1.verifyBibleSessionPayment; } });
+// Every paid product flows through Google Play Billing:
+//   • verifyCoinPurchase — consumable coin packs.
+//   • verifyActivationPurchase — consumable priest activation.
+//     (Server's priests/{uid}.isActivated is the source of truth;
+//      Play's SKU is consumed after credit so multi-priest-per-Play-
+//      account scenarios work without ITEM_ALREADY_OWNED.)
+// Each CF resolves a Play purchaseToken against the Android
+// Publisher API. There is no "create order" equivalent — Play
+// handles the order lifecycle entirely on the device + Play servers.
 // Matrimony payments intentionally not exported — the feature is not
 // shipping in v1, and exporting a stub that throws `unimplemented`
 // surfaces as a real runtime crash if anything ever invokes it.
+var verifyCoinPurchase_1 = require("./payments/verifyCoinPurchase");
+Object.defineProperty(exports, "verifyCoinPurchase", { enumerable: true, get: function () { return verifyCoinPurchase_1.verifyCoinPurchase; } });
+var verifyActivationPurchase_1 = require("./payments/verifyActivationPurchase");
+Object.defineProperty(exports, "verifyActivationPurchase", { enumerable: true, get: function () { return verifyActivationPurchase_1.verifyActivationPurchase; } });
 // ═══ Sessions ═══
 var createSessionRequest_1 = require("./sessions/createSessionRequest");
 Object.defineProperty(exports, "createSessionRequest", { enumerable: true, get: function () { return createSessionRequest_1.createSessionRequest; } });
@@ -69,7 +61,7 @@ Object.defineProperty(exports, "onReportResolved", { enumerable: true, get: func
 // path; introduce the CF when matrimony or a config UI ships.
 // ═══ Priest ═══
 // activatePriestAccount is orphaned — the live activation flow runs
-// through verifyActivationFee (Razorpay-signed). Keeping the stub
+// through verifyActivationPurchase (Play-verified). Keeping the stub
 // exported would deploy a CF that only throws.
 var requestWithdrawal_1 = require("./priest/requestWithdrawal");
 Object.defineProperty(exports, "requestWithdrawal", { enumerable: true, get: function () { return requestWithdrawal_1.requestWithdrawal; } });
@@ -91,11 +83,9 @@ var bibleSessionReminders_1 = require("./bible/bibleSessionReminders");
 Object.defineProperty(exports, "bibleSessionReminders", { enumerable: true, get: function () { return bibleSessionReminders_1.bibleSessionReminders; } });
 var startBibleSession_1 = require("./bible/startBibleSession");
 Object.defineProperty(exports, "startBibleSession", { enumerable: true, get: function () { return startBibleSession_1.startBibleSession; } });
-var payAndJoinBibleSession_1 = require("./bible/payAndJoinBibleSession");
-Object.defineProperty(exports, "payAndJoinBibleSession", { enumerable: true, get: function () { return payAndJoinBibleSession_1.payAndJoinBibleSession; } });
-// Play-backed pay-to-join. Shipped alongside payAndJoinBibleSession
-// so the client can be migrated in a separate slice; once the new
-// flow is wired and verified, payAndJoinBibleSession will be retired.
+// Play-backed pay-to-join. Fixed bible_session_199 SKU; the sessionId
+// is carried on the Play purchase via obfuscatedAccountId so even an
+// app-crash-mid-purchase recovers cleanly on the next launch.
 var verifyAndJoinBibleSession_1 = require("./bible/verifyAndJoinBibleSession");
 Object.defineProperty(exports, "verifyAndJoinBibleSession", { enumerable: true, get: function () { return verifyAndJoinBibleSession_1.verifyAndJoinBibleSession; } });
 var createBibleSession_1 = require("./bible/createBibleSession");

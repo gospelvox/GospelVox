@@ -3,6 +3,8 @@ import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
 import {sendPushNotification} from "../notifications/sendPush";
 import {notifyPriestMissedRequest} from "./missedRequestNotif";
+import {connectionEpochMs} from "./connection";
+import {notifyConnectionFailed} from "./notifyConnectionFailed";
 
 const db = admin.firestore();
 
@@ -215,10 +217,18 @@ async function processStaleSession(
   let finalPriestEarnings = Number(session.priestEarnings ?? 0);
   let didMinimumCharge = false;
 
-  // EDGE CASE — session went active but no billingTick ever ran
-  // (app crashed inside the first 60s). Apply the minimum 1-minute
-  // charge here so the priest still earns for showing up.
-  if (finalDuration === 0) {
+  // CONNECTION GATE — only an abandoned session that actually reached
+  // a confirmed two-way connection may be charged. A session that was
+  // "active" but never connected (priest stuck "Connecting", user app
+  // died before connecting) settles free: 0 charge, 0 commission.
+  const connectedEpochMs = connectionEpochMs(session);
+
+  // EDGE CASE — session went active, connected, but no billingTick
+  // ever ran (app crashed inside the first 60s). Apply the minimum
+  // 1-minute charge here so the priest still earns for showing up.
+  // Gated on a real connection — we never minimum-charge a call that
+  // never connected.
+  if (finalDuration === 0 && connectedEpochMs !== null) {
     console.log(
       `[Watchdog] Session ${sessionId}: 0 billed minutes — ` +
       "applying minimum 1-minute charge"
@@ -283,7 +293,10 @@ async function processStaleSession(
   await sessionRef.update({
     status: "completed",
     endedAt: admin.firestore.FieldValue.serverTimestamp(),
-    endReason: "watchdog_timeout",
+    // A never-connected abandoned session is "connection_failed";
+    // a connected-then-abandoned one is "watchdog_timeout".
+    endReason:
+      connectedEpochMs === null ? "connection_failed" : "watchdog_timeout",
     durationMinutes: finalDuration,
     totalCharged: finalTotalCharged,
     priestEarnings: finalPriestEarnings,
@@ -302,8 +315,18 @@ async function processStaleSession(
   });
 
   // STEP 5 — Notify both sides so they understand WHY the session
-  // disappeared from active state. Without this the user just
-  // sees their balance dropped with no explanation.
+  // disappeared from active state. Two flavours:
+  //   • never connected  → clear "couldn't connect, no charge" copy
+  //   • connected then abandoned → charged-summary copy below
+  if (connectedEpochMs === null) {
+    await notifyConnectionFailed({session: session, sessionId: sessionId});
+    console.log(
+      `[Watchdog] Session ${sessionId} never connected — ` +
+      "settled free, both sides notified."
+    );
+    return;
+  }
+
   const notifBatch = db.batch();
 
   const userNotifRef = db.collection("notifications").doc();

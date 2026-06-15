@@ -40,16 +40,27 @@ export const notifyAvailableSubscribers = onDocumentUpdated(
     const after = event.data?.after.data();
     if (!before || !after) return;
 
-    // Only react to a genuine "came online" transition. Heartbeat
-    // ticks and isBusy flips share this trigger but should be
-    // no-ops for this CF.
-    const wentOnline =
+    // React to a genuine "became available" transition. A priest
+    // becomes reachable to a waiting "Notify me" subscriber two ways:
+    //   1. They came ONLINE (offline → online).
+    //   2. They were already online and FINISHED a session
+    //      (isBusy true → false). isOnline never changes here, so the
+    //      old isOnline-only check missed this entirely — which left
+    //      "Notify me" on a BUSY priest a promise that never fired.
+    // Heartbeat ticks and other field churn move neither, so they
+    // stay no-ops.
+    const cameOnline =
       before.isOnline !== true && after.isOnline === true;
-    if (!wentOnline) return;
+    const finishedSession =
+      after.isOnline === true &&
+      before.isBusy === true &&
+      after.isBusy !== true;
+    if (!cameOnline && !finishedSession) return;
 
-    // If the priest came online INTO a busy state (e.g. created a
-    // pending session at the same time, atypical but possible),
-    // skip — the subscriber would just bounce off priest-busy.
+    // Must be genuinely free on arrival. Covers the came-online-INTO-
+    // busy edge (priest created a pending session at the same moment)
+    // — claiming "available!" when the next dial bounces off
+    // priest-busy would be misleading.
     if (after.isBusy === true) return;
 
     const priestId = event.params.priestId;

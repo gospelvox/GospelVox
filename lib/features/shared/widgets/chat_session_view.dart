@@ -73,7 +73,8 @@ class ChatSessionView extends StatefulWidget {
   State<ChatSessionView> createState() => _ChatSessionViewState();
 }
 
-class _ChatSessionViewState extends State<ChatSessionView> {
+class _ChatSessionViewState extends State<ChatSessionView>
+    with WidgetsBindingObserver {
   final TextEditingController _messageController = TextEditingController();
   final ScrollController _scrollController = ScrollController();
   final FocusNode _focusNode = FocusNode();
@@ -117,8 +118,30 @@ class _ChatSessionViewState extends State<ChatSessionView> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
     _setupConnectivity();
     _scrollController.addListener(_handleScroll);
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState appState) {
+    // Killing / closing the app must end the chat instantly (no
+    // foreground service keeps chat alive, unlike voice). On a real
+    // termination, end now so the meter stops and the peer is freed
+    // immediately rather than waiting on the presence-stale timer.
+    // Best-effort: if the process dies first, the peer's own
+    // presence-stale check ends it as the backstop. endSession is
+    // guarded + the server settle is transactional, so no double-end.
+    if (appState != AppLifecycleState.detached) return;
+    if (!mounted) return;
+    final ChatSessionCubit cubit;
+    try {
+      cubit = context.read<ChatSessionCubit>();
+    } catch (_) {
+      return;
+    }
+    if (cubit.isClosed) return;
+    cubit.endSession(reason: 'app_terminated');
   }
 
   void _setupConnectivity() {
@@ -135,6 +158,7 @@ class _ChatSessionViewState extends State<ChatSessionView> {
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _connSub?.cancel();
     _scrollController.removeListener(_handleScroll);
     _messageController.dispose();

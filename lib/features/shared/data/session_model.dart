@@ -32,6 +32,27 @@ class SessionModel {
   final int priestEarnings;
   final DateTime? lastHeartbeat;
 
+  // Two-way connection confirmation. Each side stamps its own field
+  // the moment its client confirms a REAL connection to the other
+  // party (voice: Agora onUserJoined; chat: both chat screens open).
+  // Billing is gated server-side on BOTH being set — a session that
+  // never reaches a confirmed connection is never charged and the
+  // priest earns nothing. This is what stops a user being billed for
+  // a call that never connected (priest stuck "Connecting…").
+  final DateTime? userConnectedAt;
+  final DateTime? priestConnectedAt;
+
+  // Live presence heartbeats for CHAT sessions — each side stamps its
+  // own field every few seconds while its chat screen is open, and
+  // watches the OTHER side's field. If the peer's stamp goes stale
+  // (they killed the app / lost the network / never showed up), the
+  // watching side ends the chat so the meter stops and both are freed.
+  // This is the chat-equivalent of voice's Agora onUserOffline. Kept
+  // separate from lastHeartbeat (user-only, drives the watchdog) so a
+  // priest's presence can never keep a user-abandoned session alive.
+  final DateTime? userPresenceAt;
+  final DateTime? priestPresenceAt;
+
   // Why the session terminated. Set by the Cloud Functions:
   //   • billingTick on insufficient balance → "balance_zero"
   //   • sessionWatchdog on stale heartbeat  → "watchdog_timeout"
@@ -101,6 +122,10 @@ class SessionModel {
     this.totalCharged = 0,
     this.priestEarnings = 0,
     this.lastHeartbeat,
+    this.userConnectedAt,
+    this.priestConnectedAt,
+    this.userPresenceAt,
+    this.priestPresenceAt,
     this.endReason = '',
     this.userTyping = false,
     this.userTypingSince,
@@ -146,6 +171,10 @@ class SessionModel {
       totalCharged: (data['totalCharged'] as num?)?.toInt() ?? 0,
       priestEarnings: (data['priestEarnings'] as num?)?.toInt() ?? 0,
       lastHeartbeat: ts(data['lastHeartbeat']),
+      userConnectedAt: ts(data['userConnectedAt']),
+      priestConnectedAt: ts(data['priestConnectedAt']),
+      userPresenceAt: ts(data['userPresenceAt']),
+      priestPresenceAt: ts(data['priestPresenceAt']),
       endReason: data['endReason'] as String? ?? '',
       userTyping: data['userTyping'] as bool? ?? false,
       userTypingSince: ts(data['userTypingSince']),

@@ -115,6 +115,22 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
         if (_secondsRemaining <= 0) {
           _terminalEmitted = true;
           _countdownTimer?.cancel();
+          // Release the request server-side so the session is marked
+          // 'expired' and the priest's isBusy flag clears (via
+          // onSessionTerminal). CRITICAL when the USER's app was
+          // killed mid-ring: their countdown can't fire, so without
+          // this the request sits 'pending' and the priest stays Busy
+          // until the 5-minute watchdog. The priest's app is alive
+          // here (this very timer fired), so the call reliably lands.
+          // Fire-and-forget; the CF is idempotent + notify-once, so
+          // racing the user's countdown can't double-charge or
+          // double-notify.
+          final current = state;
+          if (current is IncomingRequestReceived) {
+            _repository
+                .expireSessionRequest(current.session.id)
+                .catchError((_) {});
+          }
           if (!isClosed) emit(const IncomingRequestExpired());
           return;
         }
@@ -132,15 +148,31 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
   // page opens the activation bottom sheet instead of writing a
   // session the priest can't legally take.
   Future<void> acceptRequest(String sessionId, bool isActivated) async {
-    if (!isActivated) {
+    final current = state;
+    if (current is! IncomingRequestReceived) return;
+
+    // The isActivated flag handed in can be STALE. On a cold app
+    // launch (priest reopened after a kill) the activation stream
+    // hadn't loaded yet, so the incoming screen received false — which
+    // would wrongly throw a genuinely-activated priest into the ₹500
+    // paywall and block them from accepting their own call. Only when
+    // the flag is false do we pay for one fresh read to confirm before
+    // blocking; an already-true flag accepts with no extra latency.
+    var activated = isActivated;
+    if (!activated) {
+      try {
+        activated =
+            await _repository.isPriestActivated(current.session.priestId);
+      } catch (e) {
+        debugPrint('[IncomingRequestCubit] activation re-check failed: $e');
+      }
+    }
+    if (!activated) {
       if (!isClosed) {
         emit(const IncomingRequestError('__needs_activation__'));
       }
       return;
     }
-
-    final current = state;
-    if (current is! IncomingRequestReceived) return;
 
     try {
       _countdownTimer?.cancel();
@@ -186,6 +218,25 @@ class IncomingRequestCubit extends Cubit<IncomingRequestState> {
   Future<void> close() {
     _countdownTimer?.cancel();
     _sessionSubscription?.cancel();
+
+    // If the priest leaves the incoming-ring screen WITHOUT answering
+    // (app killed / swiped away / navigated off while still ringing),
+    // expire the request now so the waiting user is released INSTANTLY
+    // — mirroring the user-side cubit, which expires on close. We only
+    // do this while still actively ringing (state == Received): once
+    // the priest has tapped Accept/Decline, or the user already
+    // cancelled/expired it, the state has moved on and _terminalEmitted
+    // is set, so we never clobber an accepted call or double-fire.
+    // Fire-and-forget — close() can't await; the user's 60s countdown
+    // and the watchdog remain the backstops for a hard force-stop where
+    // this write can't land.
+    final current = state;
+    if (current is IncomingRequestReceived && !_terminalEmitted) {
+      _repository
+          .expireSessionRequest(current.session.id)
+          .catchError((_) {});
+    }
+
     return super.close();
   }
 }
