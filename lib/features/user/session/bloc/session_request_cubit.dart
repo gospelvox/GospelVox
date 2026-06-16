@@ -38,6 +38,18 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
   // finally lands.
   bool _terminalEmitted = false;
 
+  // Set when the user cancels (button, hardware back, or page dispose)
+  // while createSessionRequest is still in flight — the "Sending…"
+  // window. There's no session id to expire yet, so sendRequest()
+  // expires the request the instant the id lands. Without this, a
+  // cancel during "Sending…" left a ghost pending request ringing the
+  // priest until it timed out.
+  bool _cancelRequested = false;
+
+  // The id returned by createSessionRequest, remembered so a cancel
+  // arriving during/after the create can expire the right session.
+  String? _createdSessionId;
+
   SessionRequestCubit(this._repository)
       : super(const SessionRequestInitial());
 
@@ -54,6 +66,20 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
         priestId: priestId,
         type: type,
       );
+      _createdSessionId = sessionId;
+
+      // The user may have hit Cancel while this create was still in
+      // flight (the "Sending…" window). Their cancel couldn't expire a
+      // session that had no id yet — so honour it now: expire the
+      // just-created request instead of watching it. This is what stops
+      // a ghost "pending" request from ringing the priest after the
+      // user already backed out.
+      if (_cancelRequested) {
+        unawaited(
+          _repository.expireSessionRequest(sessionId).catchError((_) {}),
+        );
+        return;
+      }
 
       _startWatching(sessionId);
     } on TimeoutException {
@@ -242,12 +268,21 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
   // missed-request cards.
   Future<void> cancelRequest() async {
     _terminalEmitted = true;
+    _cancelRequested = true;
     _stopCountdown();
 
+    // The id may come from the live Waiting state, or — if the user
+    // cancelled during the "Sending…" window before the create
+    // returned — from _createdSessionId once it has landed. If we still
+    // have no id (create hasn't resolved yet), sendRequest() expires it
+    // the moment the id arrives, thanks to _cancelRequested.
     final current = state;
-    if (current is SessionRequestWaiting) {
+    final sessionId = current is SessionRequestWaiting
+        ? current.session.id
+        : _createdSessionId;
+    if (sessionId != null) {
       try {
-        await _repository.expireSessionRequest(current.session.id);
+        await _repository.expireSessionRequest(sessionId);
       } catch (_) {
         // Swallow — the session may already be accepted/expired. The
         // stream listener will reconcile whatever the real state is.
@@ -262,6 +297,12 @@ class SessionRequestCubit extends Cubit<SessionRequestState> {
   Future<void> close() {
     _stopCountdown();
     _sessionSubscription?.cancel();
+
+    // Mark cancelled so a createSessionRequest still in flight (user
+    // backed out during the "Sending…" window) expires its pending
+    // session the moment it resolves, instead of leaking a request
+    // that would ring the priest until the watchdog.
+    _cancelRequested = true;
 
     // If the widget dies while we're still in Waiting (user backs
     // out, taps a deep link, navigates elsewhere, etc.), fire

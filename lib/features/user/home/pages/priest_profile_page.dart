@@ -1150,17 +1150,8 @@ class _ProfileCard extends StatelessWidget {
                 ),
                 const _CellDivider(),
                 Expanded(
-                  child: _StatCell(
-                    icon: AppIcons.podcast,
-                    // Each language on its own line — comma-joined
-                    // would ellipsis on long lists like "English,
-                    // Hindi, Tamil, Malayalam". Vertical stack keeps
-                    // every name visible without truncation.
-                    primary: priest.languages.isNotEmpty
-                        ? priest.languages.join('\n')
-                        : 'Languages',
-                    secondary: null,
-                    primaryWraps: true,
+                  child: _LanguagesStatCell(
+                    languages: priest.languages,
                   ),
                 ),
               ],
@@ -1272,17 +1263,11 @@ class _StatCell extends StatelessWidget {
   final IconData icon;
   final String primary;
   final String? secondary;
-  // When true, primary text wraps freely (no maxLines cap, no
-  // ellipsis) and uses a slightly smaller font. Used by the
-  // languages cell so the full list renders without "..." cutting
-  // off a language name.
-  final bool primaryWraps;
 
   const _StatCell({
     required this.icon,
     required this.primary,
     required this.secondary,
-    this.primaryWraps = false,
   });
 
   @override
@@ -1306,14 +1291,12 @@ class _StatCell extends StatelessWidget {
         const SizedBox(height: 8),
         Text(
           primary,
-          maxLines: primaryWraps ? null : 1,
-          overflow: primaryWraps
-              ? TextOverflow.visible
-              : TextOverflow.ellipsis,
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
           softWrap: true,
           textAlign: TextAlign.center,
           style: GoogleFonts.inter(
-            fontSize: primaryWraps ? 10.5 : 11.5,
+            fontSize: 11.5,
             fontWeight: FontWeight.w600,
             height: 1.3,
             color: AppColors.deepDarkBrown,
@@ -1786,6 +1769,187 @@ class _SpecializationChip extends StatelessWidget {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// ─── Languages stat cell (capped, tappable "+N more") ─────────────
+
+// Sits in the stat row beside Church / Experience. Shows the first
+// language plus a "+N" overflow badge so the cell stays a single line
+// and the card height never grows with the list. Tapping opens a sheet
+// listing every language as pills.
+class _LanguagesStatCell extends StatelessWidget {
+  final List<String> languages;
+  const _LanguagesStatCell({required this.languages});
+
+  @override
+  Widget build(BuildContext context) {
+    final hasLangs = languages.isNotEmpty;
+    final first = hasLangs ? languages.first : 'Languages';
+    // Everything past the first name collapses into the "+N" badge.
+    final extra = languages.length - 1;
+
+    final cell = Column(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Container(
+          width: 30,
+          height: 30,
+          decoration: BoxDecoration(
+            color: AppColors.warmBeige,
+            borderRadius: BorderRadius.circular(8),
+          ),
+          child: AppIcon(
+            AppIcons.podcast,
+            size: 14,
+            color: AppColors.primaryBrown,
+          ),
+        ),
+        const SizedBox(height: 8),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            Flexible(
+              child: Text(
+                first,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(
+                  fontSize: 11.5,
+                  fontWeight: FontWeight.w600,
+                  height: 1.3,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            if (extra > 0) ...[
+              const SizedBox(width: 5),
+              // Filled brown badge so the overflow reads as a tappable
+              // control, not just dim text.
+              Container(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 6, vertical: 2),
+                decoration: BoxDecoration(
+                  color: AppColors.primaryBrown,
+                  borderRadius: BorderRadius.circular(999),
+                ),
+                child: Text(
+                  '+$extra',
+                  style: GoogleFonts.inter(
+                    fontSize: 10,
+                    fontWeight: FontWeight.w700,
+                    height: 1.1,
+                    color: Colors.white,
+                  ),
+                ),
+              ),
+            ],
+          ],
+        ),
+        const SizedBox(height: 3),
+        // Sub-label doubles as the affordance: when there's a "+N",
+        // it tells the user the cell is tappable.
+        Text(
+          extra > 0 ? 'Tap to view all' : 'Languages',
+          maxLines: 1,
+          overflow: TextOverflow.ellipsis,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.inter(
+            fontSize: 10.5,
+            fontWeight: extra > 0 ? FontWeight.w600 : FontWeight.w400,
+            height: 1.25,
+            color: extra > 0 ? AppColors.primaryBrown : AppColors.muted,
+          ),
+        ),
+      ],
+    );
+
+    // Only tappable when there's something hidden behind the "+N".
+    if (extra <= 0) return cell;
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => _showAllLanguages(context, languages),
+      child: cell,
+    );
+  }
+}
+
+// Bottom sheet listing every language as wrapping pills. Reached by
+// tapping the "+N" overflow badge on the languages stat cell.
+void _showAllLanguages(BuildContext context, List<String> languages) {
+  showModalBottomSheet<void>(
+    context: context,
+    backgroundColor: AppColors.surfaceWhite,
+    shape: const RoundedRectangleBorder(
+      borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+    ),
+    builder: (ctx) {
+      final bottomInset = MediaQuery.of(ctx).padding.bottom;
+      return Padding(
+        padding: EdgeInsets.fromLTRB(20, 14, 20, bottomInset + 20),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Center(
+              child: Container(
+                width: 40,
+                height: 4,
+                decoration: BoxDecoration(
+                  color: AppColors.muted.withValues(alpha: 0.25),
+                  borderRadius: BorderRadius.circular(999),
+                ),
+              ),
+            ),
+            const SizedBox(height: 16),
+            Text(
+              'Languages',
+              style: GoogleFonts.inter(
+                fontSize: 16,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+            const SizedBox(height: 14),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                for (final l in languages) _LanguageChip(label: l),
+              ],
+            ),
+          ],
+        ),
+      );
+    },
+  );
+}
+
+class _LanguageChip extends StatelessWidget {
+  final String label;
+  const _LanguageChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+      decoration: BoxDecoration(
+        color: AppColors.warmBeige,
+        borderRadius: BorderRadius.circular(999),
+        border: Border.all(
+          color: AppColors.primaryBrown.withValues(alpha: 0.15),
+        ),
+      ),
+      child: Text(
+        label,
+        style: GoogleFonts.inter(
+          fontSize: 12,
+          fontWeight: FontWeight.w600,
+          color: AppColors.deepDarkBrown,
+        ),
       ),
     );
   }

@@ -437,6 +437,22 @@ class _VoiceCallViewState extends State<VoiceCallView>
                   color: _kBeigeText.withValues(alpha: 0.5),
                 ),
               ),
+              // Subtle rate line — user side only (the priest earns,
+              // they don't pay, so a per-minute "cost" would be wrong
+              // for them). Only once the call is actually connected and
+              // billing is running, kept dim so it informs without
+              // nagging.
+              if (state.isRemoteUserJoined && widget.isUserSide) ...[
+                const SizedBox(height: 4),
+                Text(
+                  '${state.session.ratePerMinute} coins/min',
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    color: _kBeigeText.withValues(alpha: 0.35),
+                  ),
+                ),
+              ],
             ],
           ),
         ),

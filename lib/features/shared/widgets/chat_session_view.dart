@@ -109,18 +109,28 @@ class _ChatSessionViewState extends State<ChatSessionView>
   StreamSubscription<bool>? _connSub;
   bool _isOffline = false;
 
-  // True when an inbound message arrived while the user was scrolled
-  // up reading older content. Drives the "↓ New message" pill so we
-  // never yank them away from what they're reading. Cleared the
-  // moment they manually scroll back to the bottom.
-  bool _showNewMessagePill = false;
+  // Tracks the other side's typing state so we can follow to the
+  // latest message the moment they start typing (WhatsApp-style).
+  bool _lastOtherTyping = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addObserver(this);
     _setupConnectivity();
-    _scrollController.addListener(_handleScroll);
+    // Focusing the input opens the keyboard — follow to the latest
+    // message so it's never hidden behind the keyboard.
+    _focusNode.addListener(_onInputFocusChange);
+  }
+
+  @override
+  void didChangeMetrics() {
+    // The keyboard opening/closing changes the bottom inset. While the
+    // input is focused, keep the latest message pinned above the
+    // keyboard as it animates in (WhatsApp behaviour). Guarded to focus
+    // so an unrelated metrics change never yanks the list.
+    if (!_focusNode.hasFocus) return;
+    _scrollToLatest(animate: false);
   }
 
   @override
@@ -160,46 +170,44 @@ class _ChatSessionViewState extends State<ChatSessionView>
   void dispose() {
     WidgetsBinding.instance.removeObserver(this);
     _connSub?.cancel();
-    _scrollController.removeListener(_handleScroll);
+    _focusNode.removeListener(_onInputFocusChange);
     _messageController.dispose();
     _scrollController.dispose();
     _focusNode.dispose();
     super.dispose();
   }
 
-  // 100px window that counts as "at the bottom". Picked to forgive a
-  // small accidental swipe-up from the input region without us
-  // suppressing the auto-scroll the user actually wants.
-  bool _isAtBottom({double threshold = 100}) {
-    if (!_scrollController.hasClients) return true;
-    final pos = _scrollController.position;
-    return pos.maxScrollExtent - pos.pixels <= threshold;
+  // Always keep the conversation pinned to the newest message. animate
+  // for live arrivals / typing / focus; jump for first-open and
+  // keyboard tracking so it never flashes through old content.
+  void _scrollToLatest({bool animate = true}) {
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted || !_scrollController.hasClients) return;
+      final target = _scrollController.position.maxScrollExtent;
+      if (animate) {
+        _scrollController.animateTo(
+          target,
+          duration: const Duration(milliseconds: 240),
+          curve: Curves.easeOutCubic,
+        );
+      } else {
+        _scrollController.jumpTo(target);
+      }
+    });
   }
 
-  // Fires on manual scroll. Once the user reaches the bottom on
-  // their own, we know they've caught up — drop the pill.
-  void _handleScroll() {
-    if (!mounted) return;
-    if (!_showNewMessagePill) return;
-    if (_isAtBottom()) {
-      setState(() => _showNewMessagePill = false);
-    }
+  // Focusing the input (keyboard about to open) → follow to the latest
+  // message so it isn't hidden behind the keyboard.
+  void _onInputFocusChange() {
+    if (_focusNode.hasFocus) _scrollToLatest();
   }
 
-  // Tapping the pill: hop to bottom and dismiss. Also called when
-  // sending an outbound message while the user happens to be
-  // scrolled up — the act of sending implies they want to follow.
-  void _scrollToBottom() {
-    HapticFeedback.lightImpact();
-    if (!_scrollController.hasClients) return;
-    _scrollController.animateTo(
-      _scrollController.position.maxScrollExtent,
-      duration: const Duration(milliseconds: 280),
-      curve: Curves.easeOutCubic,
-    );
-    if (_showNewMessagePill) {
-      setState(() => _showNewMessagePill = false);
-    }
+  // The other side starting to type → reveal the typing footer by
+  // following to the bottom, the way WhatsApp does.
+  void _maybeScrollOnTyping(bool otherTyping) {
+    if (otherTyping == _lastOtherTyping) return;
+    _lastOtherTyping = otherTyping;
+    if (otherTyping) _scrollToLatest();
   }
 
   // Hide the empty-chat illustration when there's anything else to
@@ -315,6 +323,9 @@ class _ChatSessionViewState extends State<ChatSessionView>
     final otherTypingSince = widget.isUserSide
         ? session.priestTypingSince
         : session.userTypingSince;
+    // Follow to the latest message when the other side starts typing so
+    // the "is typing…" footer is always visible.
+    _maybeScrollOnTyping(otherTyping);
 
     return SafeArea(
       bottom: false,
@@ -325,6 +336,8 @@ class _ChatSessionViewState extends State<ChatSessionView>
             photoUrl: otherPhoto,
             name: otherName,
             elapsed: state.formattedTime,
+            ratePerMinute: state.session.ratePerMinute,
+            isUserSide: widget.isUserSide,
             isEnding: state.isEnding,
             isOffline: _isOffline,
             onEndTap: _showEndConfirmation,
@@ -364,26 +377,6 @@ class _ChatSessionViewState extends State<ChatSessionView>
                               .setReplyTarget(message);
                         },
                       ),
-                // "↓ New message" pill — only meaningful while the
-                // user is scrolled up. IgnorePointer when hidden so
-                // it never eats taps over the message list. Pure
-                // opacity fade keeps the transition cheap.
-                Positioned(
-                  left: 0,
-                  right: 0,
-                  bottom: 12,
-                  child: IgnorePointer(
-                    ignoring: !_showNewMessagePill,
-                    child: AnimatedOpacity(
-                      duration: const Duration(milliseconds: 180),
-                      curve: Curves.easeOutCubic,
-                      opacity: _showNewMessagePill ? 1.0 : 0.0,
-                      child: Center(
-                        child: _NewMessagePill(onTap: _scrollToBottom),
-                      ),
-                    ),
-                  ),
-                ),
               ],
             ),
           ),
@@ -424,13 +417,6 @@ class _ChatSessionViewState extends State<ChatSessionView>
   void _maybeAutoScroll(List<ChatMessage> messages) {
     if (messages.isEmpty) {
       _lastMessageId = null;
-      if (_showNewMessagePill) {
-        // Defer the setState — we're inside a build. Empty list
-        // means there's nothing to be "behind on" anymore.
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (mounted) setState(() => _showNewMessagePill = false);
-        });
-      }
       return;
     }
     final latestId = messages.last.id;
@@ -444,47 +430,13 @@ class _ChatSessionViewState extends State<ChatSessionView>
       HapticFeedback.selectionClick();
     }
 
-    // First message-id transition (null → real id) is the chat
-    // opening with existing history. Chat convention says land on
-    // the latest bubble — `wasOurs || atBottom` would leave a user
-    // who last *received* a message stranded at the oldest message.
-    // Jump (not animate) so we don't flash through old content.
+    // Always follow to the newest message. First open (null → real id)
+    // jumps so we don't flash through old history; later arrivals
+    // animate. The user can still freely scroll up to read older
+    // content — the next message brings them back to the latest.
     final isFirstOpen = !hadPrevious;
     _lastMessageId = latestId;
-
-    WidgetsBinding.instance.addPostFrameCallback((_) {
-      if (!mounted) return;
-      if (!_scrollController.hasClients) return;
-
-      if (isFirstOpen) {
-        _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
-        if (_showNewMessagePill) {
-          setState(() => _showNewMessagePill = false);
-        }
-        return;
-      }
-
-      // Auto-follow only when (a) the message is ours — sending
-      // implies "show me what I just said" — or (b) we were
-      // already near the bottom. If the user is scrolled up
-      // reading older content, surface the pill instead so we
-      // never yank them away from what they're reading.
-      final atBottom = _isAtBottom();
-      if (wasOurs || atBottom) {
-        _scrollController.animateTo(
-          _scrollController.position.maxScrollExtent,
-          duration: const Duration(milliseconds: 240),
-          curve: Curves.easeOutCubic,
-        );
-        if (_showNewMessagePill) {
-          setState(() => _showNewMessagePill = false);
-        }
-      } else {
-        if (!_showNewMessagePill) {
-          setState(() => _showNewMessagePill = true);
-        }
-      }
-    });
+    _scrollToLatest(animate: !isFirstOpen);
   }
 
   void _maybeBuzzOnLowBalance(bool isLow) {
@@ -614,6 +566,10 @@ class _ChatTopBar extends StatelessWidget {
   final String photoUrl;
   final String name;
   final String elapsed;
+  final int ratePerMinute;
+  // The rate line is user-only: the priest earns rather than pays, so
+  // a per-minute "cost" would be wrong to show them.
+  final bool isUserSide;
   final bool isEnding;
   // True when the device has no network connectivity. Surfaces a
   // small amber pill in the bar so the user understands why their
@@ -625,6 +581,8 @@ class _ChatTopBar extends StatelessWidget {
     required this.photoUrl,
     required this.name,
     required this.elapsed,
+    required this.ratePerMinute,
+    required this.isUserSide,
     required this.isEnding,
     required this.isOffline,
     required this.onEndTap,
@@ -681,12 +639,36 @@ class _ChatTopBar extends StatelessWidget {
                             ),
                           ),
                           const SizedBox(width: 5),
-                          Text(
-                            'In session',
-                            style: GoogleFonts.inter(
-                              fontSize: 12,
-                              fontWeight: FontWeight.w400,
-                              color: _kSessionGreen,
+                          // Status + rate live in ONE rich text wrapped
+                          // in Flexible, so they share a single width
+                          // budget and ellipsis gracefully instead of
+                          // overflowing the bar. User side appends the
+                          // rate; the priest sees just "In session".
+                          Flexible(
+                            child: Text.rich(
+                              TextSpan(
+                                children: [
+                                  TextSpan(
+                                    text: 'In session',
+                                    style: GoogleFonts.inter(
+                                      fontSize: 12,
+                                      fontWeight: FontWeight.w400,
+                                      color: _kSessionGreen,
+                                    ),
+                                  ),
+                                  if (isUserSide)
+                                    TextSpan(
+                                      text: ' · $ratePerMinute coins/min',
+                                      style: GoogleFonts.inter(
+                                        fontSize: 12,
+                                        fontWeight: FontWeight.w400,
+                                        color: AppColors.muted,
+                                      ),
+                                    ),
+                                ],
+                              ),
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
                             ),
                           ),
                         ],
@@ -803,31 +785,27 @@ class _TimerPill extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-      decoration: BoxDecoration(
-        color: AppColors.primaryBrown.withValues(alpha: 0.08),
-        borderRadius: BorderRadius.circular(20),
-      ),
-      child: Row(
-        mainAxisSize: MainAxisSize.min,
-        children: [
-          AppIcon(
-            AppIcons.clock,
-            size: 14,
-            color: AppColors.primaryBrown,
+    // Quiet, minimal timer — no filled pill, muted colour and small
+    // text. It's secondary context, so it steps back visually and
+    // frees horizontal room for the status + rate line.
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        AppIcon(
+          AppIcons.clock,
+          size: 12,
+          color: AppColors.muted,
+        ),
+        const SizedBox(width: 4),
+        Text(
+          elapsed,
+          style: GoogleFonts.inter(
+            fontSize: 12,
+            fontWeight: FontWeight.w500,
+            color: AppColors.muted,
           ),
-          const SizedBox(width: 6),
-          Text(
-            elapsed,
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: AppColors.primaryBrown,
-            ),
-          ),
-        ],
-      ),
+        ),
+      ],
     );
   }
 }
@@ -2513,52 +2491,6 @@ class _CenteredLoader extends StatelessWidget {
 // Floats over the bottom-center of the message list when an inbound
 // message arrives while the user is scrolled up reading older
 // content. Tapping hops them to the bottom and dismisses the pill.
-
-class _NewMessagePill extends StatelessWidget {
-  final VoidCallback onTap;
-  const _NewMessagePill({required this.onTap});
-
-  @override
-  Widget build(BuildContext context) {
-    return GestureDetector(
-      behavior: HitTestBehavior.opaque,
-      onTap: onTap,
-      child: Container(
-        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
-        decoration: BoxDecoration(
-          color: AppColors.primaryBrown,
-          borderRadius: BorderRadius.circular(20),
-          boxShadow: [
-            BoxShadow(
-              color: AppColors.primaryBrown.withValues(alpha: 0.25),
-              blurRadius: 12,
-              offset: const Offset(0, 4),
-            ),
-          ],
-        ),
-        child: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const AppIcon(
-              AppIcons.arrowDown,
-              size: 14,
-              color: Colors.white,
-            ),
-            const SizedBox(width: 6),
-            Text(
-              'New message',
-              style: GoogleFonts.inter(
-                fontSize: 12,
-                fontWeight: FontWeight.w700,
-                color: Colors.white,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
 
 // ─── Swipe-to-reply ──────────────────────────────────────
 

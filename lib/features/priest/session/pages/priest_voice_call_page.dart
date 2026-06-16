@@ -38,30 +38,18 @@ class PriestVoiceCallPage extends StatelessWidget {
   }
 
   void _onEnded(BuildContext context, VoiceCallEnded state) {
-    // Branch on who/what ended the call:
-    //   • priest_ended → priest tapped End → normal summary page.
-    //   • everything else (user_ended, balance_zero, watchdog_timeout,
-    //     external) → SessionDroppedPage so we explain the drop and
-    //     show what they earned.
-    if (state.endReason == 'priest_ended') {
-      context.go(
-        '/session/priest-summary',
-        extra: {
-          'summary': state.summary,
-          'session': state.session,
-          'endReason': state.endReason,
-        },
-      );
-    } else {
-      context.go(
-        '/priest/session-dropped',
-        extra: {
-          'session': state.session,
-          'earned': state.summary.priestEarnings,
-          'duration': state.summary.durationMinutes,
-          'endReason': state.endReason,
-        },
-      );
-    }
+    // Every end reason — priest_ended, user_ended, balance_zero,
+    // watchdog_timeout, network_disconnected, connection_failed,
+    // external — routes to the same summary page so the priest always
+    // sees the identical full breakdown (duration, gross, commission,
+    // net), no matter how the session ended.
+    context.go(
+      '/session/priest-summary',
+      extra: {
+        'summary': state.summary,
+        'session': state.session,
+        'endReason': state.endReason,
+      },
+    );
   }
 }

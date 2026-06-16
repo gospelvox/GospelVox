@@ -51,20 +51,9 @@ class _SessionSummaryPageState extends State<SessionSummaryPage>
     super.dispose();
   }
 
-  String get _endCopy {
-    switch (widget.endReason) {
-      case 'balance_zero':
-        return "The user's balance ran out — the session ended "
-            'automatically.';
-      case 'user_ended':
-        return 'The user ended the session.';
-      case 'external':
-      case 'completed':
-        return 'The session has ended.';
-      default:
-        return 'The session has ended.';
-    }
-  }
+  // Neutral, context-free line — the priest sees the same summary
+  // regardless of how the session ended.
+  String get _endCopy => 'The session has ended.';
 
   @override
   Widget build(BuildContext context) {

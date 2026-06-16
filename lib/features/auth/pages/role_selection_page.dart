@@ -1,7 +1,11 @@
 // Role selection screen — landing page for unauthenticated users
 //
-// Admin login is hidden behind a long-press on the "Who are you?" heading.
-// We don't want a visible "Admin" link in the consumer-facing UI.
+// Admin login is hidden behind a secret tap SEQUENCE on the existing
+// cards + heading (see _kAdminUnlockSequence). There is nothing visible
+// on screen — only someone who already knows the sequence can open the
+// admin sheet, and the sheet itself still requires admin credentials.
+
+import 'dart:async';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -25,6 +29,25 @@ class RoleSelectionPage extends StatefulWidget {
 class _RoleSelectionPageState extends State<RoleSelectionPage>
     with SingleTickerProviderStateMixin {
   String? _selectedRole;
+
+  // ─── Hidden admin unlock ──────────────────────────────────
+  // A secret tap sequence on the existing UI opens the admin sheet —
+  // invisible to anyone who doesn't already know it. Tokens:
+  //   'member'  = tap the Member card
+  //   'speaker' = tap the Speaker card
+  //   'heading' = tap the "Who are you?" text
+  // Sequence: Speaker, Member, Member, Speaker, then double-tap the
+  // heading, then triple-tap Speaker.
+  static const List<String> _kAdminUnlockSequence = [
+    'speaker', 'member', 'member', 'speaker',
+    'heading', 'heading',
+    'speaker', 'speaker', 'speaker',
+  ];
+  final List<String> _adminSeq = [];
+  Timer? _adminSeqResetTimer;
+  // Deliberate delay between a correct sequence and the sheet opening,
+  // so an onlooker can't tie the taps to the result.
+  Timer? _adminOpenTimer;
 
   late final AnimationController _controller;
   late final Animation<double> _headingFade;
@@ -92,6 +115,8 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
 
   @override
   void dispose() {
+    _adminSeqResetTimer?.cancel();
+    _adminOpenTimer?.cancel();
     _controller.dispose();
     super.dispose();
   }
@@ -113,6 +138,45 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
         child: const AdminLoginBottomSheet(),
       ),
     );
+  }
+
+  // Records one step of the hidden admin unlock sequence. Keeps only the
+  // last N taps so stray taps never block a correct run, and resets if
+  // the user pauses >5s between taps so the gesture stays deliberate.
+  // `context` MUST be a context from below the AuthCubit provider (the
+  // BlocBuilder's builder context) — _showAdminLogin reads AuthCubit
+  // from it. The State's own `this.context` sits ABOVE the provider
+  // (it's created inside build), so passing it would throw
+  // ProviderNotFoundException.
+  void _recordAdminTap(String token, BuildContext context) {
+    _adminSeq.add(token);
+    if (_adminSeq.length > _kAdminUnlockSequence.length) {
+      _adminSeq.removeRange(
+          0, _adminSeq.length - _kAdminUnlockSequence.length);
+    }
+
+    _adminSeqResetTimer?.cancel();
+    _adminSeqResetTimer =
+        Timer(const Duration(seconds: 5), () => _adminSeq.clear());
+
+    if (_matchesAdminSequence()) {
+      _adminSeq.clear();
+      _adminSeqResetTimer?.cancel();
+      // Wait 5s after the correct sequence before opening the sheet.
+      _adminOpenTimer?.cancel();
+      _adminOpenTimer = Timer(const Duration(seconds: 5), () {
+        if (!mounted) return;
+        _showAdminLogin(context);
+      });
+    }
+  }
+
+  bool _matchesAdminSequence() {
+    if (_adminSeq.length != _kAdminUnlockSequence.length) return false;
+    for (var i = 0; i < _adminSeq.length; i++) {
+      if (_adminSeq[i] != _kAdminUnlockSequence[i]) return false;
+    }
+    return true;
   }
 
   @override
@@ -146,10 +210,10 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
                           child: Padding(
                             padding: EdgeInsets.symmetric(
                                 horizontal: horizontalPadding),
-                            child: GestureDetector(
-                              onLongPress: () => _showAdminLogin(context),
-                              behavior: HitTestBehavior.opaque,
-                              child: _Heading(isSmallScreen: isSmallScreen),
+                            child: _Heading(
+                              isSmallScreen: isSmallScreen,
+                              onSecretTap: () =>
+                                  _recordAdminTap('heading', context),
                             ),
                           ),
                         ),
@@ -169,8 +233,10 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
                                   otherSelected: _selectedRole == 'priest',
                                   fadeAnimation: _userFade,
                                   scaleAnimation: _userScale,
-                                  onTap: () =>
-                                      setState(() => _selectedRole = 'user'),
+                                  onTap: () {
+                                    setState(() => _selectedRole = 'user');
+                                    _recordAdminTap('member', context);
+                                  },
                                 ),
                               ),
                               const _OrSeparator(),
@@ -183,8 +249,10 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
                                   otherSelected: _selectedRole == 'user',
                                   fadeAnimation: _speakerFade,
                                   scaleAnimation: _speakerScale,
-                                  onTap: () => setState(
-                                      () => _selectedRole = 'priest'),
+                                  onTap: () {
+                                    setState(() => _selectedRole = 'priest');
+                                    _recordAdminTap('speaker', context);
+                                  },
                                 ),
                               ),
                               const SizedBox(height: 16),
@@ -227,21 +295,28 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
 
 class _Heading extends StatelessWidget {
   final bool isSmallScreen;
+  final VoidCallback onSecretTap;
 
-  const _Heading({required this.isSmallScreen});
+  const _Heading({required this.isSmallScreen, required this.onSecretTap});
 
   @override
   Widget build(BuildContext context) {
     return Align(
       alignment: Alignment.centerLeft,
-      child: Text(
-        'Who are\nyou?',
-        style: GoogleFonts.inter(
-          fontSize: isSmallScreen ? 32 : 40,
-          fontWeight: FontWeight.w900,
-          color: AppColors.black,
-          letterSpacing: isSmallScreen ? -0.96 : -1.2,
-          height: 1.1,
+      // GestureDetector wraps ONLY the text, so the hidden trigger's hit
+      // area is the glyphs themselves — not the full-width band the old
+      // long-press used (which made the empty right side hot too).
+      child: GestureDetector(
+        onTap: onSecretTap,
+        child: Text(
+          'Who are\nyou?',
+          style: GoogleFonts.inter(
+            fontSize: isSmallScreen ? 32 : 40,
+            fontWeight: FontWeight.w900,
+            color: AppColors.black,
+            letterSpacing: isSmallScreen ? -0.96 : -1.2,
+            height: 1.1,
+          ),
         ),
       ),
     );

@@ -21,6 +21,7 @@ import 'package:gospel_vox/core/utils/bloc_observer.dart';
 import 'package:gospel_vox/core/widgets/bible_session_live_overlay.dart';
 import 'package:gospel_vox/core/widgets/missed_request_foreground_banner.dart';
 import 'package:gospel_vox/core/widgets/offline_banner.dart';
+import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/firebase_options.dart';
 
 // Suppresses noise from third-party packages that print directly when
@@ -90,6 +91,15 @@ void main() async {
   // store-unavailable / non-Android fallback internally and never
   // throws out of init.
   unawaited(sl<IapService>().init());
+
+  // Warm up Google Play Services in the background so the user's first
+  // sign-in tap succeeds instead of soft-cancelling against cold Play
+  // Services (which otherwise needs a second tap). Fire-and-forget —
+  // never blocks boot, and never touches Firebase auth state: for a
+  // signed-out user signInSilently is a no-op (sign-out clears the
+  // Google session), so the account picker still shows exactly as
+  // before, and it skips entirely when a user is already signed in.
+  unawaited(sl<AuthRepository>().warmUpGoogleSignIn());
 
   Bloc.observer = AppBlocObserver();
 

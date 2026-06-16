@@ -96,6 +96,27 @@ class AuthRepository {
     return false;
   }
 
+  // Warms up Google Play Services at app boot so the user's FIRST
+  // sign-in tap succeeds, instead of soft-cancelling against cold Play
+  // Services and needing a second tap. Strictly a warm-up:
+  //   • Skipped entirely when already signed in (no sign-in pending).
+  //   • signInSilently only restores a PREVIOUSLY-cached Google session.
+  //     signOut() clears that session (_googleSignIn.signOut()), so for
+  //     a signed-out user this returns null — the account picker still
+  //     shows on the next tap, exactly as before.
+  //   • It never calls signInWithCredential, so it can NEVER change
+  //     Firebase auth state or silently log anyone in.
+  //   • Best-effort: any failure is swallowed; the tap flow keeps its
+  //     own retry loop unchanged.
+  Future<void> warmUpGoogleSignIn() async {
+    if (currentUser != null) return;
+    try {
+      await _googleSignIn.signInSilently();
+    } catch (_) {
+      // Warm-up only — a failure here is harmless.
+    }
+  }
+
   Future<UserCredential> signInWithApple() {
     return _signInWithAppleInternal().timeout(_kAuthTimeout);
   }

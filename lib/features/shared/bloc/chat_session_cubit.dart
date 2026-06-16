@@ -85,10 +85,13 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
 
   static const int _kPresenceWriteSeconds = 8;
   // Peer considered gone after this much silence following their LAST
-  // seen ping. ~3 missed pings: generous enough to ride out a brief
-  // background/network blip, tight enough that an abandoned chat stops
-  // billing within ~half a minute.
-  static const int _kPeerStaleSeconds = 25;
+  // seen ping. At an 8s write cadence this is ~2 missed pings: still
+  // rides out a single brief network blip (and the _myPresence guard
+  // below ignores the signal entirely when MY OWN link is the suspect),
+  // but ends an abandoned chat in ~15-20s incl. the 5s check tick so a
+  // killed user frees the priest quickly. Lower than this starts false-
+  // ending real chats on ordinary mobile-data hiccups.
+  static const int _kPeerStaleSeconds = 15;
   // How recently MY OWN presence write must have succeeded for me to
   // trust the peer-stale signal. If my writes have been failing longer
   // than this, my connection is the suspect — defer the decision to
@@ -110,6 +113,12 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   // Lets us debounce: a single transition write covers the whole
   // typing burst, instead of writing on every keystroke.
   bool _localTypingActive = false;
+
+  // When we last wrote typing:true. Used to periodically re-stamp
+  // typingSince during a long typing burst so the receiver's 30s
+  // staleness guard doesn't hide the indicator while the user is
+  // genuinely still typing a long message.
+  DateTime? _lastTypingWrite;
 
   // Optimistic outbound bubbles awaiting Firestore confirmation.
   // Each entry is keyed by a tempId; once the messages stream
@@ -694,8 +703,17 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void onUserTyping() {
     if (isClosed) return;
 
-    if (!_localTypingActive) {
+    final now = DateTime.now();
+    // Write typing:true on the leading edge AND re-stamp it every 15s
+    // of continuous typing. The re-stamp keeps typingSince fresh so the
+    // receiver's 30s staleness guard never hides the indicator while
+    // the user is still typing a long message. Short messages (typed in
+    // under 15s) still produce just the one leading-edge write.
+    if (!_localTypingActive ||
+        _lastTypingWrite == null ||
+        now.difference(_lastTypingWrite!).inSeconds >= 15) {
       _localTypingActive = true;
+      _lastTypingWrite = now;
       _repository.setTyping(
         sessionId: _sessionId,
         isUserSide: _isUserSide,
@@ -710,6 +728,7 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   void _stopTyping() {
     if (!_localTypingActive) return;
     _localTypingActive = false;
+    _lastTypingWrite = null;
     _typingIdleTimer?.cancel();
     _typingIdleTimer = null;
     if (isClosed) return;

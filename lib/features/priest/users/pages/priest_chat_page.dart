@@ -88,8 +88,10 @@ class _CallEntryRow extends _Row {
   const _CallEntryRow({required this.message, required this.isMine});
 }
 
-class _PriestChatPageState extends State<PriestChatPage> {
+class _PriestChatPageState extends State<PriestChatPage>
+    with WidgetsBindingObserver {
   final TextEditingController _textController = TextEditingController();
+  final FocusNode _focusNode = FocusNode();
   final ScrollController _scrollController = ScrollController();
 
   bool _isLoading = true;
@@ -107,16 +109,39 @@ class _PriestChatPageState extends State<PriestChatPage> {
   @override
   void initState() {
     super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    // Focusing the input opens the keyboard — follow to the latest
+    // message so it stays visible above it (WhatsApp-style).
+    _focusNode.addListener(_onInputFocusChange);
     _load();
     _attachStream();
   }
 
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    _focusNode.removeListener(_onInputFocusChange);
     _freeMessagesSub?.cancel();
     _textController.dispose();
+    _focusNode.dispose();
     _scrollController.dispose();
     super.dispose();
+  }
+
+  void _onInputFocusChange() {
+    if (_focusNode.hasFocus) _scheduleScrollToBottom();
+  }
+
+  @override
+  void didChangeMetrics() {
+    // Keep the latest message pinned above the keyboard as it animates
+    // in. Guarded to focus so an unrelated metrics change never yanks
+    // the list.
+    if (!_focusNode.hasFocus) return;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!_scrollController.hasClients) return;
+      _scrollController.jumpTo(_scrollController.position.maxScrollExtent);
+    });
   }
 
   Future<void> _load() async {
@@ -515,6 +540,7 @@ class _PriestChatPageState extends State<PriestChatPage> {
                   ),
                   child: TextField(
                     controller: _textController,
+                    focusNode: _focusNode,
                     maxLines: null,
                     minLines: 1,
                     textCapitalization: TextCapitalization.sentences,
