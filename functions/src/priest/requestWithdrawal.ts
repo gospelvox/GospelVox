@@ -86,12 +86,17 @@ export const requestWithdrawal = onCall(
 
     // Settings (the admin-tunable minimum) are read outside the
     // transaction because they don't need to be atomic with the
-    // balance debit — minWithdrawalAmount is stable per deploy and
-    // pulling it inside the txn would force the txn to retry on any
-    // unrelated settings write.
+    // balance debit — the minimum is stable per deploy and pulling it
+    // inside the txn would force the txn to retry on any unrelated
+    // settings write.
+    //
+    // Reads `minWithdrawal` — the SAME key the admin Settings screen
+    // and the seed write. (Previously this read `minWithdrawalAmount`,
+    // which nothing ever wrote, so the admin/seed value was ignored
+    // and this silently fell back to the default.)
     const settingsDoc = await db.doc("app_config/settings").get();
     const minAmount = Number(
-      settingsDoc.data()?.minWithdrawalAmount ?? 100,
+      settingsDoc.data()?.minWithdrawal ?? 1000,
     );
 
     if (amount < minAmount) {
