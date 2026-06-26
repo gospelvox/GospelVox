@@ -61,7 +61,7 @@ for as long as the law requires:
 
 | Record | Why we keep it | Period |
 |---|---|---|
-| Financial transaction records (Coin purchases, Speaker earnings, withdrawals) | Income Tax Act, 1961 and GST law — bookkeeping obligation | **8 years** from the end of the relevant financial year |
+| Financial transaction records (Coin purchases, Speaker earnings, withdrawals) | Income Tax Act, 1961 — bookkeeping obligation | **8 years** from the end of the relevant financial year |
 | Speaker KYC documents (ID proof, ministry certificate) | KYC / AML obligations on Speakers who received payouts | **5–8 years** depending on the obligation |
 | Records needed to defend, exercise, or establish legal claims | Lawful interest of the operator | Duration of the claim plus limitation period |
 | Aggregated, non-identifying analytics | Service improvement; no longer identifies you | Indefinite |
@@ -89,9 +89,9 @@ backend services:
   or anonymised within 30 days.
 - **OneSignal** — your push-notification subscription is removed
   within 30 days.
-- **Razorpay** — Razorpay retains transaction records under its own
-  obligations (RBI rules and Indian tax law); we cannot delete those
-  records.
+- **Google Play / Google Payments** — Google retains your in-app
+  purchase and transaction records under its own obligations and
+  applicable law; we cannot delete the records Google holds.
 
 ## Reactivating after deletion
 

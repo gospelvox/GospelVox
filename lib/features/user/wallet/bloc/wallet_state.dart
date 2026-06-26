@@ -9,9 +9,6 @@ class WalletLoading extends WalletState {}
 class WalletLoaded extends WalletState {
   final int balance;
   final List<CoinPackModel> packs;
-  final bool showWelcomeOffer;
-  final int welcomeOfferCoins;
-  final int welcomeOfferPrice;
   final String? selectedPackId;
 
   // `isPurchasing` lives on WalletLoaded (rather than a separate
@@ -24,9 +21,6 @@ class WalletLoaded extends WalletState {
   WalletLoaded({
     required this.balance,
     required this.packs,
-    required this.showWelcomeOffer,
-    required this.welcomeOfferCoins,
-    required this.welcomeOfferPrice,
     this.selectedPackId,
     this.isPurchasing = false,
   });
@@ -43,18 +37,12 @@ class WalletLoaded extends WalletState {
   WalletLoaded copyWith({
     int? balance,
     List<CoinPackModel>? packs,
-    bool? showWelcomeOffer,
-    int? welcomeOfferCoins,
-    int? welcomeOfferPrice,
     String? selectedPackId,
     bool? isPurchasing,
   }) {
     return WalletLoaded(
       balance: balance ?? this.balance,
       packs: packs ?? this.packs,
-      showWelcomeOffer: showWelcomeOffer ?? this.showWelcomeOffer,
-      welcomeOfferCoins: welcomeOfferCoins ?? this.welcomeOfferCoins,
-      welcomeOfferPrice: welcomeOfferPrice ?? this.welcomeOfferPrice,
       selectedPackId: selectedPackId ?? this.selectedPackId,
       isPurchasing: isPurchasing ?? this.isPurchasing,
     );

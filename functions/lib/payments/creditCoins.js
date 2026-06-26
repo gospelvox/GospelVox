@@ -21,8 +21,25 @@ const sendPush_1 = require("../notifications/sendPush");
 const db = admin.firestore();
 async function creditCoins(args) {
     var _a, _b;
-    const { uid, coins, packId, amountPaidRupees, ledgerExtra } = args;
+    const { uid, coins, packId, amountPaidRupees, ledgerExtra, purchaseToken, } = args;
     const batch = db.batch();
+    // Atomic idempotency guard. batch.create() requires the doc to
+    // NOT already exist; if a concurrent call already credited this
+    // token, this create fails the entire batch (ALREADY_EXISTS), so
+    // the balance is never incremented twice for one purchase. Doc id
+    // IS the purchase token. Skipped only if no token was supplied
+    // (keeps the helper usable by a non-Play caller).
+    if (purchaseToken) {
+        const purchaseRef = db.doc(`purchases/${purchaseToken}`);
+        batch.create(purchaseRef, {
+            userId: uid,
+            kind: "coin_purchase",
+            provider: "play",
+            packId,
+            coins,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+        });
+    }
     const userRef = db.doc(`users/${uid}`);
     batch.update(userRef, {
         coinBalance: admin.firestore.FieldValue.increment(coins),

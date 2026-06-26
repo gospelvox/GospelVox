@@ -1,6 +1,8 @@
 // States for the admin session monitor. Sealed so missing variants
 // fail at analyze time instead of as a blank screen in prod.
 
+import 'package:flutter/foundation.dart';
+
 import 'package:gospel_vox/features/admin/sessions/data/admin_session_model.dart';
 
 sealed class AdminSessionsState {}
@@ -40,6 +42,23 @@ class AdminSessionsLoaded extends AdminSessionsState {
       activeCount: activeCount ?? this.activeCount,
     );
   }
+
+  // Value equality so a redundant emit (same list, same filter, same
+  // count — e.g. a heartbeat-only Firestore tick) is a no-op and the
+  // monitor doesn't rebuild. listEquals does an element-wise compare,
+  // which leans on AdminSessionModel's own == override.
+  @override
+  bool operator ==(Object other) {
+    return identical(this, other) ||
+        other is AdminSessionsLoaded &&
+            other.filter == filter &&
+            other.activeCount == activeCount &&
+            listEquals(other.sessions, sessions);
+  }
+
+  @override
+  int get hashCode =>
+      Object.hash(filter, activeCount, Object.hashAll(sessions));
 }
 
 class AdminSessionsError extends AdminSessionsState {

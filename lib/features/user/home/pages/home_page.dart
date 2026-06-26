@@ -795,84 +795,6 @@ class _HomeViewState extends State<_HomeView>
     );
   }
 
-  Widget _buildSearchBar() {
-    return Container(
-      height: 52,
-      decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: AppColors.borderLight, width: 0.5),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.035),
-            blurRadius: 6,
-            offset: const Offset(0, 2),
-          ),
-        ],
-      ),
-      child: TextField(
-        controller: _searchController,
-        // Tapping anywhere outside the field dismisses the keyboard
-        // before the underlying tap fires its own handler (e.g. a
-        // priest-card push). Without this, a user mid-typing who
-        // tapped a card would land on the profile with the keyboard
-        // still visible.
-        onTapOutside: (_) =>
-            FocusManager.instance.primaryFocus?.unfocus(),
-        onChanged: (q) {
-          context.read<HomeCubit>().search(q);
-          setState(() {});
-        },
-        style: GoogleFonts.inter(
-          fontSize: 14,
-          fontWeight: FontWeight.w400,
-          color: AppColors.deepDarkBrown,
-        ),
-        decoration: InputDecoration(
-          hintText: 'Search priests, language, topic...',
-          hintStyle: GoogleFonts.inter(
-            fontSize: 14,
-            fontWeight: FontWeight.w400,
-            color: _C.muted.withValues(alpha: 0.7),
-          ),
-          prefixIcon: Padding(
-            padding: const EdgeInsets.only(left: 16, right: 8),
-            child: AppIcon(
-              AppIcons.search,
-              size: 22,
-              color: _C.muted.withValues(alpha: 0.75),
-            ),
-          ),
-          prefixIconConstraints: const BoxConstraints(
-            minWidth: 42,
-            minHeight: 40,
-          ),
-          suffixIcon: _searchController.text.isEmpty
-              ? null
-              : Padding(
-                  padding: const EdgeInsets.only(right: 10),
-                  child: _PressScale(
-                    onTap: () {
-                      _searchController.clear();
-                      context.read<HomeCubit>().search('');
-                      setState(() {});
-                    },
-                    scale: 0.9,
-                    child: AppIcon(
-                      AppIcons.close,
-                      size: 18,
-                      color: _C.muted,
-                    ),
-                  ),
-                ),
-          border: InputBorder.none,
-          isCollapsed: true,
-          contentPadding: const EdgeInsets.symmetric(vertical: 15),
-        ),
-      ),
-    );
-  }
-
   // ─── Filter chips ─────────────────────────────────────
 
   Widget _buildFilterChips() {
@@ -911,6 +833,13 @@ class _HomeViewState extends State<_HomeView>
     final sessions = _bibleSessions;
     final dotCount = sessions.length;
 
+    // When there are no upcoming Bible sessions, collapse the entire
+    // section (header + carousel + dots) so the feed drops straight to
+    // the "Trusted Spiritual Guidance" trust card below.
+    if (!showShimmer && sessions.isEmpty) {
+      return const SizedBox.shrink();
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -943,8 +872,11 @@ class _HomeViewState extends State<_HomeView>
           height: 140,
           child: showShimmer
               ? _SessionsCarouselShimmer()
+              // The empty case is handled by the early return above
+              // (the whole section collapses), so this branch only ever
+              // renders the live carousel.
               : sessions.isEmpty
-                  ? const _BibleEmptyRail()
+                  ? const SizedBox.shrink()
                   // viewportFraction is 1.0 (default) — one full
                   // banner per viewport, no peek of the next card.
                   // The 20-px horizontal gutter is applied inside
@@ -1851,23 +1783,23 @@ class _LivePill extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 4),
         decoration: BoxDecoration(
-          color: const Color(0xFFE53E3E).withValues(alpha: 0.1),
+          color: AppColors.liveRed.withValues(alpha: 0.1),
           borderRadius: BorderRadius.circular(12),
           border: Border.all(
-            color: const Color(0xFFE53E3E).withValues(alpha: 0.3),
+            color: AppColors.liveRed.withValues(alpha: 0.3),
           ),
         ),
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const PulsingDot(size: 6, color: Color(0xFFE53E3E)),
+            const PulsingDot(size: 6, color: AppColors.liveRed),
             const SizedBox(width: 5),
             Text(
               "$count Live",
               style: GoogleFonts.inter(
                 fontSize: 11,
                 fontWeight: FontWeight.w700,
-                color: const Color(0xFFE53E3E),
+                color: AppColors.liveRed,
               ),
             ),
           ],
@@ -2274,7 +2206,7 @@ class _BibleSessionBanner extends StatelessWidget {
     required this.onTap,
   });
 
-  static const _liveRed = Color(0xFFE53E3E);
+  static const _liveRed = AppColors.liveRed;
 
   String _bannerImage(String category) {
     // Lower-cased switch tolerates server typos like " Prayer" or
@@ -2533,224 +2465,6 @@ class _RegisterPill extends StatelessWidget {
   }
 }
 
-// Demo: while there are no upcoming Bible sessions, the carousel
-// slot shows the welcome-offer promo banner. The artwork (2:1) is
-// text-free; the overlay below renders the offer copy on the left
-// half so the praying-hands illustration on the right stays visible
-// on every phone. The dark veil at the left guarantees text
-// legibility; a softer veil at the right mutes the bright beam so
-// attention stays on the CTA.
-class _BibleEmptyRail extends StatelessWidget {
-  const _BibleEmptyRail();
-
-  @override
-  Widget build(BuildContext context) {
-    final dpr = MediaQuery.of(context).devicePixelRatio;
-    final screenWidth = MediaQuery.of(context).size.width;
-    final cardWidth = screenWidth - 40;
-    final cacheWidth = (cardWidth * dpr).round();
-
-    // Two-tone gold gradient on the CTA — gives the button depth
-    // and the "premium card" feel rather than a flat ad button.
-    const ctaTopGold = Color(0xFFEFC25C);
-    const ctaBottomGold = Color(0xFFD8A246);
-    const valueGold = Color(0xFFEFC25C);
-
-    return Padding(
-      padding: const EdgeInsets.symmetric(horizontal: 20),
-      child: ClipRRect(
-        borderRadius: BorderRadius.circular(20),
-        child: Stack(
-          children: [
-            Positioned.fill(
-              child: Image.asset(
-                'assets/file_00000000378c71fa8bd380482da69cd1.png',
-                fit: BoxFit.cover,
-                cacheWidth: cacheWidth,
-              ),
-            ),
-            // Left veil — bullet-proofs text legibility regardless
-            // of where BoxFit.cover lands the image edges.
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [
-                      Colors.black.withValues(alpha: 0.50),
-                      Colors.transparent,
-                    ],
-                    stops: const [0.0, 0.6],
-                  ),
-                ),
-              ),
-            ),
-            // Right-side dim — softens the bright top-right beam
-            // ~15% so it doesn't out-pull the CTA. A real fix is
-            // re-exporting the PNG with a calmer light source.
-            Positioned.fill(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    begin: Alignment.centerLeft,
-                    end: Alignment.centerRight,
-                    colors: [
-                      Colors.transparent,
-                      Colors.black.withValues(alpha: 0.18),
-                    ],
-                    stops: const [0.6, 1.0],
-                  ),
-                ),
-              ),
-            ),
-            // Top-anchored text column. Tightened to 14/12 to fit
-            // the carousel's reduced 140-px parent height — leaves
-            // ~6 px of safety margin below the CTA before clipping.
-            Padding(
-              padding: const EdgeInsets.fromLTRB(14, 14, 14, 12),
-              child: Align(
-                alignment: Alignment.topLeft,
-                child: ConstrainedBox(
-                  // 0.46 (down from 0.52) gives ~10% more breathing
-                  // room between the text block and the hands.
-                  constraints: BoxConstraints(maxWidth: cardWidth * 0.46),
-                  child: Column(
-                    mainAxisSize: MainAxisSize.min,
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    children: [
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 8,
-                          vertical: 3,
-                        ),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(999),
-                          border: Border.all(color: _C.goldLight, width: 1),
-                        ),
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            const AppIcon(
-                              AppIcons.gift,
-                              color: _C.goldLight,
-                              size: 10,
-                            ),
-                            const SizedBox(width: 4),
-                            Text(
-                              'WELCOME OFFER',
-                              style: GoogleFonts.inter(
-                                fontSize: 8.5,
-                                fontWeight: FontWeight.w700,
-                                letterSpacing: 0.6,
-                                color: _C.goldLight,
-                              ),
-                            ),
-                          ],
-                        ),
-                      ),
-                      const SizedBox(height: 9),
-                      // Price leads — bigger and brighter (with a
-                      // soft text-shadow lift) so the cost-to-value
-                      // is the first thing the eye lands on.
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'For ₹29',
-                          maxLines: 1,
-                          style: GoogleFonts.inter(
-                            fontSize: 17,
-                            fontWeight: FontWeight.w800,
-                            color: Colors.white,
-                            height: 1.05,
-                            shadows: [
-                              Shadow(
-                                color: Colors.black.withValues(alpha: 0.45),
-                                blurRadius: 6,
-                              ),
-                            ],
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 1),
-                      FittedBox(
-                        fit: BoxFit.scaleDown,
-                        alignment: Alignment.centerLeft,
-                        child: Text(
-                          'Get 100 Coins',
-                          maxLines: 1,
-                          style: GoogleFonts.inter(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: valueGold,
-                            height: 1.15,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 10),
-                      DecoratedBox(
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(10),
-                          gradient: const LinearGradient(
-                            begin: Alignment.topLeft,
-                            end: Alignment.bottomRight,
-                            colors: [ctaTopGold, ctaBottomGold],
-                          ),
-                          boxShadow: [
-                            BoxShadow(
-                              color: ctaTopGold.withValues(alpha: 0.38),
-                              blurRadius: 12,
-                              offset: const Offset(0, 2),
-                            ),
-                          ],
-                        ),
-                        child: const Padding(
-                          padding: EdgeInsets.symmetric(
-                            horizontal: 14,
-                            vertical: 8,
-                          ),
-                          child: _ClaimNowLabel(),
-                        ),
-                      ),
-                    ],
-                  ),
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _ClaimNowLabel extends StatelessWidget {
-  const _ClaimNowLabel();
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      mainAxisSize: MainAxisSize.min,
-      children: [
-        Text(
-          'Claim Now',
-          style: GoogleFonts.inter(
-            fontSize: 11.5,
-            fontWeight: FontWeight.w600,
-            color: _C.darkBrown,
-          ),
-        ),
-        const SizedBox(width: 5),
-        const AppIcon(
-          AppIcons.arrowRight,
-          size: 11,
-          color: _C.darkBrown,
-        ),
-      ],
-    );
-  }
-}
 
 // ─── Priest grid card ─────────────────────────────────────
 

@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.onBibleSessionRated = exports.createBibleSession = exports.verifyAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.requestWithdrawal = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyActivationPurchase = exports.verifyCoinPurchase = void 0;
+exports.onBibleSessionRated = exports.createBibleSession = exports.verifyAndJoinBibleSession = exports.startBibleSession = exports.bibleSessionReminders = exports.completeBibleSession = exports.notifyMeetLinkAdded = exports.onBibleRegistrationWrite = exports.notifyBibleSessionCancellation = exports.notifyAvailableSubscribers = exports.onUserCreated = exports.onPriestBankDetailsChanged = exports.blockWithdrawal = exports.onWithdrawalStatus = exports.requestWithdrawal = exports.onPriestRegistration = exports.onReportCreated = exports.onReportResolved = exports.approveRejectPriest = exports.getPublicPriestReviews = exports.backfillPriestReviews = exports.replyToReview = exports.onSessionRated = exports.onSessionTerminal = exports.sendPriestMessage = exports.sendFollowUp = exports.generateAgoraToken = exports.sessionWatchdog = exports.endSession = exports.billingTick = exports.expireSessionRequest = exports.createSessionRequest = exports.verifyActivationPurchase = exports.verifyCoinPurchase = void 0;
 const admin = require("firebase-admin");
 admin.initializeApp();
 // ═══ Payments ═══
@@ -55,6 +55,15 @@ var approveRejectPriest_1 = require("./admin/approveRejectPriest");
 Object.defineProperty(exports, "approveRejectPriest", { enumerable: true, get: function () { return approveRejectPriest_1.approveRejectPriest; } });
 var onReportResolved_1 = require("./admin/onReportResolved");
 Object.defineProperty(exports, "onReportResolved", { enumerable: true, get: function () { return onReportResolved_1.onReportResolved; } });
+// Admin-facing alerts (fan out to every users/{uid} with role=='admin'
+// via notifyAdmins). onReportCreated → new report filed; onPriest
+// Registration → new speaker application; the withdrawal-requested
+// alert is fired inline from requestWithdrawal. notifyAdmins itself is
+// a helper, not a deployed function, so it isn't exported here.
+var onReportCreated_1 = require("./admin/onReportCreated");
+Object.defineProperty(exports, "onReportCreated", { enumerable: true, get: function () { return onReportCreated_1.onReportCreated; } });
+var onPriestRegistration_1 = require("./admin/onPriestRegistration");
+Object.defineProperty(exports, "onPriestRegistration", { enumerable: true, get: function () { return onPriestRegistration_1.onPriestRegistration; } });
 // approveRejectMatrimony + updateAppConfig are unimplemented stubs —
 // not exported so they aren't deployed. Admin currently edits
 // app_config/settings directly via the Firestore-rules-protected
@@ -65,6 +74,18 @@ Object.defineProperty(exports, "onReportResolved", { enumerable: true, get: func
 // exported would deploy a CF that only throws.
 var requestWithdrawal_1 = require("./priest/requestWithdrawal");
 Object.defineProperty(exports, "requestWithdrawal", { enumerable: true, get: function () { return requestWithdrawal_1.requestWithdrawal; } });
+// Firestore trigger: notifies the priest at each withdrawal status
+// change (processing / sent + reference / on hold / cancelled).
+var onWithdrawalStatus_1 = require("./priest/onWithdrawalStatus");
+Object.defineProperty(exports, "onWithdrawalStatus", { enumerable: true, get: function () { return onWithdrawalStatus_1.onWithdrawalStatus; } });
+// Admin block & refund — transactional + idempotent (no double refund,
+// can't block a paid payout, writes the refund ledger row).
+var blockWithdrawal_1 = require("./priest/blockWithdrawal");
+Object.defineProperty(exports, "blockWithdrawal", { enumerable: true, get: function () { return blockWithdrawal_1.blockWithdrawal; } });
+// Re-snapshots on-hold withdrawals onto the priest's corrected bank
+// details and returns them to the admin's Pending queue.
+var onPriestBankDetailsChanged_1 = require("./priest/onPriestBankDetailsChanged");
+Object.defineProperty(exports, "onPriestBankDetailsChanged", { enumerable: true, get: function () { return onPriestBankDetailsChanged_1.onPriestBankDetailsChanged; } });
 // ═══ Users ═══
 var onUserCreated_1 = require("./users/onUserCreated");
 Object.defineProperty(exports, "onUserCreated", { enumerable: true, get: function () { return onUserCreated_1.onUserCreated; } });

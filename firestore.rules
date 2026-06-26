@@ -240,8 +240,13 @@ service cloud.firestore {
     }
 
     match /wallet_transactions/{transactionId} {
+      // Owner reads their own rows. Admin reads any row so the
+      // revenue dashboard can sum the `__platform__` commission rows
+      // (whose userId is the `__platform__` sentinel, never a real
+      // uid). Without the isAdmin() clause the admin client-SDK query
+      // is permission-denied and the dashboard silently shows ₹0.
       allow read: if request.auth != null
-                  && request.auth.uid == resource.data.userId;
+                  && (request.auth.uid == resource.data.userId || isAdmin());
 
       allow create: if false;
       allow update: if false;
@@ -261,11 +266,36 @@ service cloud.firestore {
       // skip the CF and write arbitrary pending payout rows directly.
       allow create: if false;
 
+      // Admin moves the payout through its lifecycle. The whitelist
+      // covers every field the admin actions write:
+      //   • status                         — pending->processing->paid,
+      //                                       or on_hold / blocked
+      //   • processingAt / processingBy    — when added to a bank batch
+      //   • paymentReference               — the UTR / wire ref entered
+      //                                       when marking it sent
+      //   • paidAt / paidBy                — when marked sent
+      //   • onHoldAt / onHoldReason / onHoldBy — when flagged for fixing
+      //   • blockedAt / blockedBy          — when cancelled + refunded
+      // The amount, priestId and snapshotted bank fields stay immutable
+      // (not on the list), so the admin can never alter where or how
+      // much money goes — only advance the status and attach a
+      // reference / reason. The priest notification is sent by a Cloud
+      // Function trigger reacting to the status change (notifications/*
+      // is create-only from the admin SDK).
       allow update: if isAdmin()
                     && request.resource.data.diff(resource.data).affectedKeys().hasOnly([
                       'status',
+                      'processingAt',
+                      'processingBy',
+                      'paymentReference',
+                      'transactionId',
+                      'referenceEditedAt',
+                      'referenceEditedBy',
                       'paidAt',
                       'paidBy',
+                      'onHoldAt',
+                      'onHoldReason',
+                      'onHoldBy',
                       'blockedAt',
                       'blockedBy'
                     ]);
@@ -307,7 +337,10 @@ service cloud.firestore {
 
     match /app_config/{document=**} {
       allow read: if request.auth != null;
-      allow write: if false;
+      // The admin Settings -> Configuration screen writes pricing /
+      // thresholds (e.g. minWithdrawal) directly to app_config/settings.
+      // Restricted to admins; every other signed-in user is read-only.
+      allow write: if isAdmin();
     }
 
     match /{document=**} {

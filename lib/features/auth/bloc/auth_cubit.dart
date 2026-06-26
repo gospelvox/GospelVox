@@ -235,6 +235,44 @@ class AuthCubit extends Cubit<AuthState> {
     }
   }
 
+  // Test/demo email+password sign-in for store reviewers (Play/App Store).
+  // Unlike [signInWithEmail] (admin-only), this respects whatever role the
+  // pre-provisioned demo account already has and routes straight there, so a
+  // single hidden form can log in as a demo user OR a demo priest. The
+  // account's Firestore `users/{uid}` doc must already exist with a role —
+  // we never create one here, so this can't be used to self-provision a role.
+  Future<void> signInWithEmailDemo(String email, String password) async {
+    if (_failIfOffline()) return;
+    emit(AuthLoading());
+
+    try {
+      final userCredential =
+          await _authRepository.signInWithEmail(email, password);
+      final user = userCredential.user!;
+
+      final role = await _authRepository.getUserRole(user.uid);
+
+      if (role == null) {
+        // Not a provisioned demo account — sign back out so we don't leave
+        // a half-authenticated session with no role to route to.
+        await _authRepository.signOut();
+        emit(AuthError('Demo account is not set up. Contact the developer.'));
+        return;
+      }
+
+      emit(AuthAuthenticated(uid: user.uid, role: role));
+    } on TimeoutException {
+      emit(AuthError(_kTimeoutMessage));
+    } on SocketException {
+      ConnectivityService().recordReachabilityFailure();
+      emit(AuthError(_kNoNetworkMessage));
+    } on FirebaseAuthException catch (e) {
+      emit(AuthError(_mapFirebaseAuthError(e.code)));
+    } catch (e) {
+      emit(AuthError(_kGenericMessage));
+    }
+  }
+
   Future<void> selectRole(String role, AuthNeedsRole needsRoleState) async {
     emit(AuthLoading());
 

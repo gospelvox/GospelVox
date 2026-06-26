@@ -48,14 +48,17 @@ class PriestWalletRepository {
         .toList();
   }
 
-  // Admin-tunable floor. Defaulting to ₹100 keeps things sane if
-  // the settings doc hasn't been created yet on a fresh project.
+  // Admin-tunable floor. Reads `minWithdrawal` — the SAME key the
+  // admin Settings screen and the seed write. (The old code read
+  // `minWithdrawalAmount`, which nothing ever wrote, so the admin
+  // value was silently ignored and this fell back to the default.)
+  // Defaults to ₹1,000 if the settings doc hasn't been created yet.
   Future<int> getMinWithdrawalAmount() async {
     final doc = await _firestore
         .doc('app_config/settings')
         .get()
         .timeout(const Duration(seconds: 10));
-    return (doc.data()?['minWithdrawalAmount'] as num?)?.toInt() ?? 100;
+    return (doc.data()?['minWithdrawal'] as num?)?.toInt() ?? 1000;
   }
 
   // Writes only the bank-detail fields. The priests/{uid} doc has
@@ -120,6 +123,16 @@ class PriestWalletRepository {
           'bankBranchName': '',
           'bankAccountType': '',
           'upiId': '',
+          // Cross-border fields cleared too, so a deleted US/UK/IBAN
+          // account never leaves a stale routing number / IBAN behind.
+          'bankCountry': '',
+          'bankCurrency': '',
+          'bankRoutingNumber': '',
+          'bankSortCode': '',
+          'bankIban': '',
+          'bankSwiftBic': '',
+          'bankContactPhone': '',
+          'bankContactEmail': '',
         })
         .timeout(const Duration(seconds: 30));
   }
@@ -193,22 +206,67 @@ class PriestWalletRepository {
     }
   }
 
-  // Withdrawal history feed (separate from wallet_transactions
-  // because admin moderation flips status to "blocked" on the
-  // withdrawal doc itself). Currently unused by the wallet page,
-  // but exposed so a future "Withdrawal History" detail page can
-  // consume it without a repo change.
+  // Live stream of the priest's withdrawals, newest-first. Powers the
+  // wallet page's "withdrawal in progress" card and the status tags on
+  // history rows, so both update the moment the admin advances a
+  // payout — no pull-to-refresh needed.
+  //
+  // Single equality filter on priestId, which Firestore single-field
+  // indexes automatically — NO composite index required (we sort
+  // client-side, same reasoning as getWithdrawals).
+  Stream<List<WithdrawalRecord>> watchWithdrawals(String uid) {
+    return _firestore
+        .collection('withdrawals')
+        .where('priestId', isEqualTo: uid)
+        .snapshots()
+        .map((snap) {
+      final list = snap.docs
+          .map((doc) => WithdrawalRecord.fromFirestore(doc.id, doc.data()))
+          .toList();
+      list.sort((a, b) {
+        final at = a.createdAt;
+        final bt = b.createdAt;
+        if (at == null && bt == null) return 0;
+        if (at == null) return 1;
+        if (bt == null) return -1;
+        return bt.compareTo(at);
+      });
+      return list;
+    });
+  }
+
+  // Withdrawal history / status feed for the priest's status screen.
+  //
+  // Deliberately NO orderBy: pairing where('priestId') with
+  // orderBy('createdAt') needs a (priestId, createdAt) composite index
+  // that no deploy creates — the only withdrawals index is
+  // (status, createdAt) for the admin queue — so on first prod run the
+  // query would throw FAILED_PRECONDITION. We sort newest-first
+  // client-side instead, matching the admin withdrawals repo. A priest
+  // has few withdrawals, so fetching and sorting the lot is cheap.
   Future<List<WithdrawalRecord>> getWithdrawals(String uid) async {
     final snap = await _firestore
         .collection('withdrawals')
         .where('priestId', isEqualTo: uid)
-        .orderBy('createdAt', descending: true)
-        .limit(30)
         .get()
         .timeout(const Duration(seconds: 10));
 
-    return snap.docs
+    final list = snap.docs
         .map((doc) => WithdrawalRecord.fromFirestore(doc.id, doc.data()))
         .toList();
+
+    // Newest first; nulls (pending server timestamp) sink to the bottom
+    // so a just-requested withdrawal doesn't jump above older ones
+    // during the brief write-then-read window.
+    list.sort((a, b) {
+      final at = a.createdAt;
+      final bt = b.createdAt;
+      if (at == null && bt == null) return 0;
+      if (at == null) return 1;
+      if (bt == null) return -1;
+      return bt.compareTo(at);
+    });
+
+    return list;
   }
 }

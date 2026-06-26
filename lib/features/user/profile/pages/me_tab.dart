@@ -29,6 +29,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class MeTab extends StatefulWidget {
   const MeTab({super.key});
@@ -168,12 +169,9 @@ class _MeTabState extends State<MeTab> {
       body: _isLoading
           ? const Center(
               child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.4,
-                  color: AppColors.primaryBrown,
-                ),
+                width: 38,
+                height: 38,
+                child: AppLoader(),
               ),
             )
           : SingleChildScrollView(
@@ -299,7 +297,7 @@ class _ProfileHeader extends StatelessWidget {
             height: 64,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               border: Border.all(
                 color: AppColors.amberGold.withValues(alpha: 0.3),
                 width: 2.5,
@@ -514,12 +512,9 @@ class _SignOutTile extends StatelessWidget {
         child: signingOut
             ? const Center(
                 child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: AppColors.errorRed,
-                  ),
+                  width: 29,
+                  height: 29,
+                  child: AppLoader(),
                 ),
               )
             : Row(

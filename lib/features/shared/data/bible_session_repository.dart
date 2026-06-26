@@ -30,6 +30,27 @@ class BibleSessionRepository {
 
   // ── Reads ────────────────────────────────────────────────────────
 
+  // Live Bible commission (%) from app_config/settings. Falls back to
+  // the model default (which matches the server default) if the doc or
+  // field is missing, so the priest-side "earned" figures are computed
+  // with the same split the payment CF applied.
+  Future<int> getBibleCommissionPercent() async {
+    try {
+      final doc = await _firestore
+          .doc('app_config/settings')
+          .get()
+          .timeout(_timeout);
+      final raw = doc.data()?['bibleCommissionPercent'];
+      final pct = (raw as num?)?.toInt();
+      if (pct == null || pct < 0 || pct > 100) {
+        return BibleSessionModel.defaultCommissionPercent;
+      }
+      return pct;
+    } catch (_) {
+      return BibleSessionModel.defaultCommissionPercent;
+    }
+  }
+
   // Sessions visible to users on the Bible tab — anything still
   // marked "upcoming". Sorted client-side because Firestore can't
   // sort by a field whose presence isn't guaranteed (scheduledAt

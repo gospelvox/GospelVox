@@ -15,6 +15,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class AdminLoginBottomSheet extends StatefulWidget {
   const AdminLoginBottomSheet({super.key});
@@ -323,12 +324,9 @@ class _SubmitButtonState extends State<_SubmitButton> {
             child: Center(
               child: widget.isLoading
                   ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
+                      width: 32,
+                      height: 32,
+                      child: AppLoader(),
                     )
                   : Text(
                       'Sign In',

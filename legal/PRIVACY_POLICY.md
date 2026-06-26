@@ -27,7 +27,8 @@ proceeding to use the Platform.
 
 - We collect account, profile, payment-metadata, Session-content, and
   device data needed to operate the Platform.
-- We use **Razorpay** for payments, **Agora** for voice
+- We use **Google Play's billing system** for in-app purchases,
+  **Agora** for voice
   infrastructure, **OneSignal** and **Firebase Cloud Messaging** for
   notifications, **Google Sign-In** and **Apple Sign-In** for
   authentication, and **Google Firebase** as our backend host (data
@@ -63,8 +64,7 @@ proceeding to use the Platform.
 
 **Session content:**
 
-- **Chat messages** you exchange during chat Sessions (text, and any
-  images you attach).
+- **Chat messages** (text) you exchange during chat Sessions.
 - **Voice audio** during voice Sessions — transmitted in real time
   through Agora. We do **not** record voice Sessions and do not
   retain voice content on our servers.
@@ -74,11 +74,12 @@ proceeding to use the Platform.
 
 **Payment information (Users):**
 
-- Coin purchases initiated from the Wallet. The actual card / UPI /
-  net-banking credentials are entered on Razorpay's hosted screens
-  and are **never received or stored by us**; we receive only the
-  Razorpay payment ID, order ID, signature, status, amount, and
-  Coin-pack identifier.
+- Coin and other purchases initiated from the app. Payment is
+  processed by **Google Play's billing system**; the actual card /
+  UPI / net-banking credentials are entered on Google's screens and
+  are **never received or stored by us**. We receive only the Google
+  Play order ID, purchase token, product (SKU) identifier, purchase
+  status, and amount.
 
 **Communications:**
 
@@ -109,8 +110,9 @@ they are used for diagnostics and notification delivery only.
   stable identifier, used solely to authenticate your account. We do
   not receive or store the password you use with your Google or
   Apple account.
-- **Razorpay**: the payment-status and reference information needed
-  to credit Coins and reconcile transactions.
+- **Google Play / Google Payments**: the purchase-status, order ID,
+  and purchase token needed to verify purchases, credit Coins, and
+  reconcile transactions.
 
 ### 2.4 Permissions the app requests
 
@@ -142,7 +144,7 @@ We use your information to:
    including by reviewing reported Content within 24 hours.
 4. **Comply with law** — meet our obligations under the Information
    Technology Act, 2000, the DPDP Act, payment regulations, tax
-   laws (including TDS/GST where applicable), and other applicable
+   laws (including TDS where applicable), and other applicable
    law.
 5. **Improve the Platform** — analyse aggregated usage, fix crashes
    (Crashlytics), measure feature adoption, and improve reliability.
@@ -181,7 +183,7 @@ obligations.
 | **Google LLC** — Firebase Cloud Messaging (FCM) | Push notification delivery | FCM token, notification payload | US |
 | **Google LLC** — Google Sign-In | Authentication | Email, name, profile picture URL, Google ID | US |
 | **Apple Inc.** — Sign in with Apple | Authentication (iOS) | Email (or relay), name, Apple ID | US |
-| **Razorpay Software Pvt Ltd** | Payment processing for Coin purchases | Order amount, currency, order ID, payment method (chosen at Razorpay), buyer's name, email, phone | India |
+| **Google LLC** — Google Play Billing | In-app purchase processing and server-side verification | Google Play order ID, purchase token, product (SKU) ID, purchase status, amount | US / global |
 | **Agora Lab, Inc.** | Real-time voice infrastructure for voice Sessions | Channel name, ephemeral user IDs, audio packets in transit (not retained by us) | US / global edge |
 | **OneSignal, Inc.** | Push notification orchestration | OneSignal player ID, device model, OS, notification payload | US |
 
@@ -246,7 +248,8 @@ protect your personal data, including:
 - Role-based access control on our Firebase project; access to
   production data is limited to authorised personnel.
 - Server-authoritative payment verification — Coin balances are
-  credited only after the Razorpay signature is verified server-side.
+  credited only after the Google Play purchase token is verified
+  server-side with Google's servers.
 - Periodic review of Firestore security rules and Cloud Functions
   permissions.
 
@@ -338,7 +341,7 @@ records retained as above.
 ## 11. Cookies and Similar Technologies
 
 The GospelVox mobile app does not use browser cookies. The SDKs we
-use (Firebase, OneSignal, Agora, Razorpay's checkout WebView) may
+use (Firebase, OneSignal, Agora) and the Google Play billing flow may
 store small amounts of data locally on your device for session
 continuity, crash reporting, and notification delivery. You can
 clear this storage by clearing the app's data through your device

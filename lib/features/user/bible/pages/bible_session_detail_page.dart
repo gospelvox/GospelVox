@@ -39,11 +39,12 @@ import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 import 'package:gospel_vox/features/user/bible/widgets/bible_session_rating_dialog.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Forest green for "joined / paid / registered ✓" — warmer than
 // AppColors.success against the beige scaffold.
-const Color _kJoinedGreen = Color(0xFF2E7D4F);
-const Color _kLiveRed = Color(0xFFE53E3E);
+const Color _kJoinedGreen = AppColors.successGreen;
+const Color _kLiveRed = AppColors.liveRed;
 
 class BibleSessionDetailPage extends StatefulWidget {
   final String sessionId;
@@ -644,7 +645,14 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
             ],
           ),
         ),
-        if (session != null)
+        // Hide the docked footer while the keyboard is open. The only
+        // text input on this page is the completed-session review field;
+        // when the user is writing a review the share-only footer would
+        // otherwise sit over the field inside the shrunk viewport. The
+        // scroll body keeps its bottomReserve padding so the field still
+        // scrolls clear of the keyboard.
+        if (session != null &&
+            MediaQuery.of(context).viewInsets.bottom == 0)
           Positioned(
             left: 0,
             right: 0,
@@ -2631,14 +2639,9 @@ class _PrimaryButton extends StatelessWidget {
         child: Center(
           child: loading
               ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2.5,
-                    valueColor: AlwaysStoppedAnimation<Color>(
-                      Colors.white,
-                    ),
-                  ),
+                  width: 35,
+                  height: 35,
+                  child: AppLoader(),
                 )
               : Row(
                   mainAxisSize: MainAxisSize.min,

@@ -251,6 +251,40 @@ export const billingTick = onCall(
       createdAt: admin.firestore.FieldValue.serverTimestamp(),
     });
 
+    // Priest-side EARNING ledger row — mirrors the bible-session
+    // earning row so the priest's wallet History shows call/chat
+    // income (previously only the priest-doc counters moved, leaving
+    // History empty for every call/chat earning). Written in the SAME
+    // batch as the credit above, so it can never disagree with the
+    // walletBalance increment.
+    const priestTxRef = db.collection("wallet_transactions").doc();
+    batch.set(priestTxRef, {
+      userId: session.priestId,
+      type: "session_earning",
+      sessionId: sessionId,
+      coins: priestEarningPerMinute,
+      description: `${session.type} session earning — minute ${newDuration}`,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+
+    // Platform COMMISSION ledger row — the slice the platform retains
+    // (rate − priest share, incl. the floor remainder). Addressed to
+    // the `__platform__` sentinel uid so the admin revenue dashboard
+    // sums call/chat commission the same way it already sums bible
+    // commission. Skipped when zero so the ledger isn't polluted.
+    const platformCommissionPerMinute = rate - priestEarningPerMinute;
+    if (platformCommissionPerMinute > 0) {
+      const platformTxRef = db.collection("wallet_transactions").doc();
+      batch.set(platformTxRef, {
+        userId: "__platform__",
+        type: "session_commission",
+        sessionId: sessionId,
+        coins: platformCommissionPerMinute,
+        description: `Commission — ${session.type} session`,
+        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+      });
+    }
+
     await batch.commit();
 
     const newBalance = currentBalance - rate;

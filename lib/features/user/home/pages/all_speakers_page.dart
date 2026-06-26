@@ -17,13 +17,14 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/widgets/priest_card.dart';
-import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class AllSpeakersPage extends StatelessWidget {
   const AllSpeakersPage({super.key});
@@ -104,12 +105,11 @@ class _AllSpeakersViewState extends State<_AllSpeakersView> {
         backgroundColor: AppColors.backgroundPrimary,
         surfaceTintColor: Colors.transparent,
         elevation: 0,
-        leading: IconButton(
-          icon: const AppIcon(
-            AppIcons.back,
-            color: AppColors.deepDarkBrown,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 8),
+          child: Align(
+            child: AppBackButton(),
           ),
-          onPressed: () => context.pop(),
         ),
         title: Text(
           'All speakers',
@@ -126,9 +126,7 @@ class _AllSpeakersViewState extends State<_AllSpeakersView> {
         builder: (ctx, state) {
           if (state is HomeLoading || state is HomeInitial) {
             return const Center(
-              child: CircularProgressIndicator(
-                color: AppColors.primaryBrown,
-              ),
+              child: AppLoader(),
             );
           }
           if (state is HomeError) {

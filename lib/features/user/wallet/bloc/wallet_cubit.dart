@@ -8,12 +8,51 @@ import 'package:gospel_vox/features/user/wallet/bloc/wallet_state.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 
+/// A one-shot, transient message the wallet page should surface as a
+/// snackbar WITHOUT replacing the wallet body. Used for payment-time
+/// problems (store unavailable, verification rejected) and "payment is
+/// processing" hints — situations where the wallet must stay on screen
+/// and fully interactive (pack grid + selection) rather than collapsing
+/// into the full-screen error/retry view, which is reserved for a
+/// genuine initial-load failure.
+enum WalletNoticeKind { error, info }
+
+class WalletNotice {
+  final WalletNoticeKind kind;
+  final String message;
+  const WalletNotice._(this.kind, this.message);
+  factory WalletNotice.error(String message) =>
+      WalletNotice._(WalletNoticeKind.error, message);
+  factory WalletNotice.info(String message) =>
+      WalletNotice._(WalletNoticeKind.info, message);
+}
+
 class WalletCubit extends Cubit<WalletState> {
   final WalletRepository _repository;
   final IapService _iap;
   StreamSubscription<int>? _balanceSubscription;
   StreamSubscription<IapOutcome>? _iapOutcomeSubscription;
   Map<String, ProductDetails> _storeProducts = const {};
+
+  // Side-effect channel for transient snackbars (see WalletNotice). Kept
+  // separate from the state stream so a payment error / pending hint can
+  // be shown while the wallet's live state stays WalletLoaded — the page
+  // listens via `notices` and shows a snackbar without losing the body.
+  final StreamController<WalletNotice> _notices =
+      StreamController<WalletNotice>.broadcast();
+
+  // The user's last explicit pack pick this session. Used to keep their
+  // chosen pack selected across a pull-to-refresh or a post-purchase
+  // reload instead of snapping back to the "popular" default.
+  String? _lastSelectedPackId;
+
+  // True only between the user tapping the wallet's own Pay button and
+  // that purchase reaching a terminal outcome. Gates the celebratory
+  // success screen so a background/restored purchase (or one started
+  // from the recharge sheet) credits silently instead of hijacking the
+  // wallet with a "Payment Successful" takeover. Pending deliberately
+  // leaves this true so the eventual settlement still celebrates.
+  bool _purchaseInFlight = false;
   // Last uid passed to loadWallet. Cached so _onIapOutcome can fire
   // reloadAfterPurchase on success without forcing the call site to
   // thread the uid through a second time. Set on every loadWallet
@@ -31,6 +70,27 @@ class WalletCubit extends Cubit<WalletState> {
     _iapOutcomeSubscription = _iap.outcomes.listen(_onIapOutcome);
   }
 
+  /// Transient snackbar messages (payment errors / processing hints).
+  /// The page subscribes and renders them without replacing the wallet
+  /// body — see WalletNotice.
+  Stream<WalletNotice> get notices => _notices.stream;
+
+  // Choose which pack should be selected after a (re)load. Preference:
+  // (1) the selection currently live on screen, (2) the user's last
+  // explicit pick this session, (3) the popular pack as the default.
+  // This stops a pull-to-refresh or post-purchase reload from silently
+  // snapping the user off a pack they deliberately chose.
+  String? _resolveSelection(List<CoinPackModel> packs) {
+    final live = state;
+    final prior =
+        (live is WalletLoaded ? live.selectedPackId : null) ??
+        _lastSelectedPackId;
+    if (prior != null && packs.any((p) => p.id == prior)) {
+      return prior;
+    }
+    return packs.where((p) => p.isPopular).firstOrNull?.id;
+  }
+
   Future<void> loadWallet(String uid) async {
     _uid = uid;
     try {
@@ -44,22 +104,15 @@ class WalletCubit extends Cubit<WalletState> {
       final balance = results[0] as int;
       final packs = results[1] as List<CoinPackModel>;
 
-      // Auto-select the popular pack by default. The welcome-offer
-      // card is hidden in this slice — the server-side welcome
-      // offer was removed when we cut over to Play Billing, so
-      // there's no live SKU to back it. The two welcomeOffer*
-      // fields on the state are kept at safe defaults to avoid
-      // touching the WalletState shape.
-      final popularPack = packs.where((p) => p.isPopular).firstOrNull;
-
-      emit(WalletLoaded(
-        balance: balance,
-        packs: packs,
-        showWelcomeOffer: false,
-        welcomeOfferCoins: 0,
-        welcomeOfferPrice: 0,
-        selectedPackId: popularPack?.id,
-      ));
+      // Keep the user's chosen pack if they had one; otherwise default
+      // to the popular pack (the behaviour on a fresh first load).
+      emit(
+        WalletLoaded(
+          balance: balance,
+          packs: packs,
+          selectedPackId: _resolveSelection(packs),
+        ),
+      );
 
       // Fire-and-forget: query the matching Play product details so
       // future buy() calls have the ProductDetails handy. Failure
@@ -71,14 +124,12 @@ class WalletCubit extends Cubit<WalletState> {
       // the AppBar refreshes the moment the CF finishes crediting,
       // without the user having to pull-to-refresh.
       _balanceSubscription?.cancel();
-      _balanceSubscription = _repository.watchBalance(uid).listen(
-        (newBalance) {
-          final current = state;
-          if (current is WalletLoaded) {
-            emit(current.copyWith(balance: newBalance));
-          }
-        },
-      );
+      _balanceSubscription = _repository.watchBalance(uid).listen((newBalance) {
+        final current = state;
+        if (current is WalletLoaded) {
+          emit(current.copyWith(balance: newBalance));
+        }
+      });
     } on TimeoutException {
       if (isClosed) return;
       emit(WalletError("Taking too long. Check your connection."));
@@ -101,6 +152,7 @@ class WalletCubit extends Cubit<WalletState> {
   void selectPack(String packId) {
     final current = state;
     if (current is WalletLoaded) {
+      _lastSelectedPackId = packId;
       emit(current.copyWith(selectedPackId: packId));
     }
   }
@@ -113,16 +165,23 @@ class WalletCubit extends Cubit<WalletState> {
     if (current is! WalletLoaded) return;
 
     if (!_iap.isStoreAvailable) {
-      emit(WalletError(
-        "In-app purchases aren't available on this device yet. "
-        "Please use an Android device with Google Play.",
-      ));
+      // Surface as a snackbar and keep the wallet on screen — a
+      // store-availability problem shouldn't collapse the pack grid
+      // into a full-screen error.
+      _notices.add(
+        WalletNotice.error(
+          "In-app purchases aren't available on this device yet. "
+          "Please use an Android device with Google Play.",
+        ),
+      );
       return;
     }
 
     final productId = IapProducts.packIdToProductId(packId);
     if (productId == null) {
-      emit(WalletError("Couldn't find this coin pack. Please refresh."));
+      _notices.add(
+        WalletNotice.error("Couldn't find this coin pack. Please refresh."),
+      );
       return;
     }
 
@@ -138,19 +197,26 @@ class WalletCubit extends Cubit<WalletState> {
       product = _storeProducts[productId];
     }
     if (product == null) {
-      emit(WalletError(
-        "This coin pack isn't available in the Play Store yet. "
-        "Please pick another or try again later.",
-      ));
+      _notices.add(
+        WalletNotice.error(
+          "This coin pack isn't available in the Play Store yet. "
+          "Please pick another or try again later.",
+        ),
+      );
       return;
     }
 
+    // Mark that THIS surface kicked off the buy, so only this purchase's
+    // success drives the celebration screen (see _purchaseInFlight).
+    _purchaseInFlight = true;
     emit(current.copyWith(isPurchasing: true));
     final started = await _iap.buyConsumable(product);
     if (!started) {
       // buyConsumable already emitted an outcome (unavailable / error)
-      // which the listener below handles. Reset isPurchasing so the
-      // floating Pay button becomes interactive again.
+      // which the listener below handles. Clear the in-flight flag and
+      // reset isPurchasing so the floating Pay button becomes
+      // interactive again.
+      _purchaseInFlight = false;
       final after = state;
       if (after is WalletLoaded && after.isPurchasing) {
         emit(after.copyWith(isPurchasing: false));
@@ -179,61 +245,83 @@ class WalletCubit extends Cubit<WalletState> {
 
     switch (outcome.kind) {
       case IapOutcomeKind.success:
-        final productId = outcome.productId;
-        // Figure out the coin count from the productId so the
-        // success page can render the celebratory "+N coins"
-        // headline. Server is authoritative on newBalance; we just
-        // need the delta for the UI text.
-        int coinsPurchased = 0;
-        final current = state;
-        if (current is WalletLoaded && productId != null) {
-          final match = RegExp(r'^coins_(\d+)$').firstMatch(productId);
-          if (match != null) {
-            coinsPurchased = int.tryParse(match.group(1) ?? '') ?? 0;
-          }
-          _clearPurchasing();
-        }
-        final newBalance = outcome.newBalance ?? 0;
-        emit(WalletPurchaseSuccess(newBalance, coinsPurchased));
-        // Refresh balance + packs so when the user pops back from
-        // the payment-success screen the wallet is already in a
-        // populated WalletLoaded state. Without this, the body
-        // stays on WalletPurchaseSuccess — which wallet_page
-        // renders as shimmer — until something else (pull-to-
-        // refresh, tab switch) forces a reload. Fire-and-forget:
-        // reloadAfterPurchase catches its own failures and falls
-        // back to loadWallet internally, and the success page's
-        // celebration animation runs longer than the round-trip
-        // in practice.
+        // Was this the buy the user just started from THIS wallet's Pay
+        // button? Only then do we celebrate. A background/restored
+        // purchase (verified on app launch) or one started from the
+        // recharge sheet must credit silently — not throw a "Payment
+        // Successful" takeover over a wallet the user is merely browsing.
+        final wasUserInitiated = _purchaseInFlight;
+        _purchaseInFlight = false;
+        _clearPurchasing();
         final uid = _uid;
+
+        if (wasUserInitiated) {
+          // Figure out the coin count from the productId so the success
+          // page can render the celebratory "+N coins" headline. Server
+          // is authoritative on newBalance; we just need the delta text.
+          final productId = outcome.productId;
+          int coinsPurchased = 0;
+          if (productId != null) {
+            final match = RegExp(r'^coins_(\d+)$').firstMatch(productId);
+            if (match != null) {
+              coinsPurchased = int.tryParse(match.group(1) ?? '') ?? 0;
+            }
+          }
+          emit(WalletPurchaseSuccess(outcome.newBalance ?? 0, coinsPurchased));
+        }
+
+        // Refresh balance + packs for BOTH paths. On the user-initiated
+        // path this gets the wallet back to a populated WalletLoaded
+        // behind the success screen (no stranded shimmer). On the
+        // background/restore path it silently updates the balance with
+        // no celebration and no double-handling with the recharge sheet.
+        // Fire-and-forget: reloadAfterPurchase catches its own failures
+        // and falls back to loadWallet internally.
         if (uid != null) {
           unawaited(reloadAfterPurchase(uid));
         }
         break;
 
       case IapOutcomeKind.pending:
-        // Stay on WalletLoaded so the wallet body remains; hide the
-        // spinner and let the in-call UI / wallet page communicate
-        // the wait via a snackbar or banner instead.
+        // Deferred/slow payment (e.g. a UPI mandate). Stay on
+        // WalletLoaded, drop the overlay, and tell the user it's
+        // processing — leaving _purchaseInFlight true so the eventual
+        // settlement still celebrates as their purchase.
         _clearPurchasing();
+        _notices.add(
+          WalletNotice.info(
+            "Payment is processing. Your coins will arrive shortly.",
+          ),
+        );
         break;
 
       case IapOutcomeKind.canceled:
+        _purchaseInFlight = false;
         _clearPurchasing();
         break;
 
       case IapOutcomeKind.error:
+        // A verification/store error is transient and the server is
+        // idempotent — surface it as a snackbar and keep the wallet
+        // (and the user's pack selection) on screen rather than
+        // replacing the body with a full-screen error+retry.
+        _purchaseInFlight = false;
         _clearPurchasing();
-        emit(WalletError(
-          outcome.message ?? "Couldn't complete your purchase.",
-        ));
+        _notices.add(
+          WalletNotice.error(
+            outcome.message ?? "Couldn't complete your purchase.",
+          ),
+        );
         break;
 
       case IapOutcomeKind.unavailable:
+        _purchaseInFlight = false;
         _clearPurchasing();
-        emit(WalletError(
-          "In-app purchases aren't available on this device yet.",
-        ));
+        _notices.add(
+          WalletNotice.error(
+            "In-app purchases aren't available on this device yet.",
+          ),
+        );
         break;
     }
   }
@@ -261,16 +349,13 @@ class WalletCubit extends Cubit<WalletState> {
       final balance = results[0] as int;
       final packs = results[1] as List<CoinPackModel>;
 
-      final popularPack = packs.where((p) => p.isPopular).firstOrNull;
-
-      emit(WalletLoaded(
-        balance: balance,
-        packs: packs,
-        showWelcomeOffer: false,
-        welcomeOfferCoins: 0,
-        welcomeOfferPrice: 0,
-        selectedPackId: popularPack?.id,
-      ));
+      emit(
+        WalletLoaded(
+          balance: balance,
+          packs: packs,
+          selectedPackId: _resolveSelection(packs),
+        ),
+      );
       unawaited(_warmProductCache(packs));
     } catch (e, st) {
       debugPrint('[Wallet] reloadAfterPurchase failed: $e\n$st');
@@ -283,6 +368,7 @@ class WalletCubit extends Cubit<WalletState> {
   Future<void> close() async {
     await _balanceSubscription?.cancel();
     await _iapOutcomeSubscription?.cancel();
+    await _notices.close();
     return super.close();
   }
 }

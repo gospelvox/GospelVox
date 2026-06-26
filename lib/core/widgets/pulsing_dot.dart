@@ -14,13 +14,15 @@
 
 import 'package:flutter/material.dart';
 
+import 'package:gospel_vox/core/theme/app_colors.dart';
+
 class PulsingDot extends StatefulWidget {
   final double size;
   final Color color;
   const PulsingDot({
     super.key,
     this.size = 8,
-    this.color = const Color(0xFFE53E3E),
+    this.color = AppColors.liveRed,
   });
 
   @override

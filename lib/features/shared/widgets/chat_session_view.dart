@@ -42,18 +42,18 @@ import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_state.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/widgets/recharge_sheet.dart';
+import 'package:gospel_vox/features/shared/widgets/session_participant_menu.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Forest green used only for the "In session" status pill here.
-const Color _kSessionGreen = Color(0xFF2E7D4F);
+const Color _kSessionGreen = AppColors.successGreen;
 
 // Reactions menu — kept short and on-brand for spiritual chat.
 const List<String> _kReactionEmojis = ['🙏', '❤️', '🕊️'];
 
-typedef ChatEndedCallback = void Function(
-  BuildContext context,
-  ChatSessionEnded state,
-);
+typedef ChatEndedCallback =
+    void Function(BuildContext context, ChatSessionEnded state);
 
 class ChatSessionView extends StatefulWidget {
   final String sessionId;
@@ -318,8 +318,9 @@ class _ChatSessionViewState extends State<ChatSessionView>
         ? (session.priestName.isNotEmpty ? session.priestName : 'Speaker')
         : (session.userName.isNotEmpty ? session.userName : 'User');
     // The OTHER side's typing fields drive our indicator.
-    final otherTyping =
-        widget.isUserSide ? session.priestTyping : session.userTyping;
+    final otherTyping = widget.isUserSide
+        ? session.priestTyping
+        : session.userTyping;
     final otherTypingSince = widget.isUserSide
         ? session.priestTypingSince
         : session.userTypingSince;
@@ -341,6 +342,21 @@ class _ChatSessionViewState extends State<ChatSessionView>
             isEnding: state.isEnding,
             isOffline: _isOffline,
             onEndTap: _showEndConfirmation,
+            // Report / Block lives on the user side only — the user is
+            // always the reporter on this surface (direction: user →
+            // Speaker). Null hides the ⋮ button for the priest.
+            onMenuTap: widget.isUserSide
+                ? () => showSessionParticipantMenu(
+                    context,
+                    priestId: session.priestId,
+                    priestName: otherName,
+                    reporterUserId: widget.currentUid,
+                    reporterName: session.userName.isNotEmpty
+                        ? session.userName
+                        : 'User',
+                    sessionId: widget.sessionId,
+                  )
+                : null,
           ),
           Expanded(
             child: Stack(
@@ -362,19 +378,19 @@ class _ChatSessionViewState extends State<ChatSessionView>
                         onAddCoins: _openRecharge,
                         onReact: (msgId, emoji) =>
                             context.read<ChatSessionCubit>().toggleReaction(
-                                  messageId: msgId,
-                                  userId: widget.currentUid,
-                                  emoji: emoji,
-                                ),
+                              messageId: msgId,
+                              userId: widget.currentUid,
+                              emoji: emoji,
+                            ),
                         // Swipe-to-reply: gated to current-session,
                         // non-pending, session-type bubbles only.
                         // The cubit re-asserts the same rules as
                         // defence in depth.
                         onSwipeReply: (message) {
                           HapticFeedback.lightImpact();
-                          context
-                              .read<ChatSessionCubit>()
-                              .setReplyTarget(message);
+                          context.read<ChatSessionCubit>().setReplyTarget(
+                            message,
+                          );
                         },
                       ),
               ],
@@ -396,9 +412,8 @@ class _ChatSessionViewState extends State<ChatSessionView>
                 ? _ReplyComposeChip(
                     target: state.replyTarget!,
                     currentUid: widget.currentUid,
-                    onDismiss: () => context
-                        .read<ChatSessionCubit>()
-                        .clearReplyTarget(),
+                    onDismiss: () =>
+                        context.read<ChatSessionCubit>().clearReplyTarget(),
                   )
                 : const SizedBox(width: double.infinity, height: 0),
           ),
@@ -474,8 +489,9 @@ class _ChatSessionViewState extends State<ChatSessionView>
     final rate = state.session.ratePerMinute;
     final balance = state.remainingBalance;
 
-    final secondsLeft =
-        rate > 0 ? ((balance * 60) ~/ rate).clamp(0, 60 * 60) : 0;
+    final secondsLeft = rate > 0
+        ? ((balance * 60) ~/ rate).clamp(0, 60 * 60)
+        : 0;
     final mm = secondsLeft ~/ 60;
     final ss = secondsLeft % 60;
     final countdown = '$mm:${ss.toString().padLeft(2, '0')}';
@@ -490,6 +506,8 @@ class _ChatSessionViewState extends State<ChatSessionView>
         context,
         currentBalance: balance,
         infoHeadline: 'Your chat ends in $countdown',
+        // Keep the user in the live chat — no jump to the full wallet.
+        showSeeAllPlans: false,
       );
     } finally {
       _lowBalanceSheetOpen = false;
@@ -523,6 +541,8 @@ class _ChatSessionViewState extends State<ChatSessionView>
       context,
       currentBalance: balance,
       infoHeadline: headline,
+      // Keep the user in the live chat — no jump to the full wallet.
+      showSeeAllPlans: false,
     );
     // The cubit's user-balance stream handles the new balance —
     // we don't need to do anything else here.
@@ -576,6 +596,9 @@ class _ChatTopBar extends StatelessWidget {
   // messages aren't going through.
   final bool isOffline;
   final VoidCallback onEndTap;
+  // Opens the Report / Block menu. Null on the priest side, which
+  // hides the ⋮ button entirely.
+  final VoidCallback? onMenuTap;
 
   const _ChatTopBar({
     required this.photoUrl,
@@ -586,6 +609,7 @@ class _ChatTopBar extends StatelessWidget {
     required this.isEnding,
     required this.isOffline,
     required this.onEndTap,
+    this.onMenuTap,
   });
 
   @override
@@ -609,8 +633,7 @@ class _ChatTopBar extends StatelessWidget {
             padding: EdgeInsets.fromLTRB(16, topInset + 8, 16, 12),
             child: Row(
               children: [
-                _Avatar(
-                    photoUrl: photoUrl, name: name, size: 40, fontSize: 16),
+                _Avatar(photoUrl: photoUrl, name: name, size: 40, fontSize: 16),
                 const SizedBox(width: 12),
                 Expanded(
                   child: Column(
@@ -678,6 +701,24 @@ class _ChatTopBar extends StatelessWidget {
                 ),
                 const SizedBox(width: 8),
                 _TimerPill(elapsed: elapsed),
+                if (onMenuTap != null) ...[
+                  const SizedBox(width: 2),
+                  IconButton(
+                    onPressed: onMenuTap,
+                    visualDensity: VisualDensity.compact,
+                    padding: EdgeInsets.zero,
+                    constraints: const BoxConstraints(
+                      minWidth: 36,
+                      minHeight: 36,
+                    ),
+                    tooltip: 'Report or block',
+                    icon: AppIcon(
+                      AppIcons.more,
+                      size: 20,
+                      color: AppColors.muted,
+                    ),
+                  ),
+                ],
                 const SizedBox(width: 10),
                 _EndButton(onTap: onEndTap, disabled: isEnding),
               ],
@@ -711,11 +752,7 @@ class _OfflineStrip extends StatelessWidget {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.center,
         children: [
-          AppIcon(
-            AppIcons.cloudOff,
-            size: 14,
-            color: AppColors.amberGold,
-          ),
+          AppIcon(AppIcons.cloudOff, size: 14, color: AppColors.amberGold),
           const SizedBox(width: 8),
           Flexible(
             child: Text(
@@ -755,12 +792,9 @@ class _Avatar extends StatelessWidget {
       height: size,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFFF7F5F2),
+        color: AppColors.fieldFill,
         image: photoUrl.isNotEmpty
-            ? DecorationImage(
-                image: NetworkImage(photoUrl),
-                fit: BoxFit.cover,
-              )
+            ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
             : null,
       ),
       child: photoUrl.isEmpty
@@ -791,11 +825,7 @@ class _TimerPill extends StatelessWidget {
     return Row(
       mainAxisSize: MainAxisSize.min,
       children: [
-        AppIcon(
-          AppIcons.clock,
-          size: 12,
-          color: AppColors.muted,
-        ),
+        AppIcon(AppIcons.clock, size: 12, color: AppColors.muted),
         const SizedBox(width: 4),
         Text(
           elapsed,
@@ -839,8 +869,7 @@ class _EndButtonState extends State<_EndButton> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
             decoration: BoxDecoration(
               color: AppColors.errorRed.withValues(
                 alpha: widget.disabled ? 0.04 : 0.08,
@@ -938,35 +967,38 @@ class _MessageList extends StatelessWidget {
       if (isPast && sid != prevSessionId) {
         final meta = pastMeta[sid];
         if (meta != null) {
-          rows.add(_DividerRow(
-            date: meta.date,
-            durationMinutes: meta.durationMinutes,
-          ));
+          rows.add(
+            _DividerRow(date: meta.date, durationMinutes: meta.durationMinutes),
+          );
         }
       }
-      rows.add(_BubbleRow(
-        message: msg,
-        isMe: msg.senderId == currentUid,
-        // A free priest message is read-only too (long-press blocked,
-        // reactions disabled). isPast already covers the past-session
-        // case; OR with the free-message kind so a single flag drives
-        // the inert-bubble rules in the renderer.
-        isPast: isPast || msg.isPriestMessage,
-        // Burst grouping is per-bubble within a session — never
-        // collapse a bubble's avatar gap into a different session's
-        // bubble even if the timestamps happen to be within 30s.
-        // Free messages also break bursts: a session bubble + a
-        // free message that happen to fall <30s apart shouldn't
-        // share a burst because they belong to different contexts.
-        isBurstContinuation: i > 0 &&
-            messages[i - 1].sessionId == sid &&
-            messages[i - 1].kind == msg.kind &&
-            _isBurstContinuationByMessages(messages[i - 1], msg),
-        showTimestamp: i == 0 ||
-            messages[i - 1].sessionId != sid ||
-            messages[i - 1].kind != msg.kind ||
-            _shouldShowTimestamp(messages[i - 1], msg),
-      ));
+      rows.add(
+        _BubbleRow(
+          message: msg,
+          isMe: msg.senderId == currentUid,
+          // A free priest message is read-only too (long-press blocked,
+          // reactions disabled). isPast already covers the past-session
+          // case; OR with the free-message kind so a single flag drives
+          // the inert-bubble rules in the renderer.
+          isPast: isPast || msg.isPriestMessage,
+          // Burst grouping is per-bubble within a session — never
+          // collapse a bubble's avatar gap into a different session's
+          // bubble even if the timestamps happen to be within 30s.
+          // Free messages also break bursts: a session bubble + a
+          // free message that happen to fall <30s apart shouldn't
+          // share a burst because they belong to different contexts.
+          isBurstContinuation:
+              i > 0 &&
+              messages[i - 1].sessionId == sid &&
+              messages[i - 1].kind == msg.kind &&
+              _isBurstContinuationByMessages(messages[i - 1], msg),
+          showTimestamp:
+              i == 0 ||
+              messages[i - 1].sessionId != sid ||
+              messages[i - 1].kind != msg.kind ||
+              _shouldShowTimestamp(messages[i - 1], msg),
+        ),
+      );
       prevSessionId = sid;
     }
     if (showIdleWarning) {
@@ -1027,7 +1059,8 @@ class _MessageList extends StatelessWidget {
         // pending/optimistic bubble, not a free message, not past.
         // Anything else renders without the wrapper so we don't pay
         // gesture cost on read-only history.
-        final canReply = !bubble.isPast &&
+        final canReply =
+            !bubble.isPast &&
             !bubble.message.isPending &&
             !bubble.message.isPriestMessage;
         if (!canReply) return chatBubble;
@@ -1256,8 +1289,9 @@ class _BubbleBody extends StatelessWidget {
         right: isMe ? 0 : 48,
       ),
       child: Column(
-        crossAxisAlignment:
-            isMe ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+        crossAxisAlignment: isMe
+            ? CrossAxisAlignment.end
+            : CrossAxisAlignment.start,
         children: [
           if (showTimestamp)
             Padding(
@@ -1279,9 +1313,7 @@ class _BubbleBody extends StatelessWidget {
           // bubble didn't earn coins). For the user it's noise: a
           // free message is just an incoming message in the chat
           // flow, no special treatment needed.
-          if (message.isPriestMessage &&
-              !isBurstContinuation &&
-              !isUserSide)
+          if (message.isPriestMessage && !isBurstContinuation && !isUserSide)
             Padding(
               padding: EdgeInsets.only(
                 bottom: 4,
@@ -1318,14 +1350,12 @@ class _BubbleBody extends StatelessWidget {
                 ? null
                 : () => _openReactionPicker(context),
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 14,
-                vertical: 10,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
               decoration: BoxDecoration(
                 color: isMe
                     ? AppColors.primaryBrown.withValues(
-                        alpha: message.isPending ? 0.7 : 1.0)
+                        alpha: message.isPending ? 0.7 : 1.0,
+                      )
                     : AppColors.surfaceWhite,
                 borderRadius: BorderRadius.only(
                   topLeft: const Radius.circular(16),
@@ -1357,8 +1387,7 @@ class _BubbleBody extends StatelessWidget {
                       fontSize: 14,
                       fontWeight: FontWeight.w400,
                       height: 1.45,
-                      color:
-                          isMe ? Colors.white : AppColors.deepDarkBrown,
+                      color: isMe ? Colors.white : AppColors.deepDarkBrown,
                     ),
                   ),
                 ],
@@ -1404,8 +1433,7 @@ class _BubbleFooter extends StatelessWidget {
     final time = _formatTime(message.createdAt);
     return Row(
       mainAxisSize: MainAxisSize.min,
-      mainAxisAlignment:
-          isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
+      mainAxisAlignment: isMe ? MainAxisAlignment.end : MainAxisAlignment.start,
       children: [
         Text(
           time,
@@ -1463,8 +1491,8 @@ class CallEntryBubble extends StatelessWidget {
     final durationLabel = duration <= 0
         ? 'Voice call'
         : duration == 1
-            ? 'Voice call · 1 min'
-            : 'Voice call · $duration min';
+        ? 'Voice call · 1 min'
+        : 'Voice call · $duration min';
     // Day-prefixed time so a call from last week doesn't read as
     // "3:00 PM" with no date context. The shared util handles
     // Today / Yesterday / Apr 5 / Apr 5, 2024 + the clock part.
@@ -1489,8 +1517,7 @@ class CallEntryBubble extends StatelessWidget {
                 }
               : null,
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
             decoration: BoxDecoration(
               color: AppColors.surfaceWhite,
               borderRadius: BorderRadius.only(
@@ -1518,13 +1545,10 @@ class CallEntryBubble extends StatelessWidget {
                   height: 32,
                   decoration: BoxDecoration(
                     shape: BoxShape.circle,
-                    color:
-                        AppColors.primaryBrown.withValues(alpha: 0.1),
+                    color: AppColors.primaryBrown.withValues(alpha: 0.1),
                   ),
                   child: AppIcon(
-                    isMe
-                        ? AppIcons.phone
-                        : AppIcons.phoneIncoming,
+                    isMe ? AppIcons.phone : AppIcons.phoneIncoming,
                     size: 16,
                     color: AppColors.primaryBrown,
                   ),
@@ -1549,8 +1573,7 @@ class CallEntryBubble extends StatelessWidget {
                         style: GoogleFonts.inter(
                           fontSize: 11,
                           fontWeight: FontWeight.w400,
-                          color:
-                              AppColors.muted.withValues(alpha: 0.7),
+                          color: AppColors.muted.withValues(alpha: 0.7),
                         ),
                       ),
                     ],
@@ -1593,9 +1616,7 @@ class _ReactionChip extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.surfaceWhite,
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.15),
-        ),
+        border: Border.all(color: AppColors.muted.withValues(alpha: 0.15)),
       ),
       child: Row(
         mainAxisSize: MainAxisSize.min,
@@ -1606,10 +1627,7 @@ class _ReactionChip extends StatelessWidget {
             child: Row(
               mainAxisSize: MainAxisSize.min,
               children: [
-                Text(
-                  e.key,
-                  style: const TextStyle(fontSize: 13),
-                ),
+                Text(e.key, style: const TextStyle(fontSize: 13)),
                 if (hasMultiple) ...[
                   const SizedBox(width: 2),
                   Text(
@@ -1640,10 +1658,7 @@ class _ReactionPickerSheet extends StatelessWidget {
       child: Padding(
         padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 16),
         child: Container(
-          padding: const EdgeInsets.symmetric(
-            horizontal: 8,
-            vertical: 8,
-          ),
+          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 8),
           decoration: BoxDecoration(
             color: AppColors.surfaceWhite,
             borderRadius: BorderRadius.circular(36),
@@ -1698,10 +1713,7 @@ class _ReactionButtonState extends State<_ReactionButton> {
           curve: Curves.easeOut,
           child: Padding(
             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            child: Text(
-              widget.emoji,
-              style: const TextStyle(fontSize: 32),
-            ),
+            child: Text(widget.emoji, style: const TextStyle(fontSize: 32)),
           ),
         ),
       ),
@@ -1723,15 +1735,14 @@ class _IdleWarningMessage extends StatelessWidget {
   Widget build(BuildContext context) {
     final copy = isUserSide
         ? "The speaker hasn't responded in a while. You can end "
-            'the session anytime using the End button above.'
+              'the session anytime using the End button above.'
         : "The user hasn't sent a message in a while. The session "
-            'will continue until one of you ends it.';
+              'will continue until one of you ends it.';
 
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 12, horizontal: 32),
       child: Container(
-        padding:
-            const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
         decoration: BoxDecoration(
           color: AppColors.amberGold.withValues(alpha: 0.08),
           borderRadius: BorderRadius.circular(12),
@@ -1742,11 +1753,7 @@ class _IdleWarningMessage extends StatelessWidget {
         child: Row(
           mainAxisSize: MainAxisSize.min,
           children: [
-            AppIcon(
-              AppIcons.info,
-              size: 14,
-              color: AppColors.amberGold,
-            ),
+            AppIcon(AppIcons.info, size: 14, color: AppColors.amberGold),
             const SizedBox(width: 8),
             Flexible(
               child: Text(
@@ -1881,8 +1888,7 @@ class _AddCoinsButtonState extends State<_AddCoinsButton> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
+            padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 9),
             decoration: BoxDecoration(
               color: AppColors.primaryBrown,
               borderRadius: BorderRadius.circular(10),
@@ -1954,20 +1960,19 @@ class _TypingFooterState extends State<_TypingFooter> {
     // even if isTyping is true — guards against ghost flags from
     // a cubit that died before clearing its state.
     final since = widget.typingSince;
-    final stale = since != null &&
-        DateTime.now().difference(since).inSeconds > 30;
+    final stale =
+        since != null && DateTime.now().difference(since).inSeconds > 30;
     final showing = widget.isTyping && !stale;
 
-    final composing = since != null &&
-        DateTime.now().difference(since).inSeconds >= 10;
+    final composing =
+        since != null && DateTime.now().difference(since).inSeconds >= 10;
 
     return AnimatedSize(
       duration: const Duration(milliseconds: 180),
       curve: Curves.easeOutCubic,
       child: showing
           ? Padding(
-              padding:
-                  const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 20, vertical: 6),
               child: Row(
                 mainAxisSize: MainAxisSize.min,
                 children: [
@@ -2140,7 +2145,7 @@ class _MessageInputBarState extends State<_MessageInputBar> {
             child: Container(
               constraints: const BoxConstraints(maxHeight: 100),
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(24),
               ),
               child: TextField(
@@ -2151,9 +2156,7 @@ class _MessageInputBarState extends State<_MessageInputBar> {
                 textCapitalization: TextCapitalization.sentences,
                 textInputAction: TextInputAction.newline,
                 onChanged: widget.onChanged,
-                inputFormatters: [
-                  LengthLimitingTextInputFormatter(1000),
-                ],
+                inputFormatters: [LengthLimitingTextInputFormatter(1000)],
                 style: GoogleFonts.inter(
                   fontSize: 14,
                   fontWeight: FontWeight.w400,
@@ -2191,8 +2194,7 @@ class _MessageInputBarState extends State<_MessageInputBar> {
                   if (!disabled) setState(() => _sendScale = 0.9);
                 },
                 onPointerUp: (_) => setState(() => _sendScale = 1.0),
-                onPointerCancel: (_) =>
-                    setState(() => _sendScale = 1.0),
+                onPointerCancel: (_) => setState(() => _sendScale = 1.0),
                 child: GestureDetector(
                   behavior: HitTestBehavior.opaque,
                   onTap: disabled ? null : widget.onSend,
@@ -2212,8 +2214,9 @@ class _MessageInputBarState extends State<_MessageInputBar> {
                             ? null
                             : [
                                 BoxShadow(
-                                  color: AppColors.primaryBrown
-                                      .withValues(alpha: 0.2),
+                                  color: AppColors.primaryBrown.withValues(
+                                    alpha: 0.2,
+                                  ),
                                   blurRadius: 8,
                                   offset: const Offset(0, 2),
                                 ),
@@ -2222,12 +2225,9 @@ class _MessageInputBarState extends State<_MessageInputBar> {
                       child: widget.isSending
                           ? const Center(
                               child: SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  color: Colors.white,
-                                  strokeWidth: 2,
-                                ),
+                                width: 29,
+                                height: 29,
+                                child: AppLoader(),
                               ),
                             )
                           : const AppIcon(
@@ -2309,9 +2309,9 @@ class _EndSessionSheet extends StatelessWidget {
             Text(
               isUserSide
                   ? 'You will be charged for the time spent so far. '
-                      'This action cannot be undone.'
+                        'This action cannot be undone.'
                   : 'The user will be charged for the time spent so far. '
-                      'This action cannot be undone.',
+                        'This action cannot be undone.',
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                 fontSize: 13,
@@ -2477,12 +2477,7 @@ class _CenteredLoader extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return const Center(
-      child: CircularProgressIndicator(
-        color: AppColors.primaryBrown,
-        strokeWidth: 2.5,
-      ),
-    );
+    return const Center(child: AppLoader());
   }
 }
 
@@ -2518,10 +2513,7 @@ class _SwipeToReply extends StatefulWidget {
   final Widget child;
   final VoidCallback onTriggered;
 
-  const _SwipeToReply({
-    required this.child,
-    required this.onTriggered,
-  });
+  const _SwipeToReply({required this.child, required this.onTriggered});
 
   @override
   State<_SwipeToReply> createState() => _SwipeToReplyState();
@@ -2617,14 +2609,12 @@ class _SwipeToReplyState extends State<_SwipeToReply>
                     margin: const EdgeInsets.only(left: 4),
                     decoration: BoxDecoration(
                       shape: BoxShape.circle,
-                      color: AppColors.primaryBrown
-                          .withValues(alpha: 0.12),
+                      color: AppColors.primaryBrown.withValues(alpha: 0.12),
                     ),
                     child: AppIcon(
                       AppIcons.reply,
                       size: 16,
-                      color: AppColors.primaryBrown
-                          .withValues(alpha: 0.85),
+                      color: AppColors.primaryBrown.withValues(alpha: 0.85),
                     ),
                   ),
                 ),
@@ -2633,10 +2623,7 @@ class _SwipeToReplyState extends State<_SwipeToReply>
           ),
           Transform.translate(
             offset: Offset(_dragDx, 0),
-            child: SizedBox(
-              width: double.infinity,
-              child: widget.child,
-            ),
+            child: SizedBox(width: double.infinity, child: widget.child),
           ),
         ],
       ),
@@ -2666,8 +2653,9 @@ class _ReplyComposeChip extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final isMine = target.senderId == currentUid;
-    final senderLabel =
-        isMine ? 'You' : (target.senderName.isNotEmpty ? target.senderName : '');
+    final senderLabel = isMine
+        ? 'You'
+        : (target.senderName.isNotEmpty ? target.senderName : '');
 
     return Container(
       width: double.infinity,
@@ -2727,10 +2715,7 @@ class _ReplyComposeChip extends StatelessWidget {
             ),
             padding: EdgeInsets.zero,
             visualDensity: VisualDensity.compact,
-            constraints: const BoxConstraints(
-              minWidth: 40,
-              minHeight: 40,
-            ),
+            constraints: const BoxConstraints(minWidth: 40, minHeight: 40),
           ),
         ],
       ),

@@ -72,6 +72,24 @@ class BibleSessionModel {
     this.remindersSent = const {},
   });
 
+  // Default platform commission (%) taken from a Bible session, used
+  // when app_config/settings.bibleCommissionPercent can't be read.
+  // MUST match the server default in verifyAndJoinBibleSession.ts so
+  // the priest-facing "earned" figures equal what the wallet ledger
+  // actually credited.
+  static const int defaultCommissionPercent = 40;
+
+  // Net rupees a priest earns per PAID registrant, after commission.
+  // Mirrors the server formula exactly — floor(price * (100 - c) / 100)
+  // via integer division — so display never disagrees with the wallet.
+  // e.g. ₹199 @ 40% → ₹119.
+  int priestEarningPerHead(int commissionPercent) =>
+      (price * (100 - commissionPercent)) ~/ 100;
+
+  // Total net earnings for `paidCount` paid registrants.
+  int priestNetEarnings(int paidCount, int commissionPercent) =>
+      paidCount * priestEarningPerHead(commissionPercent);
+
   factory BibleSessionModel.fromFirestore(
       String docId, Map<String, dynamic> data) {
     return BibleSessionModel(
@@ -166,6 +184,24 @@ class BibleSessionModel {
   // deadline 'live' doc is treated as completed for filters, status
   // pills, and rating gates.
   bool get isEffectivelyCompleted => isCompleted || isPastDeadline;
+
+  // True for an 'upcoming' session whose scheduled slot has come AND
+  // gone without the priest ever tapping "Start Meeting" — i.e. we're
+  // past (scheduledAt + durationMinutes + 15min grace) and it never
+  // went live. Such a session is effectively dead: the priest forgot
+  // to start it. Nothing server-side flips it (the auto-complete cron
+  // only handles 'live' docs), so without this guard it would sit at
+  // the TOP of "Upcoming" forever showing a past date. UI must treat
+  // it as PAST (priest side) and hide it (user side). The 15-min grace
+  // mirrors the live-session deadline so a priest can still start a few
+  // minutes late before the slot is considered missed.
+  bool get isExpiredUpcoming {
+    if (!isUpcoming || scheduledAt == null) return false;
+    final deadline = scheduledAt!.toLocal().add(
+          Duration(minutes: durationMinutes + 15),
+        );
+    return DateTime.now().isAfter(deadline);
+  }
 
   // Time remaining in the SCHEDULED duration (not the 15-min buffer)
   // — the "X min left" pill should reflect what was promised, not

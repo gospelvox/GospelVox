@@ -52,6 +52,12 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
 
       if (isClosed) return;
       final pastFiltered = _filterRecentPast(results[2]);
+      // Drop dead 'upcoming' sessions the priest never started (slot
+      // passed + grace). Without this they'd sit at the TOP of the
+      // user's Upcoming list (ascending date) — and a user could even
+      // register for a session that already passed.
+      final upcomingLive =
+          results[0].where((s) => !s.isExpiredUpcoming).toList();
       // Per-session reg lookups for the CURRENT user, batched in
       // parallel:
       //   • paidIds drives the LIVE card's "Open Meeting ✅" vs
@@ -66,11 +72,11 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
       // crashing.
       final results2 = await Future.wait([
         _resolvePaidSessionIds(results[1]),
-        _resolveRegisteredSessionIds(results[0]),
+        _resolveRegisteredSessionIds(upcomingLive),
       ]);
       if (isClosed) return;
       emit(BibleSessionLoaded(
-        upcoming: results[0],
+        upcoming: upcomingLive,
         live: results[1],
         past: pastFiltered,
         // `all` is no longer consumed by the user-side UI; keep the
@@ -211,13 +217,16 @@ class BibleSessionCubit extends Cubit<BibleSessionState> {
       ]);
       if (isClosed) return;
       final pastFiltered = _filterRecentPast(results[2]);
+      // Same dead-'upcoming' filter as loadSessions (see note there).
+      final upcomingLive =
+          results[0].where((s) => !s.isExpiredUpcoming).toList();
       final results2 = await Future.wait([
         _resolvePaidSessionIds(results[1]),
-        _resolveRegisteredSessionIds(results[0]),
+        _resolveRegisteredSessionIds(upcomingLive),
       ]);
       if (isClosed) return;
       emit(current.copyWith(
-        upcoming: results[0],
+        upcoming: upcomingLive,
         live: results[1],
         past: pastFiltered,
         paidSessionIds: results2[0],

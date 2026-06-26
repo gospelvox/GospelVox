@@ -19,7 +19,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/info_hint.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
-const Color _kSuccessGreen = Color(0xFF2E7D4F);
+const Color _kSuccessGreen = AppColors.successGreen;
 
 class RegistrationStep3 extends StatefulWidget {
   // Renamed conceptually to "proceed to review" but we keep the same

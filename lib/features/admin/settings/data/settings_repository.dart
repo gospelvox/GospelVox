@@ -11,9 +11,17 @@ class SettingsRepository {
   }
 
   Future<void> saveSettings(Map<String, dynamic> data) async {
-    await _ref.update({
-      ...data,
-      'updatedAt': FieldValue.serverTimestamp(),
-    }).timeout(const Duration(seconds: 10));
+    // set(merge:true), NOT update(): update() throws NOT_FOUND when the
+    // app_config/settings doc doesn't exist yet (fresh project, or it
+    // was never seeded), which surfaced to the admin as a blanket
+    // "Failed to save changes". set+merge creates the doc on first save
+    // and merges thereafter, so the very first config save works.
+    await _ref.set(
+      {
+        ...data,
+        'updatedAt': FieldValue.serverTimestamp(),
+      },
+      SetOptions(merge: true),
+    ).timeout(const Duration(seconds: 10));
   }
 }

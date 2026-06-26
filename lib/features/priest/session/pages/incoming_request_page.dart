@@ -17,6 +17,7 @@ import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/ring_service.dart';
+import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_cubit.dart';
 import 'package:gospel_vox/features/priest/session/bloc/incoming_request_state.dart';
@@ -31,7 +32,7 @@ const Color _kBgTop = Color(0xFF2C1810);
 const Color _kBgBottom = Color(0xFF140800);
 const Color _kGold = Color(0xFFC8902A);
 const Color _kBeigeText = Color(0xFFF5EAD8);
-const Color _kAccentGreen = Color(0xFF2E7D4F);
+const Color _kAccentGreen = AppColors.successGreen;
 const Color _kAccentRed = Color(0xFFDC2626);
 const Color _kAvatarInner = Color(0xFF3D1F0F);
 

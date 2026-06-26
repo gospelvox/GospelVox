@@ -33,11 +33,13 @@ import 'dart:async';
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
-import 'package:flutter/rendering.dart' show ScrollDirection;
+import 'package:flutter/services.dart' show SystemNavigator;
 import 'package:go_router/go_router.dart';
 
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/user/bible/pages/bible_tab.dart';
 import 'package:gospel_vox/features/user/home/pages/home_page.dart';
 import 'package:gospel_vox/features/user/home/widgets/floating_bottom_nav.dart';
@@ -66,7 +68,7 @@ class UserShellPage extends StatefulWidget {
 }
 
 class _UserShellPageState extends State<UserShellPage>
-    with SingleTickerProviderStateMixin {
+    with SingleTickerProviderStateMixin, WidgetsBindingObserver {
   int _currentIndex = 0;
   // Stream of upcoming-session count for the Bible nav badge.
   // Created once in initState (not per-build) so we don't churn
@@ -76,12 +78,6 @@ class _UserShellPageState extends State<UserShellPage>
   // Hide-on-scroll controller. value 0 = fully visible, value 1 =
   // fully hidden (slid down by nav height + bottom inset + margin).
   late final AnimationController _hideController;
-
-  // Last scroll direction we acted on. UserScrollNotification can
-  // fire repeatedly with the same direction during a single drag —
-  // tracking the last value lets us skip redundant forward()/reverse()
-  // calls and keeps the animation controller from being thrashed.
-  ScrollDirection _lastDirection = ScrollDirection.idle;
 
   // Keyboard-tracking state. When the on-screen keyboard opens, the
   // Scaffold body shrinks to viewInsets.bottom — without this hook,
@@ -93,14 +89,28 @@ class _UserShellPageState extends State<UserShellPage>
   bool _wasKeyboardOpen = false;
   double _navStateBeforeKeyboard = 0.0;
 
+  // Timestamp of the last unhandled back press on the Home tab, for the
+  // "press back again to exit" double-tap guard. Null until the first
+  // back press; reset implicitly by the 2s window check.
+  DateTime? _lastBackPressed;
+
   @override
   void initState() {
     super.initState();
+    // Count only GENUINE upcoming sessions — exclude dead/never-started
+    // ones (scheduled slot + duration + 15min grace already passed).
+    // Those are hidden from the Bible Upcoming tab, so counting raw
+    // `snapshot.size` here would make the nav badge show MORE than the
+    // list the user actually sees. Map through the model and filter by
+    // isExpiredUpcoming so the badge matches the tab exactly.
     _bibleUpcomingCount = FirebaseFirestore.instance
         .collection('bible_sessions')
         .where('status', isEqualTo: 'upcoming')
         .snapshots()
-        .map((s) => s.size);
+        .map((s) => s.docs
+            .map((d) => BibleSessionModel.fromFirestore(d.id, d.data()))
+            .where((m) => !m.isExpiredUpcoming)
+            .length);
 
     _hideController = AnimationController(
       vsync: this,
@@ -120,18 +130,61 @@ class _UserShellPageState extends State<UserShellPage>
     // their real home — Play / Apple HIG both flag cold-start prompts.
     // The call is idempotent and process-flagged inside the service,
     // so re-mounting the shell doesn't re-prompt.
+    WidgetsBinding.instance.addObserver(this);
     WidgetsBinding.instance.addPostFrameCallback((_) {
-      final route = NotificationService.pendingRoute;
-      NotificationService.pendingRoute = null;
-      if (route != null && route.isNotEmpty && route != '/user' && mounted) {
-        context.push(route);
-      }
+      _drainPendingRoute();
       unawaited(NotificationService().requestPermissionsIfNeeded());
     });
   }
 
+  // Drains a stashed notification-tap route. Called on mount (cold-
+  // start tap) AND on resume (background tap) — the latter is why this
+  // is factored out: a tap that resumes an already-mounted shell never
+  // re-runs initState, so without the resume path the route would sit
+  // un-applied and the notification would appear to "do nothing".
+  // Skips '/user' (already there) and empty.
+  void _drainPendingRoute() {
+    final route = NotificationService.pendingRoute;
+    NotificationService.pendingRoute = null;
+    if (route != null && route.isNotEmpty && route != '/user' && mounted) {
+      context.push(route);
+    }
+  }
+
+  // Hardware-back handler for the shell (the only route on the stack
+  // while the user is on a main tab). Two-stage guard so a stray back
+  // press never drops the user out of the app:
+  //   1. Not on Home → switch to Home first (standard tabbed-app back).
+  //   2. On Home → require a second back within 2s to actually exit.
+  void _onBackInvoked(bool didPop, Object? result) {
+    if (didPop) return;
+    if (_currentIndex != 0) {
+      _switchToTab(0);
+      return;
+    }
+    final now = DateTime.now();
+    if (_lastBackPressed == null ||
+        now.difference(_lastBackPressed!) > const Duration(seconds: 2)) {
+      _lastBackPressed = now;
+      AppSnackBar.info(context, 'Press back again to exit');
+      return;
+    }
+    SystemNavigator.pop();
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      // Deferred a frame so navigation runs after the resume settles.
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _drainPendingRoute());
+    }
+  }
+
   @override
   void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
     _hideController.dispose();
     super.dispose();
   }
@@ -186,20 +239,13 @@ class _UserShellPageState extends State<UserShellPage>
   // screen mid-swipe. Filtering by axis keeps the hide-on-scroll
   // behaviour scoped to vertical content scrolls only.
   bool _onScroll(UserScrollNotification n) {
-    if (n.metrics.axis != Axis.vertical) return false;
-
-    final dir = n.direction;
-    if (dir == _lastDirection) return false;
-    _lastDirection = dir;
-
-    if (dir == ScrollDirection.reverse) {
-      // User dragging up to reveal content below → hide the nav.
-      _hideController.forward();
-    } else if (dir == ScrollDirection.forward) {
-      // User dragging down toward earlier content → reveal the nav.
-      _hideController.reverse();
-    }
-    // ScrollDirection.idle leaves the nav in its current state.
+    // Persistent bottom nav: the nav stays fixed on screen at all times
+    // and never hides on scroll. Earlier builds slid it away on a
+    // downward drag (driving _hideController), but users reported the
+    // nav "disappearing" on the matrimony tab and others, so the
+    // hide-on-scroll behaviour is intentionally disabled. We keep
+    // _hideController pinned at 0 (fully visible) and just let the
+    // notification keep bubbling.
     return false;
   }
 
@@ -216,8 +262,14 @@ class _UserShellPageState extends State<UserShellPage>
     return UserShellScope(
       currentIndex: _currentIndex,
       switchToTab: _switchToTab,
-      child: Scaffold(
-        backgroundColor: AppColors.backgroundPrimary,
+      child: PopScope(
+        // We own the back gesture on the shell so a stray back press
+        // can't drop the user straight out of the app (handled in
+        // _onBackInvoked: tab→Home first, then press-again-to-exit).
+        canPop: false,
+        onPopInvokedWithResult: _onBackInvoked,
+        child: Scaffold(
+          backgroundColor: AppColors.backgroundPrimary,
         // extendBody lets the IndexedStack paint into the area
         // beneath the floating nav, so scrolling content slides
         // *behind* the nav instead of stopping above it.
@@ -274,6 +326,7 @@ class _UserShellPageState extends State<UserShellPage>
               ),
             ],
           ),
+        ),
         ),
       ),
     );

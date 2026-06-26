@@ -50,9 +50,22 @@ class AgoraService {
   // 0-6 scale where 1=excellent and 6=disconnected. Drives the
   // weak/poor signal indicator and the 30-second auto-end timer.
   void Function(int quality)? onNetworkQuality;
+  // Fires `true` when the OS yanks our microphone away for a native
+  // phone call (also smart-assistant / alarm — see Agora's
+  // localAudioStreamReasonInterrupted doc), and `false` if capture
+  // resumes. The cubit uses this to end the call so the priest hears
+  // nothing further and the user is never billed for native-call time.
+  // We only ever forward genuine interrupt↔resume transitions; ordinary
+  // mute / resumeAudio / initial-record states never reach this.
+  void Function(bool interrupted)? onLocalAudioInterruption;
 
   bool _isInitialized = false;
   bool _isMuted = false;
+  // Tracks whether we're currently inside a local-audio interruption
+  // (native call / alarm / assistant). Used to emit only the begin↔end
+  // transitions to onLocalAudioInterruption and to swallow the steady
+  // stream of recording-state callbacks that fire on a healthy call.
+  bool _audioInterrupted = false;
   // Earpiece is the default — matches the native phone-call mental
   // model. Users who want speakerphone tap the toggle once during
   // the call; both keep the boolean honest and the icon in sync.
@@ -176,6 +189,37 @@ class AgoraService {
         // future "audio went silent" report can be triaged from
         // logcat without guessing.
         debugPrint('[Agora] Audio routing changed: $routing');
+      },
+      onLocalAudioStateChanged: (connection, micState, reason) {
+        // Native-call detection. When the OS hands the microphone to a
+        // cellular call (or an alarm / smart assistant), Agora reports
+        // the capture device as stopped/failed with reason
+        // `Interrupted` (value 8, Android + iOS). We forward that as a
+        // single begin event, and forward the matching end event when
+        // capture returns to `recording`. The cubit ends the call on a
+        // sustained interruption.
+        //
+        // Strict reason match is what keeps this safe: a user mute
+        // (muteLocalAudioStream) and resumeAudio()'s enableAudio both
+        // report reason OK, never Interrupted, so they can never trip
+        // this. The `_audioInterrupted` latch means the steady
+        // `recording` callbacks on a healthy call emit nothing.
+        final isInterrupt = reason ==
+                LocalAudioStreamReason.localAudioStreamReasonInterrupted &&
+            (micState == LocalAudioStreamState.localAudioStreamStateStopped ||
+                micState == LocalAudioStreamState.localAudioStreamStateFailed);
+        final isRecovered =
+            micState == LocalAudioStreamState.localAudioStreamStateRecording;
+
+        if (isInterrupt && !_audioInterrupted) {
+          _audioInterrupted = true;
+          debugPrint('[Agora] Local mic interrupted (native call / alarm)');
+          onLocalAudioInterruption?.call(true);
+        } else if (isRecovered && _audioInterrupted) {
+          _audioInterrupted = false;
+          debugPrint('[Agora] Local mic recovered after interruption');
+          onLocalAudioInterruption?.call(false);
+        }
       },
       onAudioVolumeIndication:
           (connection, speakers, speakerNumber, totalVolume) {
@@ -418,6 +462,8 @@ class AgoraService {
     onConnectionStateChanged = null;
     onRemoteSilenceDetected = null;
     onNetworkQuality = null;
+    onLocalAudioInterruption = null;
+    _audioInterrupted = false;
     _silentTicks = 0;
     _silenceWarningActive = false;
     _remoteUserPresent = false;

@@ -30,11 +30,12 @@ import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart'
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_state.dart';
 import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/features/priest/wallet/data/withdrawal_status.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart'
     show formatMaskedAccountNumber;
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
-const Color _kSuccessGreen = Color(0xFF2E7D4F);
+const Color _kSuccessGreen = AppColors.successGreen;
 
 class PriestWalletPage extends StatefulWidget {
   const PriestWalletPage({super.key});
@@ -159,6 +160,26 @@ class _PriestWalletPageState extends State<PriestWalletPage> {
         ),
       ),
       centerTitle: false,
+      actions: [
+        // Entry point to the "My Withdrawals" status screen — lets the
+        // priest track Requested -> Processing -> Sent and see the bank
+        // reference without leaving via another menu.
+        Padding(
+          padding: const EdgeInsets.only(right: 8),
+          child: GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () => context.push('/priest/withdrawals'),
+            child: Padding(
+              padding: const EdgeInsets.all(8),
+              child: AppIcon(
+                AppIcons.history,
+                size: 22,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+        ),
+      ],
       bottom: PreferredSize(
         preferredSize: const Size.fromHeight(1),
         child: Container(
@@ -439,6 +460,18 @@ class _LoadedBody extends StatelessWidget {
               onWithdraw: onWithdraw,
               onAddBank: onAddBank,
             ),
+            // Withdrawal-in-progress card — the prominent, live status
+            // area so the priest sees "your money is on the way" right
+            // under the balance instead of a confusing debit in history.
+            // Shows while a payout is moving, and briefly after it's
+            // sent/cancelled. Tapping opens the full timeline.
+            if (state.spotlightWithdrawal != null) ...[
+              const SizedBox(height: 16),
+              _WithdrawalProgressCard(
+                record: state.spotlightWithdrawal!,
+                onTap: () => context.push('/priest/withdrawals'),
+              ),
+            ],
             // Linked Bank Card — sits directly below the hero so the
             // priest sees where withdrawals will land at a glance,
             // and can edit or remove the account without leaving the
@@ -528,7 +561,20 @@ class _LoadedBody extends StatelessWidget {
               ...state.transactions.map(
                 (tx) => Padding(
                   padding: const EdgeInsets.only(bottom: 8),
-                  child: _TransactionCard(transaction: tx),
+                  child: _TransactionCard(
+                    transaction: tx,
+                    // Live status on the withdrawal DEBIT row only, so it
+                    // shows "Processing"/"Sent". The +refund row
+                    // (withdrawal_refund) also carries a withdrawalId but
+                    // must NOT show a status chip.
+                    withdrawalStatus:
+                        tx.type == 'withdrawal' && tx.withdrawalId != null
+                            ? state.withdrawalStatusById[tx.withdrawalId]
+                            : null,
+                    onTap: tx.type == 'withdrawal'
+                        ? () => context.push('/priest/withdrawals')
+                        : null,
+                  ),
                 ),
               ),
           ],
@@ -728,77 +774,99 @@ class _QuickStat extends StatelessWidget {
 
 class _TransactionCard extends StatelessWidget {
   final WalletTransaction transaction;
+  // Live withdrawal status for type=='withdrawal' rows; null otherwise.
+  final WithdrawalStatus? withdrawalStatus;
+  // Tap target — opens the withdrawals status screen for withdrawal rows.
+  final VoidCallback? onTap;
 
-  const _TransactionCard({required this.transaction});
+  const _TransactionCard({
+    required this.transaction,
+    this.withdrawalStatus,
+    this.onTap,
+  });
 
   @override
   Widget build(BuildContext context) {
     final tx = transaction;
     final earning = tx.isEarning;
 
-    return Container(
-      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
-      decoration: BoxDecoration(
-        color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: AppColors.muted.withValues(alpha: 0.06),
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(
+            color: AppColors.muted.withValues(alpha: 0.06),
+          ),
         ),
-      ),
-      child: Row(
-        children: [
-          Container(
-            width: 40,
-            height: 40,
-            decoration: BoxDecoration(
-              shape: BoxShape.circle,
-              color: earning
-                  ? _kSuccessGreen.withValues(alpha: 0.08)
-                  : AppColors.muted.withValues(alpha: 0.06),
+        child: Row(
+          children: [
+            Container(
+              width: 40,
+              height: 40,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                color: earning
+                    ? _kSuccessGreen.withValues(alpha: 0.08)
+                    : AppColors.muted.withValues(alpha: 0.06),
+              ),
+              child: AppIcon(
+                tx.icon,
+                size: 18,
+                color: earning ? _kSuccessGreen : AppColors.muted,
+              ),
             ),
-            child: AppIcon(
-              tx.icon,
-              size: 18,
-              color: earning ? _kSuccessGreen : AppColors.muted,
-            ),
-          ),
-          const SizedBox(width: 14),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  tx.description.isEmpty ? _fallbackLabel(tx) : tx.description,
-                  maxLines: 1,
-                  overflow: TextOverflow.ellipsis,
-                  style: GoogleFonts.inter(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w500,
-                    color: AppColors.deepDarkBrown,
+            const SizedBox(width: 14),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    tx.description.isEmpty
+                        ? _fallbackLabel(tx)
+                        : tx.description,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: GoogleFonts.inter(
+                      fontSize: 13,
+                      fontWeight: FontWeight.w500,
+                      color: AppColors.deepDarkBrown,
+                    ),
                   ),
-                ),
-                const SizedBox(height: 3),
-                Text(
-                  tx.formattedDate,
-                  style: GoogleFonts.inter(
-                    fontSize: 11,
-                    fontWeight: FontWeight.w400,
-                    color: AppColors.muted,
+                  const SizedBox(height: 3),
+                  Row(
+                    children: [
+                      Text(
+                        tx.formattedDate,
+                        style: GoogleFonts.inter(
+                          fontSize: 11,
+                          fontWeight: FontWeight.w400,
+                          color: AppColors.muted,
+                        ),
+                      ),
+                      if (withdrawalStatus != null) ...[
+                        const SizedBox(width: 8),
+                        _WithdrawalStatusChip(status: withdrawalStatus!),
+                      ],
+                    ],
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-          const SizedBox(width: 8),
-          Text(
-            "${earning ? '+' : '-'}₹${tx.coins.abs()}",
-            style: GoogleFonts.inter(
-              fontSize: 14,
-              fontWeight: FontWeight.w700,
-              color: earning ? _kSuccessGreen : AppColors.deepDarkBrown,
+            const SizedBox(width: 8),
+            Text(
+              "${earning ? '+' : '-'}₹${tx.coins.abs()}",
+              style: GoogleFonts.inter(
+                fontSize: 14,
+                fontWeight: FontWeight.w700,
+                color: earning ? _kSuccessGreen : AppColors.deepDarkBrown,
+              ),
             ),
-          ),
-        ],
+          ],
+        ),
       ),
     );
   }
@@ -819,6 +887,201 @@ class _TransactionCard extends StatelessWidget {
         return 'Refund';
       default:
         return 'Transaction';
+    }
+  }
+}
+
+// ─── Withdrawal status visuals (in-progress card + history chip) ──
+
+// Status -> (background, foreground) colours, shared by the card and
+// the history chip so the same status always reads the same colour.
+(Color, Color) _withdrawalStatusColors(WithdrawalStatus s) {
+  switch (s) {
+    case WithdrawalStatus.pending:
+      return (const Color(0xFFFFF4E5), const Color(0xFFB26A00));
+    case WithdrawalStatus.processing:
+      return (const Color(0xFFE8F0FE), const Color(0xFF1A56DB));
+    case WithdrawalStatus.paid:
+      return (const Color(0xFFE7F4EC), _kSuccessGreen);
+    case WithdrawalStatus.onHold:
+      return (const Color(0xFFFFF1E6), const Color(0xFFC2410C));
+    case WithdrawalStatus.blocked:
+      return (const Color(0xFFFDECEC), const Color(0xFFB42318));
+  }
+}
+
+// Small status pill shown next to the date on a withdrawal history row.
+class _WithdrawalStatusChip extends StatelessWidget {
+  final WithdrawalStatus status;
+  const _WithdrawalStatusChip({required this.status});
+
+  @override
+  Widget build(BuildContext context) {
+    final (bg, fg) = _withdrawalStatusColors(status);
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 7, vertical: 2),
+      decoration: BoxDecoration(
+        color: bg,
+        borderRadius: BorderRadius.circular(5),
+      ),
+      child: Text(
+        status.label,
+        style: GoogleFonts.inter(
+          fontSize: 10,
+          fontWeight: FontWeight.w600,
+          color: fg,
+        ),
+      ),
+    );
+  }
+}
+
+// The prominent "your money is on the way" card under the balance hero.
+// Live (driven by the streamed withdrawals), so it advances on its own
+// as the admin moves the payout. Tapping opens the full timeline.
+class _WithdrawalProgressCard extends StatelessWidget {
+  final WithdrawalRecord record;
+  final VoidCallback onTap;
+  const _WithdrawalProgressCard({required this.record, required this.onTap});
+
+  @override
+  Widget build(BuildContext context) {
+    final (bg, fg) = _withdrawalStatusColors(record.status);
+    final money = _money(record.amount);
+    final onHold = record.status == WithdrawalStatus.onHold;
+
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: onTap,
+      child: Container(
+        padding: const EdgeInsets.all(16),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(16),
+          border: Border.all(color: fg.withValues(alpha: 0.25)),
+        ),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Container(
+                  width: 30,
+                  height: 30,
+                  decoration: BoxDecoration(color: bg, shape: BoxShape.circle),
+                  child: Center(
+                    child: AppIcon(_iconFor(record.status), size: 15, color: fg),
+                  ),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    _titleFor(record.status),
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                ),
+                Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                  decoration: BoxDecoration(
+                    color: bg,
+                    borderRadius: BorderRadius.circular(6),
+                  ),
+                  child: Text(
+                    record.status.label,
+                    style: GoogleFonts.inter(
+                      fontSize: 10,
+                      fontWeight: FontWeight.w700,
+                      color: fg,
+                    ),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 10),
+            Text(
+              '$money · ${_messageFor(record)}',
+              style: GoogleFonts.inter(
+                fontSize: 12.5,
+                fontWeight: FontWeight.w400,
+                height: 1.4,
+                color: AppColors.muted,
+              ),
+            ),
+            const SizedBox(height: 10),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.end,
+              children: [
+                Text(
+                  onHold ? 'Fix details' : 'Track',
+                  style: GoogleFonts.inter(
+                    fontSize: 12.5,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primaryBrown,
+                  ),
+                ),
+                const SizedBox(width: 2),
+                AppIcon(AppIcons.chevronRight,
+                    size: 16, color: AppColors.primaryBrown),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  // Amount is always ₹ (platform value). Destination currency is never
+  // used to relabel it — see the admin page's _money for the why.
+  String _money(int amount) => '₹$amount';
+
+  IconData _iconFor(WithdrawalStatus s) {
+    switch (s) {
+      case WithdrawalStatus.paid:
+        return AppIcons.check;
+      case WithdrawalStatus.onHold:
+        return AppIcons.error;
+      case WithdrawalStatus.blocked:
+        return AppIcons.replay;
+      case WithdrawalStatus.pending:
+      case WithdrawalStatus.processing:
+        return AppIcons.history;
+    }
+  }
+
+  String _titleFor(WithdrawalStatus s) {
+    switch (s) {
+      case WithdrawalStatus.pending:
+        return 'Withdrawal requested';
+      case WithdrawalStatus.processing:
+        return 'Withdrawal in progress';
+      case WithdrawalStatus.paid:
+        return 'Withdrawal sent';
+      case WithdrawalStatus.onHold:
+        return 'Action needed';
+      case WithdrawalStatus.blocked:
+        return 'Withdrawal cancelled';
+    }
+  }
+
+  String _messageFor(WithdrawalRecord r) {
+    switch (r.status) {
+      case WithdrawalStatus.pending:
+        return 'Received. Waiting to be processed.';
+      case WithdrawalStatus.processing:
+        return 'Being prepared and sent to your bank.';
+      case WithdrawalStatus.paid:
+        return r.reference != null
+            ? 'Sent to your bank. Ref: ${r.reference}'
+            : 'Sent to your bank.';
+      case WithdrawalStatus.onHold:
+        return r.onHoldReason ?? 'Please check your bank details.';
+      case WithdrawalStatus.blocked:
+        return 'Refunded to your wallet.';
     }
   }
 }
@@ -1207,7 +1470,7 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
             const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: _amountError != null
@@ -1285,7 +1548,7 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
             Container(
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Row(
@@ -1385,7 +1648,9 @@ class _WithdrawalSheetState extends State<_WithdrawalSheet> {
             const SizedBox(height: 8),
             Center(
               child: Text(
-                "Withdrawal is processed immediately. No fees.",
+                "Sent to your bank in 1–3 working days. No fees. "
+                "Track the status anytime.",
+                textAlign: TextAlign.center,
                 style: GoogleFonts.inter(
                   fontSize: 11,
                   fontWeight: FontWeight.w400,

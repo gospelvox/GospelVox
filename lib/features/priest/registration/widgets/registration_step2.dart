@@ -829,7 +829,7 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                     color: AppColors.muted.withValues(alpha: 0.5),
                   ),
                   filled: true,
-                  fillColor: const Color(0xFFF7F5F2),
+                  fillColor: AppColors.fieldFill,
                   isDense: true,
                   border: _fieldBorder(
                     AppColors.muted.withValues(alpha: 0.2),
@@ -1010,7 +1010,7 @@ class _PlainField extends StatelessWidget {
               ),
               suffixIcon: suffixIcon,
               filled: true,
-              fillColor: const Color(0xFFF7F5F2),
+              fillColor: AppColors.fieldFill,
               isDense: true,
               border: _fieldBorder(
                 AppColors.muted.withValues(alpha: 0.2),
@@ -1081,7 +1081,7 @@ class _DropdownField extends StatelessWidget {
                 vertical: 16,
               ),
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: errorText != null
@@ -1181,7 +1181,7 @@ class _OtherInputFieldState extends State<_OtherInputField> {
           color: AppColors.muted.withValues(alpha: 0.5),
         ),
         filled: true,
-        fillColor: const Color(0xFFF7F5F2),
+        fillColor: AppColors.fieldFill,
         isDense: true,
         counterText: '',
         border: _fieldBorder(AppColors.muted.withValues(alpha: 0.2)),

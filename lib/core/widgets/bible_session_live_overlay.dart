@@ -37,7 +37,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
-const Color _kLiveRed = Color(0xFFE53E3E);
+const Color _kLiveRed = AppColors.liveRed;
 // Forest green for the Join CTA — distinct from primaryBrown and
 // reads as "accept / go ahead" against the dark backdrop.
 const Color _kJoinGreen = Color(0xFF059669);

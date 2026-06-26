@@ -4,11 +4,16 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:go_router/go_router.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/theme/admin_colors.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/features/admin/dashboard/pages/admin_dashboard_page.dart';
+import 'package:gospel_vox/features/admin/notifications/pages/admin_notifications_page.dart';
 import 'package:gospel_vox/features/admin/reports/pages/reports_page.dart';
+import 'package:gospel_vox/features/admin/revenue/pages/revenue_page.dart';
 import 'package:gospel_vox/features/admin/sessions/pages/admin_sessions_page.dart';
 import 'package:gospel_vox/features/admin/settings/pages/admin_settings_page.dart';
 import 'package:gospel_vox/features/admin/users/pages/admin_users_page.dart';
@@ -24,6 +29,7 @@ import 'package:gospel_vox/features/priest/notifications/pages/notifications_pag
 import 'package:gospel_vox/features/priest/profile/pages/priest_profile_page.dart'
     as priest_profile;
 import 'package:gospel_vox/features/priest/registration/pages/application_rejected_page.dart';
+import 'package:gospel_vox/features/priest/registration/pages/approval_congrats_page.dart';
 import 'package:gospel_vox/features/priest/registration/pages/pending_approval_page.dart';
 import 'package:gospel_vox/features/priest/reviews/pages/priest_reviews_page.dart';
 import 'package:gospel_vox/features/admin/speakers/pages/speaker_detail_page.dart';
@@ -43,6 +49,7 @@ import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_cubit.dart'
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/bank_details_page.dart';
 import 'package:gospel_vox/features/priest/wallet/pages/priest_wallet_page.dart';
+import 'package:gospel_vox/features/priest/wallet/pages/withdrawal_status_page.dart';
 import 'package:gospel_vox/features/priest/bible/pages/priest_bible_detail_page.dart';
 import 'package:gospel_vox/features/priest/bible/pages/priest_bible_sessions_page.dart';
 import 'package:gospel_vox/features/shared/bloc/chat_session_cubit.dart';
@@ -83,11 +90,28 @@ Future<String?> _getUserRole(String uid) async {
   // we must re-fetch from Firestore instead of returning the old role.
   if (_cachedRole != null && _cachedUid == uid) return _cachedRole;
 
-  final doc = await FirebaseFirestore.instance
-      .collection('users')
-      .doc(uid)
-      .get()
-      .timeout(const Duration(seconds: 10));
+  // Cache-first. On cold start the users/{uid} doc is almost always in
+  // Firestore's local persistence (enabled by default on mobile), so a
+  // cache read resolves the role in milliseconds with NO network round-
+  // trip — this is what removes the multi-second blank redirect wait a
+  // returning user used to see on launch. Role changes are rare and the
+  // in-memory cache already accepts that staleness within a session, so
+  // cache-first across launches is consistent (and Firestore rules are
+  // the real authority on what a role can do, regardless of this hint).
+  final usersRef = FirebaseFirestore.instance.collection('users').doc(uid);
+  DocumentSnapshot<Map<String, dynamic>>? doc;
+  try {
+    final cached = await usersRef.get(const GetOptions(source: Source.cache));
+    if (cached.exists) doc = cached;
+  } catch (_) {
+    // Cache miss / persistence disabled — fall through to the server.
+  }
+  // Server fallback only when the cache had nothing (first-ever launch
+  // on this device, or an evicted cache). Lowered to 6s so a dead
+  // network can't hang the launch loading screen for the old 10s.
+  doc ??= await usersRef
+      .get(const GetOptions(source: Source.server))
+      .timeout(const Duration(seconds: 6));
 
   if (!doc.exists || doc.data()?['role'] == null) return null;
 
@@ -107,16 +131,67 @@ String _roleToPath(String role) {
   }
 }
 
+// Persistent "has this priest seen the approval congrats screen" flag.
+// Per-device by design — a reinstall re-showing the one-time congrats is
+// harmless, and this keeps us off a Firestore write (and its rules). The
+// flag is what makes the congrats appear exactly once on the FIRST
+// approved entry, on both the live-listener path (pending page) and the
+// cold-start path (router resolves straight to approved).
+String _approvalCongratsKey(String uid) =>
+    'priest_approval_congrats_seen_$uid';
+
+// In-memory backstop against a navigation loop. If the persistent write
+// below ever fails (prefs readable but not writable — disk full, etc.),
+// relying on the flag alone would loop congrats→dashboard→congrats and
+// trap the priest. This set is marked synchronously in
+// markApprovalCongratsSeen BEFORE the dashboard navigation, so the very
+// next approved-state resolution short-circuits to the dashboard no
+// matter what prefs does. Resets on app restart (a true write failure
+// would then re-show the one-time congrats once — cosmetic, not a trap).
+final Set<String> _approvalCongratsShownThisSession = <String>{};
+
+Future<bool> _approvalCongratsSeen(String uid) async {
+  if (_approvalCongratsShownThisSession.contains(uid)) return true;
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_approvalCongratsKey(uid)) ?? false;
+  } catch (_) {
+    // On any prefs failure, treat as seen so we never trap the priest in
+    // a congrats→dashboard→congrats loop. Worst case: they skip the
+    // celebration, not their dashboard.
+    return true;
+  }
+}
+
+// Called by the congrats screen's Continue button before it navigates to
+// the dashboard, so every later approved-state resolution skips congrats.
+Future<void> markApprovalCongratsSeen(String uid) async {
+  // Synchronous in-memory mark FIRST — guarantees the subsequent
+  // navigation can't loop even if the persistent write below fails.
+  _approvalCongratsShownThisSession.add(uid);
+  try {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_approvalCongratsKey(uid), true);
+  } catch (_) {
+    // Non-fatal — if the write fails the priest may see the congrats once
+    // more on next launch, which is a cosmetic annoyance, not a bug.
+  }
+}
+
 // Resolves the right destination for an authenticated priest based on
 // their priests/{uid} doc. Done in the router (not in the dashboard
 // widget) so we never even mount the dashboard for unverified users —
 // avoids a flash of "Priest Dashboard" before the redirect happens.
 Future<String> _resolvePriestDestination(String uid) async {
   try {
+    // Server read (not cache-first): a priest's status legitimately
+    // changes (pending → approved) while the app is closed, and routing
+    // them to the right screen on launch needs the fresh value. Timeout
+    // lowered 10s → 6s so a slow network caps the launch wait.
     final doc = await FirebaseFirestore.instance
         .doc('priests/$uid')
         .get()
-        .timeout(const Duration(seconds: 10));
+        .timeout(const Duration(seconds: 6));
     if (!doc.exists) return '/priest/register';
 
     final data = doc.data() ?? const <String, dynamic>{};
@@ -128,13 +203,15 @@ Future<String> _resolvePriestDestination(String uid) async {
       case 'rejected':
         return '/priest/rejected';
       case 'approved':
-        // Approved priests always land on the dashboard, regardless
-        // of activation. The activation gate now lives at action
-        // points (going online, accepting a session) via a bottom
-        // sheet — so an unactivated priest can freely explore their
-        // dashboard, wallet, and profile to understand what they're
-        // activating for.
-        return '/priest';
+        // First time a priest reaches approved → celebrate it once with
+        // the congrats screen; afterwards go straight to the dashboard.
+        // Approved priests always land on the dashboard regardless of
+        // activation — the activation gate lives at action points (going
+        // online, accepting a session) via a bottom sheet, so an
+        // unactivated priest can freely explore dashboard / wallet /
+        // profile to understand what they're activating for.
+        final seen = await _approvalCongratsSeen(uid);
+        return seen ? '/priest' : '/priest/approved';
       case 'suspended':
         // Suspended priests still see the dashboard shell (it'll
         // render a "your account is suspended" card once that piece
@@ -606,6 +683,10 @@ final appRouter = GoRouter(
       builder: (context, state) => const PendingApprovalPage(),
     ),
     GoRoute(
+      path: '/priest/approved',
+      builder: (context, state) => const ApprovalCongratsPage(),
+    ),
+    GoRoute(
       path: '/priest/rejected',
       builder: (context, state) => const ApplicationRejectedPage(),
     ),
@@ -667,6 +748,13 @@ List<GoRoute> _priestPlaceholderRoutes() {
         return BankDetailsPage(existingDetails: existing);
       },
     ),
+    // Priest "My Withdrawals" status screen — the per-withdrawal
+    // timeline (Requested -> Processing -> Sent), bank reference, and
+    // on-hold fix prompt. Provides its own cubit internally.
+    GoRoute(
+      path: '/priest/withdrawals',
+      builder: (context, state) => const WithdrawalStatusPage(),
+    ),
     // Priest's own profile (view + edit). Distinct from the user-side
     // /user/priest/:id which renders a public-facing speaker profile —
     // hence the import alias on PriestMyProfilePage above.
@@ -717,12 +805,16 @@ List<GoRoute> _priestPlaceholderRoutes() {
 List<GoRoute> _adminSubRoutes() {
   const placeholders = {
     '/admin/matrimony': 'Matrimony Approvals',
-    '/admin/revenue': 'Revenue Dashboard',
     '/admin/bible-sessions': 'Bible Sessions',
     '/admin/products': 'Products',
   };
 
   return [
+    // Revenue dashboard
+    GoRoute(
+      path: '/admin/revenue',
+      builder: (context, state) => const RevenuePage(),
+    ),
     // Real settings pages
     GoRoute(
       path: '/admin/settings',
@@ -763,6 +855,10 @@ List<GoRoute> _adminSubRoutes() {
       path: '/admin/withdrawals',
       builder: (context, state) => const WithdrawalsPage(),
     ),
+    GoRoute(
+      path: '/admin/notifications',
+      builder: (context, state) => const AdminNotificationsPage(),
+    ),
     // Placeholder pages
     ...placeholders.entries.map(
       (e) => GoRoute(
@@ -780,15 +876,68 @@ class _AdminPlaceholder extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      backgroundColor: const Color(0xFFF8F9FA),
+      backgroundColor: AdminColors.background,
       appBar: AppBar(
-        title: Text(title),
-        backgroundColor: const Color(0xFFF8F9FA),
-        foregroundColor: const Color(0xFF111827),
+        title: Text(
+          title,
+          style: GoogleFonts.inter(
+            fontSize: 18,
+            fontWeight: FontWeight.w600,
+            color: AdminColors.textPrimary,
+          ),
+        ),
+        backgroundColor: AdminColors.background,
+        foregroundColor: AdminColors.textPrimary,
         elevation: 0,
         scrolledUnderElevation: 0,
       ),
-      body: const Center(child: Text('Coming Soon')),
+      // A styled, intentional "being built" state — not a bare white
+      // screen, so tapping a not-yet-shipped Manage card reads as a
+      // planned section rather than a broken/dead button.
+      body: Center(
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 40),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Container(
+                width: 72,
+                height: 72,
+                decoration: const BoxDecoration(
+                  color: AdminColors.warningBg,
+                  shape: BoxShape.circle,
+                ),
+                alignment: Alignment.center,
+                child: const AppIcon(
+                  AppIcons.hourglass,
+                  size: 28,
+                  color: AdminColors.warning,
+                ),
+              ),
+              const SizedBox(height: 20),
+              Text(
+                'Coming soon',
+                style: GoogleFonts.inter(
+                  fontSize: 18,
+                  fontWeight: FontWeight.w700,
+                  color: AdminColors.textPrimary,
+                ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'This section is being built and will appear here in an upcoming update.',
+                textAlign: TextAlign.center,
+                style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w400,
+                  height: 1.45,
+                  color: AdminColors.textMuted,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
     );
   }
 }

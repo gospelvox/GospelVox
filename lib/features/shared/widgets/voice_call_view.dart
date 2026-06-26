@@ -30,11 +30,14 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:go_router/go_router.dart';
 import 'package:google_fonts/google_fonts.dart';
 
+import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/bloc/voice_call_cubit.dart';
 import 'package:gospel_vox/features/shared/bloc/voice_call_state.dart';
 import 'package:gospel_vox/features/shared/widgets/recharge_sheet.dart';
+import 'package:gospel_vox/features/shared/widgets/session_participant_menu.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Pinned locally rather than in AppColors — this is the only voice
 // call surface, and elevating these to theme tokens would pollute
@@ -43,16 +46,14 @@ const Color _kBgTop = Color(0xFF2C1810);
 const Color _kBgBottom = Color(0xFF0A0400);
 const Color _kGold = Color(0xFFC8902A);
 const Color _kBeigeText = Color(0xFFF5EAD8);
-const Color _kAccentGreen = Color(0xFF2E7D4F);
+const Color _kAccentGreen = AppColors.successGreen;
 const Color _kAccentRed = Color(0xFFDC2626);
 const Color _kAmber = Color(0xFFD4A060);
 const Color _kSheetBg = Color(0xFF1A0E08);
 const Color _kAvatarInner = Color(0xFF3D1F0F);
 
-typedef VoiceEndedCallback = void Function(
-  BuildContext context,
-  VoiceCallEnded state,
-);
+typedef VoiceEndedCallback =
+    void Function(BuildContext context, VoiceCallEnded state);
 
 class VoiceCallView extends StatefulWidget {
   final String sessionId;
@@ -281,8 +282,9 @@ class _VoiceCallViewState extends State<VoiceCallView>
     // to whole seconds against the rate-per-minute. Locked at sheet
     // open time; the user only sits with this for ~10-30 seconds
     // so a static reading is acceptable for v1.
-    final secondsLeft =
-        rate > 0 ? ((balance * 60) ~/ rate).clamp(0, 60 * 60) : 0;
+    final secondsLeft = rate > 0
+        ? ((balance * 60) ~/ rate).clamp(0, 60 * 60)
+        : 0;
     final mm = secondsLeft ~/ 60;
     final ss = secondsLeft % 60;
     final countdown = '$mm:${ss.toString().padLeft(2, '0')}';
@@ -297,6 +299,8 @@ class _VoiceCallViewState extends State<VoiceCallView>
         context,
         currentBalance: balance,
         infoHeadline: 'Your call ends in $countdown',
+        // Keep the user in the live call — no jump to the full wallet.
+        showSeeAllPlans: false,
       );
     } finally {
       _lowBalanceSheetOpen = false;
@@ -343,6 +347,8 @@ class _VoiceCallViewState extends State<VoiceCallView>
       context,
       currentBalance: balance,
       infoHeadline: headline,
+      // Keep the user in the live call — no jump to the full wallet.
+      showSeeAllPlans: false,
     );
   }
 
@@ -350,14 +356,7 @@ class _VoiceCallViewState extends State<VoiceCallView>
     return Column(
       mainAxisAlignment: MainAxisAlignment.center,
       children: [
-        const SizedBox(
-          width: 22,
-          height: 22,
-          child: CircularProgressIndicator(
-            color: _kGold,
-            strokeWidth: 2.5,
-          ),
-        ),
+        const SizedBox(width: 35, height: 35, child: AppLoader()),
         const SizedBox(height: 16),
         Text(
           'Connecting…',
@@ -387,6 +386,20 @@ class _VoiceCallViewState extends State<VoiceCallView>
           isReconnecting: state.isReconnecting,
           formattedTime: state.formattedTime,
           networkQuality: state.networkQuality,
+          // Report / Block — user side only (direction: user →
+          // Speaker). Null hides the ⋮ button for the priest.
+          onMenuTap: widget.isUserSide
+              ? () => showSessionParticipantMenu(
+                  context,
+                  priestId: session.priestId,
+                  priestName: otherName,
+                  reporterUserId: session.userId,
+                  reporterName: session.userName.isNotEmpty
+                      ? session.userName
+                      : 'User',
+                  sessionId: widget.sessionId,
+                )
+              : null,
         ),
         if (widget.isUserSide && state.isLowBalance)
           _LowBalanceStrip(
@@ -468,10 +481,8 @@ class _VoiceCallViewState extends State<VoiceCallView>
           isMuted: state.isMuted,
           isSpeakerOn: state.isSpeakerOn,
           isEnding: state.isEnding,
-          onToggleMute: () =>
-              context.read<VoiceCallCubit>().toggleMute(),
-          onToggleSpeaker: () =>
-              context.read<VoiceCallCubit>().toggleSpeaker(),
+          onToggleMute: () => context.read<VoiceCallCubit>().toggleMute(),
+          onToggleSpeaker: () => context.read<VoiceCallCubit>().toggleSpeaker(),
           onEnd: state.isEnding ? null : _showEndConfirmation,
         ),
         const SizedBox(height: 20),
@@ -518,8 +529,7 @@ class _VoiceCallViewState extends State<VoiceCallView>
             HapticFeedback.heavyImpact();
             Navigator.of(sheetContext).pop();
             cubit.endCall(
-              reason:
-                  widget.isUserSide ? 'user_ended' : 'priest_ended',
+              reason: widget.isUserSide ? 'user_ended' : 'priest_ended',
             );
           },
         );
@@ -538,12 +548,16 @@ class _TopBar extends StatelessWidget {
   // both the "Poor connection" / "Disconnected" label and the
   // optional weak-signal pill in the right column.
   final int networkQuality;
+  // Opens the Report / Block menu. Null on the priest side, which
+  // hides the ⋮ button entirely.
+  final VoidCallback? onMenuTap;
 
   const _TopBar({
     required this.isRemoteJoined,
     required this.isReconnecting,
     required this.formattedTime,
     required this.networkQuality,
+    this.onMenuTap,
   });
 
   @override
@@ -562,8 +576,7 @@ class _TopBar extends StatelessWidget {
         children: [
           Flexible(
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                  horizontal: 12, vertical: 6),
+              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
               decoration: BoxDecoration(
                 color: Colors.white.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(20),
@@ -614,7 +627,9 @@ class _TopBar extends StatelessWidget {
               // duration), just no longer the eye's anchor.
               Container(
                 padding: const EdgeInsets.symmetric(
-                    horizontal: 10, vertical: 4),
+                  horizontal: 10,
+                  vertical: 4,
+                ),
                 decoration: BoxDecoration(
                   color: Colors.white.withValues(alpha: 0.05),
                   borderRadius: BorderRadius.circular(20),
@@ -628,6 +643,24 @@ class _TopBar extends StatelessWidget {
                   ),
                 ),
               ),
+              if (onMenuTap != null) ...[
+                const SizedBox(width: 2),
+                IconButton(
+                  onPressed: onMenuTap,
+                  visualDensity: VisualDensity.compact,
+                  padding: EdgeInsets.zero,
+                  constraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  tooltip: 'Report or block',
+                  icon: AppIcon(
+                    AppIcons.more,
+                    size: 20,
+                    color: Colors.white.withValues(alpha: 0.6),
+                  ),
+                ),
+              ],
             ],
           ),
         ],
@@ -679,9 +712,11 @@ class _SignalPill extends StatelessWidget {
         mainAxisSize: MainAxisSize.min,
         children: [
           AppIcon(
-            isBad
-                ? AppIcons.wifiOff
-                : AppIcons.wifiOff,
+            // Severity is conveyed by the pill's colour (red vs amber)
+            // and label ("Poor" vs "Weak"); the icon is the same signal
+            // glyph in both states. (wifi / wifiOff map to the same
+            // codepoint in AppIcons, so a ternary here was a no-op.)
+            AppIcons.wifiOff,
             size: 14,
             color: isBad ? const Color(0xFFFF6B6B) : tint,
           ),
@@ -715,9 +750,7 @@ class _ConnectionTroubleBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: _kAmber.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: _kAmber.withValues(alpha: 0.2),
-        ),
+        border: Border.all(color: _kAmber.withValues(alpha: 0.2)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
@@ -776,18 +809,12 @@ class _SilenceHintBanner extends StatelessWidget {
       decoration: BoxDecoration(
         color: _kAmber.withValues(alpha: 0.15),
         borderRadius: BorderRadius.circular(12),
-        border: Border.all(
-          color: _kAmber.withValues(alpha: 0.2),
-        ),
+        border: Border.all(color: _kAmber.withValues(alpha: 0.2)),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          AppIcon(
-            AppIcons.micOff,
-            size: 16,
-            color: _kAmber,
-          ),
+          AppIcon(AppIcons.micOff, size: 16, color: _kAmber),
           const SizedBox(width: 10),
           Expanded(
             child: Column(
@@ -863,11 +890,7 @@ class _LowBalanceStrip extends StatelessWidget {
       ),
       child: Row(
         children: [
-          const AppIcon(
-            AppIcons.warning,
-            size: 16,
-            color: Color(0xFFFF6B6B),
-          ),
+          const AppIcon(AppIcons.warning, size: 16, color: Color(0xFFFF6B6B)),
           const SizedBox(width: 8),
           Expanded(
             child: Text(
@@ -918,8 +941,7 @@ class _AddCoinsPillState extends State<_AddCoinsPill> {
           duration: const Duration(milliseconds: 120),
           curve: Curves.easeOut,
           child: Container(
-            padding:
-                const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
+            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 7),
             decoration: BoxDecoration(
               color: _kGold,
               borderRadius: BorderRadius.circular(10),
@@ -971,10 +993,7 @@ class _AvatarRing extends StatelessWidget {
       decoration: BoxDecoration(
         shape: BoxShape.circle,
         color: _kAvatarInner,
-        border: Border.all(
-          color: _kGold.withValues(alpha: 0.3),
-          width: 2,
-        ),
+        border: Border.all(color: _kGold.withValues(alpha: 0.3), width: 2),
         boxShadow: [
           BoxShadow(
             color: _kGold.withValues(alpha: 0.15),
@@ -983,10 +1002,7 @@ class _AvatarRing extends StatelessWidget {
           ),
         ],
         image: photoUrl.isNotEmpty
-            ? DecorationImage(
-                image: NetworkImage(photoUrl),
-                fit: BoxFit.cover,
-              )
+            ? DecorationImage(image: NetworkImage(photoUrl), fit: BoxFit.cover)
             : null,
       ),
       child: photoUrl.isEmpty
@@ -1057,14 +1073,7 @@ class _ReconnectingBanner extends StatelessWidget {
         mainAxisAlignment: MainAxisAlignment.center,
         mainAxisSize: MainAxisSize.min,
         children: [
-          const SizedBox(
-            width: 14,
-            height: 14,
-            child: CircularProgressIndicator(
-              color: _kAmber,
-              strokeWidth: 2,
-            ),
-          ),
+          const SizedBox(width: 35, height: 35, child: AppLoader()),
           const SizedBox(width: 10),
           Text(
             'Reconnecting…',
@@ -1116,14 +1125,9 @@ class _ControlsRow extends StatelessWidget {
               onToggleMute();
             },
           ),
-          _EndCallButton(
-            isEnding: isEnding,
-            onTap: onEnd,
-          ),
+          _EndCallButton(isEnding: isEnding, onTap: onEnd),
           _CallControl(
-            icon: isSpeakerOn
-                ? AppIcons.volumeUp
-                : AppIcons.volumeOff,
+            icon: isSpeakerOn ? AppIcons.volumeUp : AppIcons.volumeOff,
             label: isSpeakerOn ? 'Speaker' : 'Earpiece',
             // The "active" highlight reads better as the off state
             // (earpiece) — that's the one the user has explicitly
@@ -1248,9 +1252,7 @@ class _EndCallButtonState extends State<_EndCallButton> {
                 height: 72,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: _kAccentRed.withValues(
-                    alpha: disabled ? 0.5 : 1.0,
-                  ),
+                  color: _kAccentRed.withValues(alpha: disabled ? 0.5 : 1.0),
                   boxShadow: disabled
                       ? null
                       : [
@@ -1264,12 +1266,9 @@ class _EndCallButtonState extends State<_EndCallButton> {
                 child: widget.isEnding
                     ? const Center(
                         child: SizedBox(
-                          width: 22,
-                          height: 22,
-                          child: CircularProgressIndicator(
-                            color: Colors.white,
-                            strokeWidth: 2.5,
-                          ),
+                          width: 35,
+                          height: 35,
+                          child: AppLoader(),
                         ),
                       )
                     : const AppIcon(
@@ -1357,9 +1356,9 @@ class _EndCallSheet extends StatelessWidget {
             Text(
               isUserSide
                   ? 'You will be charged for the time spent so far. '
-                      'This action cannot be undone.'
+                        'This action cannot be undone.'
                   : 'The user will be charged for the time spent so far. '
-                      'This action cannot be undone.',
+                        'This action cannot be undone.',
               textAlign: TextAlign.center,
               style: GoogleFonts.inter(
                 fontSize: 13,

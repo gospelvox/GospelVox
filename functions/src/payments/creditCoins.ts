@@ -34,6 +34,16 @@ export interface CreditCoinsArgs {
   // without forcing those into the function signature — keeps this
   // helper provider-agnostic if a future IAP path lands here too.
   ledgerExtra?: Record<string, unknown>;
+  // The Play purchase token. When present we write a
+  // `purchases/{purchaseToken}` doc via batch.create() as part of
+  // the SAME atomic credit batch — its doc id IS the token, so two
+  // concurrent calls carrying the same token cannot both commit:
+  // the second create collides on the doc id and the whole batch
+  // fails with ALREADY_EXISTS, leaving exactly one credit. This is
+  // the deterministic dedupe the bare wallet_transactions query
+  // (a non-atomic read) could not provide. Mirrors the
+  // verifyActivationPurchase / verifyAndJoinBibleSession pattern.
+  purchaseToken?: string;
 }
 
 export interface CreditCoinsResult {
@@ -43,9 +53,34 @@ export interface CreditCoinsResult {
 export async function creditCoins(
   args: CreditCoinsArgs,
 ): Promise<CreditCoinsResult> {
-  const {uid, coins, packId, amountPaidRupees, ledgerExtra} = args;
+  const {
+    uid,
+    coins,
+    packId,
+    amountPaidRupees,
+    ledgerExtra,
+    purchaseToken,
+  } = args;
 
   const batch = db.batch();
+
+  // Atomic idempotency guard. batch.create() requires the doc to
+  // NOT already exist; if a concurrent call already credited this
+  // token, this create fails the entire batch (ALREADY_EXISTS), so
+  // the balance is never incremented twice for one purchase. Doc id
+  // IS the purchase token. Skipped only if no token was supplied
+  // (keeps the helper usable by a non-Play caller).
+  if (purchaseToken) {
+    const purchaseRef = db.doc(`purchases/${purchaseToken}`);
+    batch.create(purchaseRef, {
+      userId: uid,
+      kind: "coin_purchase",
+      provider: "play",
+      packId,
+      coins,
+      createdAt: admin.firestore.FieldValue.serverTimestamp(),
+    });
+  }
 
   const userRef = db.doc(`users/${uid}`);
   batch.update(userRef, {

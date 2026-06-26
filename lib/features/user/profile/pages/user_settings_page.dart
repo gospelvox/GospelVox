@@ -34,6 +34,7 @@ import 'package:gospel_vox/core/widgets/app_version_text.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class UserSettingsPage extends StatefulWidget {
   const UserSettingsPage({super.key});
@@ -101,6 +102,12 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
               .doc('priests/$id')
               .get()
               .timeout(const Duration(seconds: 5));
+          // A deleted priest is shown as "Unavailable" rather than
+          // their old name — the user can still unblock/unmute the
+          // entry, it just no longer reveals who they were.
+          if (p.data()?['isDeleted'] == true) {
+            return (priestId: id, name: 'Unavailable');
+          }
           final n = p.data()?['fullName'] as String?;
           return (priestId: id, name: n != null && n.isNotEmpty ? n : id);
         } catch (_) {
@@ -170,6 +177,12 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
               .doc('priests/$id')
               .get()
               .timeout(const Duration(seconds: 5));
+          // A deleted priest is shown as "Unavailable" rather than
+          // their old name — the user can still unblock/unmute the
+          // entry, it just no longer reveals who they were.
+          if (p.data()?['isDeleted'] == true) {
+            return (priestId: id, name: 'Unavailable');
+          }
           final n = p.data()?['fullName'] as String?;
           return (priestId: id, name: n != null && n.isNotEmpty ? n : id);
         } catch (_) {
@@ -309,12 +322,9 @@ class _UserSettingsPageState extends State<UserSettingsPage> {
       body: _isLoading
           ? const Center(
               child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.4,
-                  color: AppColors.primaryBrown,
-                ),
+                width: 38,
+                height: 38,
+                child: AppLoader(),
               ),
             )
           : SingleChildScrollView(
@@ -554,7 +564,7 @@ class _Toggle extends StatelessWidget {
         decoration: BoxDecoration(
           borderRadius: BorderRadius.circular(14),
           color: value
-              ? const Color(0xFF2E7D4F)
+              ? AppColors.successGreen
               : AppColors.muted.withValues(alpha: 0.2),
         ),
         child: AnimatedAlign(
@@ -1080,7 +1090,7 @@ class _DeleteAccountSheetState extends State<_DeleteAccountSheet> {
             const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: _isConfirmed
@@ -1247,12 +1257,9 @@ class _SheetActionDanger extends StatelessWidget {
         ),
         child: isLoading
             ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
+                width: 29,
+                height: 29,
+                child: AppLoader(),
               )
             : Text(
                 label,

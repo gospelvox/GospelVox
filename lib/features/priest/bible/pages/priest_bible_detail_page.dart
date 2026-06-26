@@ -24,9 +24,10 @@ import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
-const Color _kCompletedGreen = Color(0xFF2E7D4F);
-const Color _kLiveRed = Color(0xFFE53E3E);
+const Color _kCompletedGreen = AppColors.successGreen;
+const Color _kLiveRed = AppColors.liveRed;
 
 class PriestBibleDetailPage extends StatefulWidget {
   final String sessionId;
@@ -44,6 +45,11 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
   List<BibleRegistration> _registrations = const [];
   bool _registrationsLoaded = false;
   bool _isMutating = false;
+  // Commission split (%) from app_config, so the "Earned"/"Revenue"
+  // tiles show the NET the priest actually receives (matching the
+  // wallet), not the gross ticket price. Defaults to the model default
+  // until the live value loads.
+  int _bibleCommissionPercent = BibleSessionModel.defaultCommissionPercent;
   // Tracks if any priest-side mutation happened that should bubble up
   // to the list page (cancel, complete, add link, start). Returned as
   // pop() result so the list reloads only when needed.
@@ -68,6 +74,13 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
       },
     );
     _loadRegistrations();
+    _loadCommission();
+  }
+
+  Future<void> _loadCommission() async {
+    final pct = await _repository.getBibleCommissionPercent();
+    if (!mounted) return;
+    setState(() => _bibleCommissionPercent = pct);
   }
 
   @override
@@ -480,6 +493,7 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
               session: session,
               paidCount:
                   _registrations.where((r) => r.isPaid).length,
+              commissionPercent: _bibleCommissionPercent,
               registrationsLoaded: _registrationsLoaded,
               isMutating: _isMutating,
               onOpenMeeting: () => _launchMeeting(session.meetingLink),
@@ -501,6 +515,7 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
               session: session,
               registrations: _registrations,
               registrationsLoaded: _registrationsLoaded,
+              commissionPercent: _bibleCommissionPercent,
             )
           else
             _CancelledStateView(
@@ -816,6 +831,7 @@ class _UpcomingStateView extends StatelessWidget {
 class _LiveStateView extends StatefulWidget {
   final BibleSessionModel session;
   final int paidCount;
+  final int commissionPercent;
   final bool registrationsLoaded;
   final bool isMutating;
   final Future<bool> Function() onOpenMeeting;
@@ -824,6 +840,7 @@ class _LiveStateView extends StatefulWidget {
   const _LiveStateView({
     required this.session,
     required this.paidCount,
+    required this.commissionPercent,
     required this.registrationsLoaded,
     required this.isMutating,
     required this.onOpenMeeting,
@@ -877,8 +894,9 @@ class _LiveStateViewState extends State<_LiveStateView> {
   @override
   Widget build(BuildContext context) {
     final session = widget.session;
-    final price = session.price;
-    final revenue = widget.paidCount * price;
+    // Net of commission — matches what actually lands in the wallet.
+    final revenue =
+        session.priestNetEarnings(widget.paidCount, widget.commissionPercent);
     final elapsedMin = _elapsed.inMinutes;
 
     return Column(
@@ -1138,18 +1156,21 @@ class _CompletedStateView extends StatelessWidget {
   final BibleSessionModel session;
   final List<BibleRegistration> registrations;
   final bool registrationsLoaded;
+  final int commissionPercent;
 
   const _CompletedStateView({
     required this.session,
     required this.registrations,
     required this.registrationsLoaded,
+    required this.commissionPercent,
   });
 
   @override
   Widget build(BuildContext context) {
     final paid = registrations.where((r) => r.isPaid).toList();
     final ratings = paid.where((r) => r.hasRated).toList();
-    final revenue = paid.length * session.price;
+    // Net of commission — matches the wallet ledger, not gross price.
+    final revenue = session.priestNetEarnings(paid.length, commissionPercent);
     final avg = ratings.isEmpty
         ? 0.0
         : ratings.fold<int>(0, (a, r) => a + (r.rating ?? 0)) /
@@ -1715,14 +1736,9 @@ class _AttendeesSection extends StatelessWidget {
               padding: const EdgeInsets.symmetric(vertical: 14),
               child: Center(
                 child: SizedBox(
-                  width: 18,
-                  height: 18,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    valueColor: AlwaysStoppedAnimation(
-                      AppColors.primaryBrown,
-                    ),
-                  ),
+                  width: 29,
+                  height: 29,
+                  child: AppLoader(),
                 ),
               ),
             )
@@ -2033,14 +2049,9 @@ class _StartMeetingConfirmationSheetState
                   child: Center(
                     child: _submitting
                         ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.white,
-                              ),
-                            ),
+                            width: 35,
+                            height: 35,
+                            child: AppLoader(),
                           )
                         : Text(
                             "Start Meeting",
@@ -2696,7 +2707,7 @@ class _LinkStatusRow extends StatelessWidget {
       text =
           "Tip: paste `meet.google.com/...` — we'll handle the rest.";
     } else if (result.isValid) {
-      color = const Color(0xFF2E7D4F);
+      color = AppColors.successGreen;
       icon = AppIcons.checkCircle;
       text = "Will be saved as: ${result.url!}";
     } else {

@@ -7,6 +7,8 @@ import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/features/admin/dashboard/bloc/dashboard_cubit.dart';
 import 'package:gospel_vox/features/admin/dashboard/data/dashboard_repository.dart';
+import 'package:gospel_vox/features/admin/revenue/bloc/revenue_cubit.dart';
+import 'package:gospel_vox/features/admin/revenue/data/revenue_repository.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/coin_packs_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/settings_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_packs_repository.dart';
@@ -77,6 +79,11 @@ Future<void> initDependencies() async {
   sl.registerLazySingleton<DashboardRepository>(() => DashboardRepository());
   sl.registerFactory<DashboardCubit>(
       () => DashboardCubit(sl<DashboardRepository>()));
+
+  // Admin revenue
+  sl.registerLazySingleton<RevenueRepository>(() => RevenueRepository());
+  sl.registerFactory<RevenueCubit>(
+      () => RevenueCubit(sl<RevenueRepository>()));
 
   // Admin settings
   sl.registerLazySingleton<SettingsRepository>(() => SettingsRepository());

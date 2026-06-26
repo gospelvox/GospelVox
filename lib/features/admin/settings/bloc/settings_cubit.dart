@@ -2,6 +2,7 @@
 
 import 'dart:async';
 
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/foundation.dart';
 import 'package:flutter_bloc/flutter_bloc.dart';
 
@@ -34,6 +35,17 @@ class SettingsCubit extends Cubit<SettingsState> {
       await loadSettings();
     } on TimeoutException {
       emit(SettingsError('Save timed out. Try again.'));
+    } on FirebaseException catch (e) {
+      // Surface the actual cause instead of a blanket failure — a
+      // permission-denied here almost always means the signed-in
+      // account's users/{uid}.role isn't 'admin', which the generic
+      // message hid completely.
+      debugPrint('[Settings] save failed: ${e.code} — ${e.message}');
+      emit(SettingsError(
+        e.code == 'permission-denied'
+            ? 'Not allowed. Make sure you are signed in as an admin.'
+            : 'Failed to save settings. (${e.code})',
+      ));
     } catch (e) {
       debugPrint('[Settings] save failed: $e');
       emit(SettingsError('Failed to save settings.'));

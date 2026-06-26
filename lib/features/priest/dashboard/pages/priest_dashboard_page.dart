@@ -44,6 +44,8 @@ import 'package:intl/intl.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class PriestDashboardPage extends StatefulWidget {
   const PriestDashboardPage({super.key});
@@ -194,6 +196,21 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
       // for 30 seconds, then restart the periodic timer.
       _sendHeartbeatOnce();
       _ensureHeartbeatRunning();
+      // A background-resume notification tap stashes pendingRoute via
+      // onMessageOpenedApp, but the dashboard is already mounted so the
+      // initState drain won't re-run. Drain on resume too so the tap
+      // actually navigates. Deferred a frame so navigation happens
+      // after the resume settles.
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        final route = NotificationService.pendingRoute;
+        NotificationService.pendingRoute = null;
+        if (route != null &&
+            route.isNotEmpty &&
+            route != '/priest' &&
+            mounted) {
+          context.push(route);
+        }
+      });
     }
   }
 
@@ -576,6 +593,22 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
 
   // ─── Build ─────────────────────────────────────────────────
 
+  // Press-again-to-exit guard so a stray back press on the priest home
+  // doesn't drop the priest straight out of the app.
+  DateTime? _lastBackPressed;
+
+  void _onBackInvoked(bool didPop, Object? result) {
+    if (didPop) return;
+    final now = DateTime.now();
+    if (_lastBackPressed == null ||
+        now.difference(_lastBackPressed!) > const Duration(seconds: 2)) {
+      _lastBackPressed = now;
+      AppSnackBar.info(context, 'Press back again to exit');
+      return;
+    }
+    SystemNavigator.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
     // Hold the spinner until BOTH the priest doc has loaded AND the
@@ -588,15 +621,15 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
     // appear in one settled state.
     final isResolvingDashboard = _loading || _ratingFallbackInFlight;
 
-    return Scaffold(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: _onBackInvoked,
+      child: Scaffold(
       backgroundColor: AppColors.background,
       body: SafeArea(
         child: isResolvingDashboard
             ? const Center(
-                child: CircularProgressIndicator(
-                  color: AppColors.primaryBrown,
-                  strokeWidth: 2.5,
-                ),
+                child: AppLoader(),
               )
             : SingleChildScrollView(
                 physics: const BouncingScrollPhysics(),
@@ -654,6 +687,7 @@ class _PriestDashboardPageState extends State<PriestDashboardPage>
                   ),
                 ),
               ),
+      ),
       ),
     );
   }
@@ -1522,8 +1556,9 @@ class _MissedRequestBannerState extends State<_MissedRequestBanner> {
 
     // Terra-cotta — semantic urgency color, in the same warm-red
     // family as the bell badge so the priest's "you missed something"
-    // signal reads as one consistent system.
-    const terraCotta = Color(0xFFB5523A);
+    // signal reads as one consistent system. Uses the shared token so
+    // it's exactly the bell-badge red (was a drifted local #B5523A).
+    const terraCotta = AppColors.terraCotta;
 
     return Container(
       padding:
@@ -1829,7 +1864,7 @@ class _ProfileAvatarState extends State<_ProfileAvatar> {
             height: 44,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               border: Border.all(
                 color: AppColors.amberGold.withValues(alpha: 0.3),
                 width: 2,

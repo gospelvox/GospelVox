@@ -21,6 +21,7 @@ import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/features/shared/data/session_history_repository.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class ChatTranscriptPage extends StatefulWidget {
   final String sessionId;
@@ -143,10 +144,7 @@ class _ChatTranscriptPageState extends State<ChatTranscriptPage> {
   Widget _buildBody(String currentUid) {
     if (_isLoading) {
       return const Center(
-        child: CircularProgressIndicator(
-          color: AppColors.primaryBrown,
-          strokeWidth: 2.5,
-        ),
+        child: AppLoader(),
       );
     }
 

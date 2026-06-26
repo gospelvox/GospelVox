@@ -38,6 +38,10 @@ class HomeRepository {
         .map((snap) => _sortForFeed(snap.docs
             .where((doc) => doc.id != '_placeholder')
             .map((doc) => SpeakerModel.fromFirestore(doc.data()))
+            // A priest who deleted their account vanishes from the
+            // feed the instant the delete write lands — isDeleted is
+            // set in the same update that flips isOnline off.
+            .where((p) => !p.isDeleted)
             .toList()));
   }
 
@@ -56,6 +60,9 @@ class HomeRepository {
     return _sortForFeed(snap.docs
         .where((doc) => doc.id != '_placeholder')
         .map((doc) => SpeakerModel.fromFirestore(doc.data()))
+        // Mirror the stream's deleted-priest filter so pull-to-refresh
+        // can't briefly resurrect a priest the stream already dropped.
+        .where((p) => !p.isDeleted)
         .toList());
   }
 
@@ -158,7 +165,19 @@ class HomeRepository {
         message: 'Priest not found',
       );
     }
-    return SpeakerModel.fromFirestore(doc.data()!);
+    final priest = SpeakerModel.fromFirestore(doc.data()!);
+    // A deleted priest is treated exactly like a missing one — if a
+    // stale deep-link or cached card somehow routes here, the profile
+    // page shows its standard "not found" state instead of a ghost
+    // "Deleted Speaker" profile.
+    if (priest.isDeleted) {
+      throw FirebaseException(
+        plugin: 'cloud_firestore',
+        code: 'not-found',
+        message: 'Priest not found',
+      );
+    }
+    return priest;
   }
 
   // Balance snapshot used for the pre-session affordability check.

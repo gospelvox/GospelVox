@@ -37,6 +37,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
     show CallEntryBubble;
 
@@ -349,12 +350,9 @@ class _PriestChatPageState extends State<PriestChatPage>
               child: _isLoading
                   ? const Center(
                       child: SizedBox(
-                        width: 24,
-                        height: 24,
-                        child: CircularProgressIndicator(
-                          strokeWidth: 2.4,
-                          color: AppColors.primaryBrown,
-                        ),
+                        width: 38,
+                        height: 38,
+                        child: AppLoader(),
                       ),
                     )
                   : _buildList(priestUid),
@@ -389,7 +387,7 @@ class _PriestChatPageState extends State<PriestChatPage>
             height: 32,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               border: Border.all(
                 color: AppColors.muted.withValues(alpha: 0.12),
                 width: 1.5,
@@ -535,7 +533,7 @@ class _PriestChatPageState extends State<PriestChatPage>
                 child: Container(
                   constraints: const BoxConstraints(maxHeight: 100),
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF7F5F2),
+                    color: AppColors.fieldFill,
                     borderRadius: BorderRadius.circular(24),
                   ),
                   child: TextField(
@@ -590,12 +588,9 @@ class _PriestChatPageState extends State<PriestChatPage>
                       child: _isSending
                           ? const Center(
                               child: SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
+                                width: 29,
+                                height: 29,
+                                child: AppLoader(),
                               ),
                             )
                           : const AppIcon(

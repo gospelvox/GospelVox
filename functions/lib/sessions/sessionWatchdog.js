@@ -206,6 +206,30 @@ async function processStaleSession(sessionId, session) {
                 description: `${session.type} session — minimum charge (watchdog)`,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
             });
+            // Priest-side earning row + platform-commission row, co-located
+            // with the credit so the ledger always agrees with the wallet
+            // (see billingTick.ts for the rationale).
+            const priestTxRef = db.collection("wallet_transactions").doc();
+            batch.set(priestTxRef, {
+                userId: session.priestId,
+                type: "session_earning",
+                sessionId: sessionId,
+                coins: priestEarningPerMinute,
+                description: `${session.type} session earning — minimum charge (watchdog)`,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            const platformCommission = rate - priestEarningPerMinute;
+            if (platformCommission > 0) {
+                const platformTxRef = db.collection("wallet_transactions").doc();
+                batch.set(platformTxRef, {
+                    userId: "__platform__",
+                    type: "session_commission",
+                    sessionId: sessionId,
+                    coins: platformCommission,
+                    description: `Commission — ${session.type} session`,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+            }
             await batch.commit();
             finalDuration = 1;
             finalTotalCharged = rate;

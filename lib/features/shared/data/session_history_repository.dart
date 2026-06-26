@@ -315,6 +315,22 @@ class SessionHistoryRepository {
         .map((d) => BibleSessionModel.fromFirestore(d.id, d.data()))
         .toList();
 
+    // Commission split (%) from app_config — so "Earned · Bible" shows
+    // the NET the priest actually received (matching the wallet ledger),
+    // not the gross ticket price. Falls back to the model default.
+    int commissionPercent = BibleSessionModel.defaultCommissionPercent;
+    try {
+      final cfg = await db
+          .doc('app_config/settings')
+          .get()
+          .timeout(const Duration(seconds: 8));
+      final raw = cfg.data()?['bibleCommissionPercent'];
+      final pct = (raw as num?)?.toInt();
+      if (pct != null && pct >= 0 && pct <= 100) commissionPercent = pct;
+    } catch (_) {
+      // Keep the default on any read failure.
+    }
+
     // Parallel paid-count reads.
     final paidCounts = await Future.wait(sessions.map((s) async {
       try {
@@ -333,7 +349,8 @@ class SessionHistoryRepository {
     for (var i = 0; i < sessions.length; i++) {
       entries.add(BibleSessionEntry(
         session: sessions[i],
-        priestRevenueInr: paidCounts[i] * sessions[i].price,
+        priestRevenueInr:
+            sessions[i].priestNetEarnings(paidCounts[i], commissionPercent),
       ));
     }
     return entries;
@@ -527,8 +544,12 @@ class SessionHistoryRepository {
       final lastSession = priestSessions.first;
 
       final data = priestData[i] ?? const <String, dynamic>{};
-      final isOnline = data['isOnline'] as bool? ?? false;
-      final isBusy = data['isBusy'] as bool? ?? false;
+      // A deleted priest is forced offline + identity-stripped here so
+      // the row renders as a neutral "Unavailable" entry regardless of
+      // the name/photo snapshotted into the session at chat time.
+      final isDeleted = data['isDeleted'] as bool? ?? false;
+      final isOnline = isDeleted ? false : (data['isOnline'] as bool? ?? false);
+      final isBusy = isDeleted ? false : (data['isBusy'] as bool? ?? false);
 
       final rated = priestSessions
           .where((s) => s.userRating != null && s.userRating! > 0)
@@ -542,9 +563,11 @@ class SessionHistoryRepository {
 
       groups.add(PriestSessionGroup(
         priestId: priestId,
-        priestName: lastSession.priestName,
-        priestPhotoUrl: lastSession.priestPhotoUrl,
-        priestDenomination: lastSession.priestDenomination,
+        priestName: isDeleted ? 'Unavailable' : lastSession.priestName,
+        priestPhotoUrl: isDeleted ? '' : lastSession.priestPhotoUrl,
+        priestDenomination:
+            isDeleted ? '' : lastSession.priestDenomination,
+        isDeleted: isDeleted,
         isOnline: isOnline,
         isBusy: isBusy,
         totalSessions: priestSessions.length,
@@ -724,14 +747,20 @@ class SessionHistoryRepository {
       final priestId = newIds[i];
       final meta = messageOnly[priestId]!;
       final data = newPriestData[i] ?? const <String, dynamic>{};
+      // Same identity-strip as the session-based rows: a message-only
+      // thread from a priest who has since deleted their account shows
+      // as a neutral "Unavailable" row, never their old name/photo.
+      final isDeleted = data['isDeleted'] as bool? ?? false;
 
       synthetic.add(PriestSessionGroup(
         priestId: priestId,
-        priestName: meta.priestName,
-        priestPhotoUrl: meta.priestPhotoUrl,
-        priestDenomination: data['denomination'] as String? ?? '',
-        isOnline: data['isOnline'] as bool? ?? false,
-        isBusy: data['isBusy'] as bool? ?? false,
+        priestName: isDeleted ? 'Unavailable' : meta.priestName,
+        priestPhotoUrl: isDeleted ? '' : meta.priestPhotoUrl,
+        priestDenomination:
+            isDeleted ? '' : (data['denomination'] as String? ?? ''),
+        isDeleted: isDeleted,
+        isOnline: isDeleted ? false : (data['isOnline'] as bool? ?? false),
+        isBusy: isDeleted ? false : (data['isBusy'] as bool? ?? false),
         totalSessions: 0,
         chatSessions: 1,
         voiceSessions: 0,
@@ -925,6 +954,12 @@ class PriestSessionGroup {
   final String priestName;
   final String priestPhotoUrl;
   final String priestDenomination;
+  // True when the priest behind this row has deleted their account.
+  // The row is kept (so the user's own history isn't silently erased)
+  // but its identity is stripped: name shows as "Unavailable", no
+  // photo, no status dot, and the row is not tappable. Set in the
+  // data layer from the live priests/{uid}.isDeleted flag.
+  final bool isDeleted;
   final bool isOnline;
   final bool isBusy;
   final int totalSessions;
@@ -954,6 +989,7 @@ class PriestSessionGroup {
     required this.priestName,
     required this.priestPhotoUrl,
     required this.priestDenomination,
+    this.isDeleted = false,
     required this.isOnline,
     required this.isBusy,
     required this.totalSessions,
@@ -994,6 +1030,7 @@ class PriestSessionGroup {
       priestName: priestName,
       priestPhotoUrl: priestPhotoUrl,
       priestDenomination: priestDenomination,
+      isDeleted: isDeleted,
       isOnline: isOnline,
       isBusy: isBusy,
       totalSessions: totalSessions,

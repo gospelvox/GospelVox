@@ -207,9 +207,39 @@ class _PackEditSheetState extends State<PackEditSheet> {
                           children: [
                             _label('Price (₹)'),
                             const SizedBox(height: 8),
-                            _field(_priceCtrl, '99',
-                                isNum: true, error: _priceErr),
+                            // Editable only when ADDING a pack — you record
+                            // the price once to match the Play SKU. When
+                            // EDITING, it's read-only: the real price lives
+                            // in the Play Console and changing it here would
+                            // only corrupt the audit record.
+                            widget.isEdit
+                                ? _readOnlyField('₹${widget.existing!.price}')
+                                : _field(_priceCtrl, '99',
+                                    isNum: true, error: _priceErr),
                           ],
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 8),
+                  Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Icon(Icons.info_outline,
+                          size: 13, color: AdminColors.textLight),
+                      const SizedBox(width: 6),
+                      Expanded(
+                        child: Text(
+                          widget.isEdit
+                              ? 'Price is set in the Google Play Console — '
+                                  'shown here for reference only.'
+                              : 'Price must match this pack\'s Google Play '
+                                  'price. Play charges the user — this value '
+                                  'only records the amount for reports.',
+                          style: GoogleFonts.inter(
+                              fontSize: 11,
+                              fontWeight: FontWeight.w400,
+                              color: AdminColors.textLight),
                         ),
                       ),
                     ],
@@ -277,6 +307,32 @@ class _PackEditSheetState extends State<PackEditSheet> {
           fontSize: 13,
           fontWeight: FontWeight.w500,
           color: AdminColors.textMuted));
+
+  // Read-only display box — same shape as _field but no input. Used for
+  // the price when editing (the real price lives in the Play Console).
+  Widget _readOnlyField(String value) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+      decoration: BoxDecoration(
+        color: AdminColors.inputBackground,
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(value,
+                style: GoogleFonts.inter(
+                    fontSize: 14,
+                    fontWeight: FontWeight.w600,
+                    color: AdminColors.textMuted)),
+          ),
+          const Icon(Icons.lock_outline,
+              size: 13, color: AdminColors.textLight),
+        ],
+      ),
+    );
+  }
 
   Widget _field(TextEditingController ctrl, String hint,
       {bool isNum = false, String? error}) {

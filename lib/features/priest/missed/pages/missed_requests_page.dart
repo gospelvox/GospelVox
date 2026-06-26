@@ -1048,7 +1048,7 @@ class _Avatar extends StatelessWidget {
       height: 48,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFFF7F5F2),
+        color: AppColors.fieldFill,
         border: Border.all(
           color: AppColors.amberGold.withValues(alpha: 0.4),
           width: 2,
@@ -1279,7 +1279,7 @@ class _DismissOptionState extends State<_DismissOption> {
               vertical: 12,
             ),
             decoration: BoxDecoration(
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               borderRadius: BorderRadius.circular(12),
             ),
             child: Row(

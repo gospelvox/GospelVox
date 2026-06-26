@@ -23,10 +23,12 @@ import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/admin_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/confirm_changes_sheet.dart';
+import 'package:gospel_vox/core/widgets/phone_country_prefix.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speaker_detail_cubit.dart';
 import 'package:gospel_vox/features/admin/speakers/bloc/speakers_state.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 final NumberFormat _inr = NumberFormat.currency(
   locale: 'en_IN',
@@ -217,6 +219,13 @@ class _DetailContent extends StatelessWidget {
             title: 'PERSONAL',
             items: [
               _DetailRow(
+                icon: AppIcons.user,
+                label: 'Role',
+                value: speaker.communityRole.isEmpty
+                    ? '—'
+                    : speaker.communityRole,
+              ),
+              _DetailRow(
                 icon: AppIcons.mail,
                 label: 'Email',
                 value: speaker.email.isEmpty ? '—' : speaker.email,
@@ -224,9 +233,7 @@ class _DetailContent extends StatelessWidget {
               _DetailRow(
                 icon: AppIcons.phone,
                 label: 'Phone',
-                value: speaker.phone.isEmpty
-                    ? '—'
-                    : '+91 ${speaker.phone}',
+                value: phoneForDisplay(speaker.phone),
               ),
               _DetailRow(
                 icon: AppIcons.briefcase,
@@ -1092,12 +1099,9 @@ class _FilledActionButtonState extends State<_FilledActionButton> {
           alignment: Alignment.center,
           child: widget.busy
               ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
+                  width: 35,
+                  height: 35,
+                  child: AppLoader(),
                 )
               : Text(
                   widget.label,
@@ -1170,12 +1174,9 @@ class _OutlineActionButtonState extends State<_OutlineActionButton> {
           alignment: Alignment.center,
           child: widget.busy
               ? SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    color: widget.color,
-                    strokeWidth: 2.5,
-                  ),
+                  width: 35,
+                  height: 35,
+                  child: AppLoader(),
                 )
               : Text(
                   widget.label,

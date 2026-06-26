@@ -19,7 +19,7 @@ async function seed() {
     voiceRatePerMinute: 15,
 
     // Platform commission on priest earnings
-    commissionPercent: 20,
+    commissionPercent: 40,
 
     // Priest one-time activation fee (INR)
     priestActivationFee: 500,
@@ -41,7 +41,7 @@ async function seed() {
 
     // Wallet limits
     lowBalanceWarning: 50,
-    minWithdrawal: 500,
+    minWithdrawal: 1000,
 
     // Welcome offer for first-time users
     welcomeOfferCoins: 100,

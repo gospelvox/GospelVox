@@ -28,8 +28,9 @@ import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_cubit.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_state.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
-const Color _kSuccessGreen = Color(0xFF2E7D4F);
+const Color _kSuccessGreen = AppColors.successGreen;
 
 class ActivationPaywallPage extends StatelessWidget {
   const ActivationPaywallPage({super.key});
@@ -545,12 +546,9 @@ class _PayButtonState extends State<_PayButton>
           alignment: Alignment.center,
           child: widget.processing
               ? const SizedBox(
-                  width: 22,
-                  height: 22,
-                  child: CircularProgressIndicator(
-                    color: Colors.white,
-                    strokeWidth: 2.5,
-                  ),
+                  width: 35,
+                  height: 35,
+                  child: AppLoader(),
                 )
               : Text(
                   'Activate for ₹${widget.fee}',
@@ -607,12 +605,9 @@ class _PaywallSkeleton extends StatelessWidget {
   Widget build(BuildContext context) {
     return const Center(
       child: SizedBox(
-        width: 32,
-        height: 32,
-        child: CircularProgressIndicator(
-          color: AppColors.primaryBrown,
-          strokeWidth: 2.5,
-        ),
+        width: 51,
+        height: 51,
+        child: AppLoader(),
       ),
     );
   }
@@ -653,13 +648,9 @@ class _VerificationOverlay extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   const SizedBox(
-                    width: 48,
-                    height: 48,
-                    child: CircularProgressIndicator(
-                      color: AppColors.primaryBrown,
-                      strokeWidth: 3.5,
-                      strokeCap: StrokeCap.round,
-                    ),
+                    width: 77,
+                    height: 77,
+                    child: AppLoader(),
                   ),
                   const SizedBox(height: 24),
                   Text(

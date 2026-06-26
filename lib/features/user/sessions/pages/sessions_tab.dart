@@ -354,6 +354,14 @@ class _SessionsTabState extends State<SessionsTab> {
   }
 
   void _openHistoryRow(PriestSessionGroup priest) {
+    // A deleted-priest row is intentionally inert — there's no live
+    // profile or chat to open. Tapping just acknowledges quietly
+    // instead of routing into a dead chat-history page.
+    if (priest.isDeleted) {
+      _dismissKeyboard();
+      AppSnackBar.error(context, 'This speaker is no longer available.');
+      return;
+    }
     HapticFeedback.lightImpact();
     _dismissKeyboard();
     context.push(
@@ -949,8 +957,9 @@ class _Header extends StatelessWidget {
 }
 
 // Bare-bones notification bell — no circular chrome, just the glyph
-// with a 10-px tap halo. Unread state surfaces as a 6-px terra-cotta
-// dot at the icon's top-right corner.
+// with a 10-px tap halo. Unread state surfaces as a terra-cotta count
+// badge (the number of unread notifications, capped at "99+") at the
+// icon's top-right corner.
 class _NotificationBell extends StatelessWidget {
   final String? uid;
   final VoidCallback onTap;
@@ -960,7 +969,7 @@ class _NotificationBell extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     if (uid == null) {
-      return _BellGlyph(showDot: false, onTap: onTap);
+      return _BellGlyph(count: 0, onTap: onTap);
     }
     return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
       stream: FirebaseFirestore.instance
@@ -970,16 +979,19 @@ class _NotificationBell extends StatelessWidget {
           .snapshots(),
       builder: (_, snap) {
         final count = snap.data?.docs.length ?? 0;
-        return _BellGlyph(showDot: count > 0, onTap: onTap);
+        return _BellGlyph(count: count, onTap: onTap);
       },
     );
   }
 }
 
 class _BellGlyph extends StatefulWidget {
-  final bool showDot;
+  // Count of unread notifications. 0 hides the badge; >0 shows the
+  // number (capped at "99+") so the user sees how many are waiting,
+  // not just that "something" is unread.
+  final int count;
   final VoidCallback onTap;
-  const _BellGlyph({required this.showDot, required this.onTap});
+  const _BellGlyph({required this.count, required this.onTap});
 
   @override
   State<_BellGlyph> createState() => _BellGlyphState();
@@ -1011,16 +1023,33 @@ class _BellGlyphState extends State<_BellGlyph> {
                   size: 22,
                   color: AppColors.deepDarkBrown,
                 ),
-                if (widget.showDot)
+                if (widget.count > 0)
                   Positioned(
-                    top: -1,
-                    right: -1,
+                    top: -6,
+                    right: -6,
                     child: Container(
-                      width: 6,
-                      height: 6,
-                      decoration: const BoxDecoration(
+                      padding: const EdgeInsets.symmetric(horizontal: 4),
+                      constraints: const BoxConstraints(minWidth: 16),
+                      height: 16,
+                      decoration: BoxDecoration(
                         color: AppColors.terraCotta,
-                        shape: BoxShape.circle,
+                        borderRadius: BorderRadius.circular(8),
+                        // Cream ring carves the badge off the bell so it
+                        // reads clearly even when it overlaps the glyph.
+                        border: Border.all(
+                          color: AppColors.backgroundPrimary,
+                          width: 1.5,
+                        ),
+                      ),
+                      alignment: Alignment.center,
+                      child: Text(
+                        widget.count > 99 ? '99+' : '${widget.count}',
+                        style: GoogleFonts.inter(
+                          fontSize: 9,
+                          fontWeight: FontWeight.w700,
+                          height: 1,
+                          color: Colors.white,
+                        ),
                       ),
                     ),
                   ),
@@ -2606,9 +2635,13 @@ class _HistoryAvatar extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final initial = priest.priestName.isNotEmpty
-        ? priest.priestName[0].toUpperCase()
-        : '?';
+    // Deleted priest → neutral placeholder glyph, never an initial
+    // derived from "Unavailable" (which would read as a stray "U").
+    final initial = priest.isDeleted
+        ? '?'
+        : (priest.priestName.isNotEmpty
+            ? priest.priestName[0].toUpperCase()
+            : '?');
     return SizedBox(
       width: 56,
       height: 56,
@@ -2623,40 +2656,51 @@ class _HistoryAvatar extends StatelessWidget {
               color: AppColors.surfaceSecondary,
             ),
             clipBehavior: Clip.antiAlias,
-            child: priest.priestPhotoUrl.isNotEmpty
-                ? CachedNetworkImage(
-                    imageUrl: priest.priestPhotoUrl,
-                    fit: BoxFit.cover,
-                    placeholder: (_, _) => const SizedBox.shrink(),
-                    errorWidget: (_, _, _) => _avatarFallback(initial),
+            child: priest.isDeleted
+                ? Center(
+                    child: AppIcon(
+                      AppIcons.userOutline,
+                      size: 22,
+                      color: AppColors.muted.withValues(alpha: 0.6),
+                    ),
                   )
-                : _avatarFallback(initial),
+                : (priest.priestPhotoUrl.isNotEmpty
+                    ? CachedNetworkImage(
+                        imageUrl: priest.priestPhotoUrl,
+                        fit: BoxFit.cover,
+                        placeholder: (_, _) => const SizedBox.shrink(),
+                        errorWidget: (_, _, _) => _avatarFallback(initial),
+                      )
+                    : _avatarFallback(initial)),
           ),
           // Indicator dot stays circular — semantic status signal,
           // not chrome. Top-right placement matches the speaker card
           // avatar so both surfaces read as one system. Warm-cream
           // halo ring (matching the page background) carves the dot
           // out without the stark sticker look of pure white.
-          Positioned(
-            top: -1,
-            right: -1,
-            child: priest.isAvailable
-                ? _PulsingHaloDot(color: _kVibrantGreen)
-                : Container(
-                    width: 12,
-                    height: 12,
-                    decoration: BoxDecoration(
-                      shape: BoxShape.circle,
-                      color: priest.isBusy
-                          ? AppColors.amberGold
-                          : AppColors.muted.withValues(alpha: 0.4),
-                      border: Border.all(
-                        color: AppColors.backgroundPrimary,
-                        width: 1.5,
+          // No status dot for a deleted priest — there's no live
+          // presence to signal.
+          if (!priest.isDeleted)
+            Positioned(
+              top: -1,
+              right: -1,
+              child: priest.isAvailable
+                  ? _PulsingHaloDot(color: _kVibrantGreen)
+                  : Container(
+                      width: 12,
+                      height: 12,
+                      decoration: BoxDecoration(
+                        shape: BoxShape.circle,
+                        color: priest.isBusy
+                            ? AppColors.amberGold
+                            : AppColors.muted.withValues(alpha: 0.4),
+                        border: Border.all(
+                          color: AppColors.backgroundPrimary,
+                          width: 1.5,
+                        ),
                       ),
                     ),
-                  ),
-          ),
+            ),
         ],
       ),
     );

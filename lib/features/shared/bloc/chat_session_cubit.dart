@@ -454,16 +454,16 @@ class ChatSessionCubit extends Cubit<ChatSessionState> {
   }
 
   // Latch + thresholds for the low-balance UX. Two levels:
-  //   • 5 minutes left → strip card shows (gentle reminder)
-  //   • 2 minutes left → urgent recharge sheet pops (one-shot)
+  //   • 2 minutes left → strip card shows (gentle reminder)
+  //   • 1 minute  left → urgent recharge sheet pops (one-shot)
   // Same edge-detection semantics as the voice-call cubit: pops
   // once per low-balance phase, re-arms when balance climbs above
   // the urgent threshold.
   bool _lowBalancePromptShown = false;
-  static const int _kLowBalanceWarningMinutes = 5;
-  static const int _kMinutesLeftThreshold = 2;
+  static const int _kLowBalanceWarningMinutes = 2;
+  static const int _kMinutesLeftThreshold = 1;
 
-  // Returns true when balance buys ≤5 minutes at the locked chat
+  // Returns true when balance buys ≤2 minutes at the locked chat
   // rate. Defensive: a zero/negative rate returns false so the
   // strip never pops on a misconfigured app_config.
   bool _isLowBalanceAt(int balance, int rate) {

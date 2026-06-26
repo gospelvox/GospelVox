@@ -20,39 +20,56 @@ import 'package:gospel_vox/features/admin/speakers/data/speakers_repository.dart
 class SpeakerDetailCubit extends Cubit<SpeakerDetailState> {
   final SpeakersRepository _repository;
 
+  // Live subscription to the priest doc, kept open for the page's
+  // lifetime so a profile edit by the priest (or a status change from
+  // the moderation CF) reflects on the admin screen within ~1s with no
+  // manual refresh. Cancelled in close().
+  StreamSubscription<SpeakerModel>? _detailSub;
+
   SpeakerDetailCubit(this._repository) : super(SpeakerDetailInitial());
 
+  // Subscribes to the live priest doc. The first snapshot replaces the
+  // loading shimmer; every later snapshot keeps the profile fresh.
+  //
+  // We deliberately DON'T overwrite a moderation action that's in
+  // flight (SpeakerDetailActionInProgress) or the success state that's
+  // about to pop the page (SpeakerDetailActionSuccess) — a passive
+  // data refresh only matters while the admin is actually viewing the
+  // profile, and clobbering those transient states would either hide
+  // the progress spinner or cancel the auto-pop.
   Future<void> loadDetail(String uid) async {
-    try {
-      emit(SpeakerDetailLoading());
-      final speaker = await _repository.getSpeakerDetail(uid);
-      if (isClosed) return;
-      emit(SpeakerDetailLoaded(speaker));
-    } on TimeoutException {
-      if (isClosed) return;
-      emit(SpeakerDetailError(
-        'Taking too long. Check your connection and try again.',
-      ));
-    } on SocketException {
-      if (isClosed) return;
-      emit(SpeakerDetailError(
-        'No internet connection. Please reconnect and try again.',
-      ));
-    } on FirebaseException catch (e) {
-      if (isClosed) return;
-      if (e.code == 'not-found') {
-        emit(SpeakerDetailError('Speaker not found.'));
-      } else {
-        emit(SpeakerDetailError('Failed to load speaker details.'));
-      }
-    } catch (e, st) {
-      // Surface the raw error to logs so a wedged admin client can
-      // tell us exactly what went wrong without shipping us a
-      // screenshot of a generic error toast.
-      debugPrint('[SpeakerDetailCubit] loadDetail failed: $e\n$st');
-      if (isClosed) return;
-      emit(SpeakerDetailError('Failed to load speaker details.'));
-    }
+    emit(SpeakerDetailLoading());
+    await _detailSub?.cancel();
+    _detailSub = _repository.watchSpeakerDetail(uid).listen(
+      (speaker) {
+        if (isClosed) return;
+        final current = state;
+        if (current is SpeakerDetailActionInProgress ||
+            current is SpeakerDetailActionSuccess) {
+          return;
+        }
+        emit(SpeakerDetailLoaded(speaker));
+      },
+      onError: (Object e, StackTrace st) {
+        if (isClosed) return;
+        final existing = _currentSpeaker();
+        if (e is FirebaseException && e.code == 'not-found') {
+          // Server-confirmed removal — surface it, but keep any
+          // profile we already have so the admin isn't dumped to a
+          // blank error screen mid-review.
+          emit(SpeakerDetailError('Speaker not found.', speaker: existing));
+        } else if (existing == null) {
+          // No profile on screen yet (failure on first load) — show
+          // the full-screen error so the shimmer doesn't hang forever.
+          debugPrint('[SpeakerDetailCubit] watch failed: $e\n$st');
+          emit(SpeakerDetailError('Failed to load speaker details.'));
+        } else {
+          // Transient listener blip while a profile is already shown —
+          // log it but keep the profile visible.
+          debugPrint('[SpeakerDetailCubit] watch error (kept profile): $e');
+        }
+      },
+    );
   }
 
   Future<void> approve() async {
@@ -197,5 +214,13 @@ class SpeakerDetailCubit extends Cubit<SpeakerDetailState> {
         // message — the CF author usually said something useful.
         return e.message ?? 'Action failed. Please try again.';
     }
+  }
+
+  // Tear down the live priest-doc listener when the page closes so the
+  // snapshot subscription doesn't outlive the cubit.
+  @override
+  Future<void> close() {
+    _detailSub?.cancel();
+    return super.close();
   }
 }

@@ -23,6 +23,7 @@ import 'package:gospel_vox/core/widgets/missed_request_foreground_banner.dart';
 import 'package:gospel_vox/core/widgets/offline_banner.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/firebase_options.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Suppresses noise from third-party packages that print directly when
 // they can't reach the network. google_fonts in particular calls
@@ -170,11 +171,59 @@ class GospelVoxApp extends StatelessWidget {
         return BibleSessionLiveOverlay(
           child: MissedRequestForegroundBanner(
             child: OfflineBanner(
-              child: child ?? const SizedBox.shrink(),
+              // Global "tap outside a field → dismiss the keyboard".
+              // Wrapping the routed child here (inside the overlays, so it
+              // never interferes with their own taps) gives EVERY screen,
+              // dialog and bottom sheet across admin / user / priest
+              // tap-to-dismiss in one place. Previously only a handful of
+              // screens wired this up individually, so on most fields the
+              // keyboard stayed stuck open.
+              //
+              // translucent behaviour means this only ADDS an unfocus on
+              // taps that hit empty / non-interactive areas; taps on
+              // buttons and list items still win the gesture arena and
+              // fire normally, so no existing interaction is swallowed.
+              // onTap ignores drags/scrolls, so scrolling and iOS
+              // swipe-back are unaffected.
+              child: GestureDetector(
+                behavior: HitTestBehavior.translucent,
+                onTap: () => FocusManager.instance.primaryFocus?.unfocus(),
+                // `child` is null only while go_router's async redirect
+                // is resolving (a returning signed-in user's cold-start
+                // role read). Show an on-brand beige loading screen
+                // instead of a blank surface so that wait never reads as
+                // a frozen black/empty screen. Same #F4EDE3 as the native
+                // launch window + the first Flutter frame → seamless.
+                child: child ?? const _StartupLoadingScreen(),
+              ),
             ),
           ),
         );
       },
+    );
+  }
+}
+
+// Shown for the brief window while go_router's async root redirect is
+// resolving a returning user's role on cold start. Deliberately matches
+// the native launch window beige (#F4EDE3) exactly so the hand-off from
+// OS splash → this → the real screen is one continuous colour with no
+// flash or blank/black gap. Brand-brown spinner gives a "loading", not
+// "stuck", read.
+class _StartupLoadingScreen extends StatelessWidget {
+  const _StartupLoadingScreen();
+
+  @override
+  Widget build(BuildContext context) {
+    return const ColoredBox(
+      color: Color(0xFFF4EDE3),
+      child: Center(
+        child: SizedBox(
+          width: 42,
+          height: 42,
+          child: AppLoader(),
+        ),
+      ),
     );
   }
 }

@@ -26,9 +26,13 @@ class CoinPacksRepository {
   }
 
   Future<void> updatePack(CoinPackModel pack) async {
+    // set(merge:true) rather than update() so an edit can't fail with
+    // NOT_FOUND if the pack doc id has drifted (e.g. a pack edited right
+    // after a coins-based id change). Merge preserves createdAt and any
+    // server-managed fields not in toFirestore().
     await _packsRef
         .doc(pack.id)
-        .update(pack.toFirestore())
+        .set(pack.toFirestore(), SetOptions(merge: true))
         .timeout(const Duration(seconds: 10));
   }
 

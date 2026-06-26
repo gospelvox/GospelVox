@@ -71,6 +71,14 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   // branch can offer a back button. Cancelled the moment we
   // transition to VoiceCallActive on the first session snapshot.
   Timer? _connectingTimeout;
+  // Native-call auto-end grace timer. When the OS seizes our mic for a
+  // cellular call (Agora's localAudioStreamReasonInterrupted), we don't
+  // end instantly — we arm this 1.5s timer. A real phone call keeps the
+  // mic held the whole time, so the timer fires and we end the call; a
+  // momentary blip (a notification ping, a transient route glitch)
+  // resolves before it fires and cancels it, so a paid call is never
+  // dropped by accident. See _onAudioInterruption.
+  Timer? _interruptionGraceTimer;
   final Stopwatch _stopwatch = Stopwatch();
 
   int _lastKnownBalance = 0;
@@ -78,6 +86,13 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   bool _isUserSide = true;
   bool _timersStarted = false;
   bool _endingDispatched = false;
+  // Sticky "a native-call interruption is currently active" flag. Set
+  // true while Agora reports our mic interrupted, false when it
+  // recovers. Read on the first VoiceCallActive snapshot so an
+  // interruption that began during the brief Connecting window (where
+  // endCall can't run yet) still ends the call the instant it goes
+  // live. See _onAudioInterruption and _onSessionSnapshot.
+  bool _audioInterrupted = false;
   // Sticky "remote has joined at some point" flag. Set the moment
   // Agora's onUserJoined fires, even if the state machine is still
   // VoiceCallConnecting at that instant (race when the remote was
@@ -102,16 +117,16 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
   // re-popping while the user is still mid-low and hasn't paid.
   bool _lowBalancePromptShown = false;
   // Two-level threshold:
-  //   • 5 minutes → strip shows (gentle reminder, isLowBalance=true)
-  //   • 2 minutes → urgent sheet pops (one-shot)
+  //   • 2 minutes → strip shows (gentle reminder, isLowBalance=true)
+  //   • 1 minute  → urgent sheet pops (one-shot)
   // Expressing the strip threshold in minutes (not coins) keeps the
   // warning consistent across chat (10/min) and voice (15/min) —
-  // the user always gets ~5 minutes of warning to recharge before
+  // the user always gets ~2 minutes of warning to recharge before
   // the urgent moment hits.
-  static const int _kLowBalanceWarningMinutes = 5;
-  static const int _kMinutesLeftThreshold = 2;
+  static const int _kLowBalanceWarningMinutes = 2;
+  static const int _kMinutesLeftThreshold = 1;
 
-  // Returns true when balance buys ≤5 minutes at the locked rate.
+  // Returns true when balance buys ≤2 minutes at the locked rate.
   // Defensive: a zero or negative rate (misconfigured app_config)
   // returns false so the strip doesn't pop unexpectedly.
   bool _isLowBalanceAt(int balance, int rate) {
@@ -290,6 +305,14 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
       // call and auto-ends it as "connection_failed".
       isRemoteUserJoined: _remoteEverJoined,
     ));
+
+    // Airtight native-call edge: if a phone call seized the mic during
+    // the Connecting window, the grace timer couldn't end the call
+    // (endCall needs VoiceCallActive). Now that we're live and the
+    // interruption is still active, end immediately.
+    if (_audioInterrupted) {
+      endCall(reason: 'phone_call_interruption');
+    }
   }
 
   void _onBalanceSnapshot(int newBalance) {
@@ -454,6 +477,41 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
         _cancelDisconnectTimer();
       }
     };
+
+    // Native-call interruption. The OS took our mic for a cellular call
+    // (or alarm / assistant). End the call so the priest hears nothing
+    // further and the user isn't billed for the interruption — after a
+    // short grace so a momentary blip doesn't drop a live call.
+    _agoraService.onLocalAudioInterruption = _onAudioInterruption;
+  }
+
+  // Arm / cancel the native-call auto-end. `interrupted == true` means
+  // the mic was just seized; we wait 1.5s and end only if it's still
+  // seized then (a real phone call holds it; a blip releases it).
+  // `interrupted == false` means capture recovered — cancel the pending
+  // end. The _audioInterrupted latch is also read on the first Active
+  // snapshot so an interruption that began mid-connect still ends the
+  // call once it goes live (endCall is a no-op before VoiceCallActive).
+  void _onAudioInterruption(bool interrupted) {
+    if (isClosed) return;
+    _audioInterrupted = interrupted;
+    if (interrupted) {
+      _interruptionGraceTimer ??= Timer(
+        const Duration(milliseconds: 1500),
+        () {
+          _interruptionGraceTimer = null;
+          if (isClosed || !_audioInterrupted) return;
+          // Only acts when the call is live; if we're still connecting
+          // the first Active snapshot picks up the sticky flag instead.
+          if (state is VoiceCallActive) {
+            endCall(reason: 'phone_call_interruption');
+          }
+        },
+      );
+    } else {
+      _interruptionGraceTimer?.cancel();
+      _interruptionGraceTimer = null;
+    }
   }
 
   // Start a one-shot 30s timer. Idempotent — re-arming while the
@@ -742,6 +800,8 @@ class VoiceCallCubit extends Cubit<VoiceCallState> {
     _disconnectTimer = null;
     _connectingTimeout?.cancel();
     _connectingTimeout = null;
+    _interruptionGraceTimer?.cancel();
+    _interruptionGraceTimer = null;
     _cancelRemoteJoinTimers();
   }
 

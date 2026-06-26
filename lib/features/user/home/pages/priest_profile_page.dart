@@ -35,6 +35,7 @@ import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/speakers/data/speaker_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
+import 'package:gospel_vox/features/shared/widgets/session_participant_menu.dart';
 import 'package:gospel_vox/features/user/home/data/home_repository.dart';
 
 // Three URLs go into every share message:
@@ -67,7 +68,7 @@ const double _kCardOverlap = 40;
 // visually consistent when a user navigates from the home feed to
 // the priest profile. File-level (not class-private) so both the
 // availability pill and the reason banner can share it.
-const Color _kBibleAccent = Color(0xFF6B5B95);
+const Color _kBibleAccent = AppColors.bibleBusy;
 
 class PriestProfilePage extends StatefulWidget {
   final String priestId;
@@ -497,12 +498,11 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
     );
   }
 
-  // Overflow menu — currently houses the Block action. Lives in a
-  // sheet (not a popup menu) for thumb-reachability on tall phones
-  // and to give the destructive action enough breathing room to
-  // include the consequence list. Report stays per-message for now;
-  // a "Report speaker" entry can be added here when the generic
-  // report flow ships.
+  // Overflow menu — houses Report + Block. Lives in a sheet (not a
+  // popup menu) for thumb-reachability on tall phones and to give the
+  // destructive action enough breathing room. Report reuses the shared
+  // in-session report flow (showReportSpeakerSheet) so the picker and
+  // the reports/{id} write are identical to the in-call surface.
   Future<void> _showMoreActions() async {
     final priest = _priest;
     if (priest == null) return;
@@ -516,9 +516,29 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
     );
 
     if (!mounted || action == null) return;
-    if (action == _ProfileAction.block) {
+    if (action == _ProfileAction.report) {
+      await _reportSpeaker(priest);
+    } else if (action == _ProfileAction.block) {
       await _confirmAndBlock(priest);
     }
+  }
+
+  // Opens the shared report-reason sheet (same picker + reports/{id}
+  // write the in-session ⋮ menu uses, just with no sessionId). This is
+  // the generic "Report speaker" entry the profile previously deferred.
+  Future<void> _reportSpeaker(SpeakerModel priest) async {
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) {
+      AppSnackBar.error(context, 'Please sign in again to report.');
+      return;
+    }
+    await showReportSpeakerSheet(
+      context,
+      priestId: priest.uid,
+      priestName: _displayName(priest),
+      reporterUserId: uid,
+      reporterName: FirebaseAuth.instance.currentUser?.displayName ?? '',
+    );
   }
 
   // Confirm sheet + write. We're deliberately strict — Block is
@@ -563,7 +583,7 @@ class _PriestProfilePageState extends State<PriestProfilePage> {
   }
 }
 
-enum _ProfileAction { block }
+enum _ProfileAction { report, block }
 
 class _ProfileActionsSheet extends StatelessWidget {
   const _ProfileActionsSheet();
@@ -589,6 +609,12 @@ class _ProfileActionsSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 16),
+          _SheetActionRow(
+            icon: AppIcons.report,
+            label: 'Report speaker',
+            destructive: false,
+            onTap: () => Navigator.of(context).pop(_ProfileAction.report),
+          ),
           _SheetActionRow(
             icon: AppIcons.block,
             label: 'Block speaker',
@@ -1084,18 +1110,56 @@ class _ProfileCard extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
-                    Text(
-                      priest.fullName.isEmpty
-                          ? 'Speaker'
-                          : priest.fullName,
-                      maxLines: 2,
-                      overflow: TextOverflow.ellipsis,
-                      style: GoogleFonts.inter(
-                        fontSize: 18,
-                        fontWeight: FontWeight.w700,
-                        height: 1.2,
-                        color: AppColors.deepDarkBrown,
-                      ),
+                    // Name fills the left; community role sits at the
+                    // far-right END of the row. Both are wrapped in a
+                    // FittedBox(scaleDown) so when either string is long
+                    // it SHRINKS its own font to fit instead of clipping
+                    // with an ellipsis — and if both are long they each
+                    // shrink within their share, so neither overflows the
+                    // card. The name (Expanded) takes the leftover width
+                    // and so pushes the role to the right edge; the role
+                    // is capped so it can never crowd the name out.
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.center,
+                      children: [
+                        Expanded(
+                          child: FittedBox(
+                            fit: BoxFit.scaleDown,
+                            alignment: Alignment.centerLeft,
+                            child: Text(
+                              priest.fullName.isEmpty
+                                  ? 'Speaker'
+                                  : priest.fullName,
+                              maxLines: 1,
+                              style: GoogleFonts.inter(
+                                fontSize: 18,
+                                fontWeight: FontWeight.w700,
+                                height: 1.2,
+                                color: AppColors.deepDarkBrown,
+                              ),
+                            ),
+                          ),
+                        ),
+                        if (priest.communityRole.isNotEmpty) ...[
+                          const SizedBox(width: 8),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 150),
+                            child: FittedBox(
+                              fit: BoxFit.scaleDown,
+                              alignment: Alignment.centerRight,
+                              child: Text(
+                                priest.communityRole,
+                                maxLines: 1,
+                                style: GoogleFonts.inter(
+                                  fontSize: 13,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.primaryBrown,
+                                ),
+                              ),
+                            ),
+                          ),
+                        ],
+                      ],
                     ),
                     const SizedBox(height: 3),
                     Text(

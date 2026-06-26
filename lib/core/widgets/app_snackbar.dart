@@ -15,7 +15,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for success; AppColors has no proper "success-green" token.
-const Color _kSuccessGreen = Color(0xFF2E7D4F);
+const Color _kSuccessGreen = AppColors.successGreen;
 
 enum _SnackType { error, success, info }
 

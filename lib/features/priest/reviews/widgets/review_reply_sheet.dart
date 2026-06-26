@@ -27,6 +27,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 // would filter it out and silently break the success toast).
 import 'package:gospel_vox/features/priest/reviews/pages/priest_reviews_page.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class ReviewReplySheet extends StatefulWidget {
   final PriestReviewItem review;
@@ -227,7 +228,7 @@ class _ReviewReplySheetState extends State<ReviewReplySheet> {
                   const SizedBox(height: 14),
                   Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF7F5F2),
+                      color: AppColors.fieldFill,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color: _errorText != null
@@ -486,12 +487,9 @@ class _SubmitButtonState extends State<_SubmitButton> {
             child: Center(
               child: widget.saving
                   ? const SizedBox(
-                      width: 22,
-                      height: 22,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2.5,
-                      ),
+                      width: 35,
+                      height: 35,
+                      child: AppLoader(),
                     )
                   : Text(
                       widget.label,

@@ -657,6 +657,35 @@ class SessionRepository {
         .timeout(const Duration(seconds: 5));
   }
 
+  // Files a report against a Speaker from inside a live session
+  // (chat or voice). Writes the same reports/{id} shape the admin
+  // queue already consumes (see ReportModel) — no admin-side changes
+  // needed. `reason` is a short machine-ish tag from the picker
+  // (e.g. "harassment", "child_safety"); `description` carries the
+  // human-readable reason label plus any free-text note the user
+  // typed, so the admin sees full context without a join.
+  Future<void> reportPriest({
+    required String reportedPriestId,
+    required String reportedPriestName,
+    required String reporterUserId,
+    required String reporterName,
+    required String reason,
+    required String description,
+    String? sessionId,
+  }) async {
+    await _db.collection('reports').add({
+      'reportedBy': reporterUserId,
+      'reporterName': reporterName,
+      'reportedUser': reportedPriestId,
+      'reportedUserName': reportedPriestName,
+      'reason': reason,
+      'description': description,
+      'sessionId': sessionId,
+      'status': 'pending',
+      'createdAt': FieldValue.serverTimestamp(),
+    }).timeout(const Duration(seconds: 8));
+  }
+
   // Files a report against a single priest free message. The admin
   // reports queue picks it up via the existing reports collection —
   // no admin-side changes needed.

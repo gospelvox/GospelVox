@@ -37,6 +37,7 @@ class AppIcons {
   static const IconData bible = IconData(0xf647, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData bank = IconData(0xf19c, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData church = IconData(0xf51d, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
+  static const IconData cross = IconData(0xf654, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData user = IconData(0xf007, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');
   static const IconData userOutline = IconData(0xf007, fontFamily: 'FontAwesomeRegular', fontPackage: 'font_awesome_flutter');
   static const IconData users = IconData(0xf0c0, fontFamily: 'FontAwesomeSolid', fontPackage: 'font_awesome_flutter');

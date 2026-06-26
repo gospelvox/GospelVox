@@ -20,10 +20,16 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:gospel_vox/features/priest/wallet/bloc/priest_wallet_state.dart';
 import 'package:gospel_vox/features/priest/wallet/data/priest_wallet_repository.dart';
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/features/priest/wallet/data/withdrawal_status.dart';
 
 class PriestWalletCubit extends Cubit<PriestWalletState> {
   final PriestWalletRepository _repository;
   StreamSubscription<PriestWalletSummary>? _summarySubscription;
+  StreamSubscription<List<WithdrawalRecord>>? _withdrawalsSubscription;
+  // Latest streamed withdrawals, cached so the value is available
+  // whether the withdrawals stream or the summary stream (which flips
+  // us into Loaded) fires first.
+  List<WithdrawalRecord> _withdrawalsCache = const [];
 
   PriestWalletCubit(this._repository) : super(const PriestWalletInitial());
 
@@ -71,6 +77,7 @@ class PriestWalletCubit extends Cubit<PriestWalletState> {
               transactions: transactions,
               bankDetails: summary.bankDetails,
               minWithdrawalAmount: minAmount,
+              withdrawals: _withdrawalsCache,
             ));
           }
         },
@@ -78,6 +85,25 @@ class PriestWalletCubit extends Cubit<PriestWalletState> {
           // Stream errors here are usually transient (auth refresh,
           // brief offline). We don't tear down the loaded state —
           // the next snapshot will re-sync.
+        },
+      );
+
+      // Live withdrawals stream — feeds the "in progress" card and the
+      // history status tags. Cached so it survives the Loading->Loaded
+      // flip regardless of which stream emits first.
+      await _withdrawalsSubscription?.cancel();
+      _withdrawalsCache = const [];
+      _withdrawalsSubscription = _repository.watchWithdrawals(uid).listen(
+        (list) {
+          _withdrawalsCache = list;
+          if (isClosed) return;
+          final current = state;
+          if (current is PriestWalletLoaded) {
+            emit(current.copyWith(withdrawals: list));
+          }
+        },
+        onError: (_) {
+          // Transient — keep showing the last good list.
         },
       );
     } on TimeoutException {
@@ -134,9 +160,37 @@ class PriestWalletCubit extends Cubit<PriestWalletState> {
       final transactions = await _repository.getTransactions(uid);
 
       if (isClosed) return;
-      emit(current.copyWith(
+
+      // Optimistically surface the just-created withdrawal at the top of
+      // the list NOW, instead of waiting for the watchWithdrawals stream
+      // to emit. Without this, `spotlightWithdrawal` (the in-progress
+      // card) keeps showing the PREVIOUS withdrawal until the stream
+      // catches up — which is why it only updated once the admin moved
+      // it to processing. The stream replaces this with the real record
+      // (same id) a moment later. Read the freshest list off `state` so
+      // a stream emit that landed during the await isn't dropped.
+      // Emit onto the FRESHEST loaded state (not the stale `current`
+      // captured before the awaits) so a summary-stream update that
+      // landed mid-request — new balance / totalWithdrawn / bankDetails
+      // — isn't reverted. Falls back to `current` only if state somehow
+      // left Loaded.
+      final latest = state;
+      final fresh = latest is PriestWalletLoaded ? latest : current;
+      final optimistic = WithdrawalRecord(
+        id: result.withdrawalId,
+        amount: amount,
+        status: WithdrawalStatus.pending,
+        createdAt: DateTime.now(),
+      );
+      final mergedWithdrawals = [
+        optimistic,
+        ...fresh.withdrawals.where((w) => w.id != optimistic.id),
+      ];
+
+      emit(fresh.copyWith(
         balance: result.newBalance,
         transactions: transactions,
+        withdrawals: mergedWithdrawals,
         isWithdrawing: false,
       ));
     } on TimeoutException {
@@ -189,6 +243,7 @@ class PriestWalletCubit extends Cubit<PriestWalletState> {
   @override
   Future<void> close() async {
     await _summarySubscription?.cancel();
+    await _withdrawalsSubscription?.cancel();
     return super.close();
   }
 }

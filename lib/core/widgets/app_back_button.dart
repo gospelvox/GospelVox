@@ -48,26 +48,44 @@ class AppBackButton extends StatelessWidget {
           onTap!();
           return;
         }
-        if (context.canPop()) context.pop();
+        if (context.canPop()) {
+          context.pop();
+          return;
+        }
+        // Never a dead button. A page reached from a notification
+        // cold-start can land with nothing beneath it to pop, which
+        // used to leave the back arrow doing nothing ("stuck"). Fall
+        // back to the role home so back always goes somewhere. Picking
+        // by the current path prefix is safe even for the shared
+        // /session and /bible routes — the router's role redirect
+        // bounces a priest/admin off /user to their own home.
+        final location = GoRouterState.of(context).uri.toString();
+        if (location.startsWith('/admin')) {
+          context.go('/admin');
+        } else if (location.startsWith('/priest')) {
+          context.go('/priest');
+        } else {
+          context.go('/user');
+        }
       },
       child: Container(
         width: 40,
         height: 40,
         alignment: Alignment.center,
-        decoration: BoxDecoration(
-          shape: BoxShape.circle,
-          color: backgroundColor ?? AppColors.surfaceWhite,
-          boxShadow: [
-            BoxShadow(
-              blurRadius: 8,
-              offset: const Offset(0, 2),
-              color: Colors.black.withValues(alpha: 0.04),
-            ),
-          ],
-        ),
+        // Plain arrow by default — no circular chrome, no shadow. A
+        // caller can still opt into a circular background (e.g. over a
+        // photo where the bare arrow would lose contrast) by passing
+        // backgroundColor; otherwise the button is just the glyph in a
+        // 40x40 tap target.
+        decoration: backgroundColor != null
+            ? BoxDecoration(
+                shape: BoxShape.circle,
+                color: backgroundColor,
+              )
+            : null,
         child: AppIcon(
           AppIcons.back,
-          size: 16,
+          size: 20,
           color: color ?? AppColors.deepDarkBrown,
         ),
       ),

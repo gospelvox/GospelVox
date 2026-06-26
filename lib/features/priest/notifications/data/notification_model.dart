@@ -8,6 +8,7 @@
 
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
+import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
@@ -206,7 +207,7 @@ class NotificationModel {
       case 'application_approved':
       case 'account_activated':
       case 'account_reactivated':
-        return const Color(0xFF2E7D4F);
+        return AppColors.successGreen;
       case 'application_rejected':
       case 'account_suspended':
         return const Color(0xFFC03828);
@@ -239,7 +240,7 @@ class NotificationModel {
       // live badge on the cards + overlay so the inbox entry matches
       // what the user just saw on screen.
       case 'bible_session_live':
-        return const Color(0xFFE53E3E);
+        return AppColors.liveRed;
       // Failure-toned types (cancellation, urgent-link-missing) get
       // errorRed so a quick scan of the inbox surfaces them as
       // "something needs attention" rather than blending into the

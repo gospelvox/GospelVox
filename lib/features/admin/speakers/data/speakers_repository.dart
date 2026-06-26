@@ -77,6 +77,33 @@ class SpeakersRepository {
     return SpeakerModel.fromFirestore(doc.data()!);
   }
 
+  // Live stream of a single priest doc for the detail page. Same
+  // shape as getSpeakerDetail but stays subscribed, so a profile edit
+  // by the priest (or a status change from the moderation CF) reflects
+  // on the admin detail screen within ~1s without any manual refresh.
+  //
+  // The `.where` guard skips an offline cache-miss (a non-existent doc
+  // served purely from cache while disconnected) so a transient
+  // offline blip doesn't masquerade as "Speaker not found" — we wait
+  // for the server snapshot instead. A genuine server-confirmed
+  // deletion (!exists AND not from cache) still throws not-found.
+  Stream<SpeakerModel> watchSpeakerDetail(String uid) {
+    return FirebaseFirestore.instance
+        .doc('priests/$uid')
+        .snapshots()
+        .where((doc) => doc.exists || !doc.metadata.isFromCache)
+        .map((doc) {
+      if (!doc.exists || doc.data() == null) {
+        throw FirebaseException(
+          plugin: 'cloud_firestore',
+          code: 'not-found',
+          message: 'Speaker not found',
+        );
+      }
+      return SpeakerModel.fromFirestore(doc.data()!);
+    });
+  }
+
   // Single callable for every admin moderation action. The CF
   // enforces the state machine (e.g. can only suspend approved
   // speakers) and surfaces failures as FirebaseFunctionsException

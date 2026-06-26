@@ -27,11 +27,11 @@ import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Live red — distinct from errorRed so a pulsing live badge reads as
 // urgency-of-attention rather than failure.
-const Color _kLiveRed = Color(0xFFE53E3E);
+const Color _kLiveRed = AppColors.liveRed;
 // Forest green for the "Open Meeting ✅" CTA on a live session the
 // viewer has already paid for. Distinct from the amber pay-CTA so a
 // returning user sees at a glance that they don't need to pay again.
-const Color _kJoinedGreen = Color(0xFF2E7D4F);
+const Color _kJoinedGreen = AppColors.successGreen;
 
 // "Starting in" badge palette. Two-stage urgency:
 //   • imminent (< 2h)  → soft mint background with deeper green text

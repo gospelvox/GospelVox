@@ -20,6 +20,7 @@ import 'package:gospel_vox/core/config/legal_urls.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/priest/registration/data/priest_registration_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/phone_country_prefix.dart';
 
 class RegistrationStep4Review extends StatefulWidget {
   final PriestRegistrationModel data;
@@ -76,6 +77,7 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
     if (d.fullName.trim().isEmpty) missing.add('Full name');
     if (d.phone.trim().isEmpty) missing.add('Phone');
     if (d.email.trim().isEmpty) missing.add('Email');
+    if (d.communityRole.trim().isEmpty) missing.add('Role');
     if (d.photoPath == null || d.photoPath!.isEmpty) {
       missing.add('Profile photo');
     }
@@ -146,12 +148,17 @@ class _RegistrationStep4ReviewState extends State<RegistrationStep4Review> {
                         const SizedBox(height: 10),
                         _ReadOnlyRow(
                           label: 'Phone',
-                          value: d.phone.isEmpty ? '—' : '+91 ${d.phone}',
+                          value: phoneForDisplay(d.phone),
                         ),
                         const SizedBox(height: 10),
                         _ReadOnlyRow(
                           label: 'Email',
                           value: d.email,
+                        ),
+                        const SizedBox(height: 10),
+                        _ReadOnlyRow(
+                          label: 'Role',
+                          value: d.communityRole,
                         ),
                       ],
                     ),
@@ -620,7 +627,7 @@ class _PhotoThumb extends StatelessWidget {
       height: 60,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFFF7F5F2),
+        color: AppColors.fieldFill,
         border: Border.all(
           color: AppColors.muted.withValues(alpha: 0.2),
         ),
@@ -699,7 +706,7 @@ class _DocumentRow extends StatelessWidget {
                   fontSize: 11,
                   fontWeight: FontWeight.w500,
                   color: has
-                      ? const Color(0xFF2E7D4F)
+                      ? AppColors.successGreen
                       : (isRequired
                           ? AppColors.errorRed
                           : AppColors.muted),
@@ -712,7 +719,7 @@ class _DocumentRow extends StatelessWidget {
           const AppIcon(
             AppIcons.checkCircle,
             size: 18,
-            color: Color(0xFF2E7D4F),
+            color: AppColors.successGreen,
           ),
       ],
     );

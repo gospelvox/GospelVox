@@ -172,55 +172,87 @@ class _MatrimonyFab extends StatelessWidget {
     return GestureDetector(
       behavior: HitTestBehavior.opaque,
       onTap: onTap,
-      // Subtle scale-up when active so tapping the FAB also feels
-      // like a state change, even though there is no label/colour to
-      // flip. Same 180ms curve as the other slots for consistency.
-      child: AnimatedScale(
-        scale: isActive ? 1.06 : 1.0,
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutCubic,
-        child: Container(
-          width: _kCenterFabSize,
-          height: _kCenterFabSize,
-          decoration: BoxDecoration(
-            shape: BoxShape.circle,
-            gradient: const LinearGradient(
-              colors: [
-                AppColors.loveRoseLight,
-                AppColors.loveRose,
-              ],
-              begin: Alignment.topLeft,
-              end: Alignment.bottomRight,
-            ),
-            // Cream ring (matches the new nav surface) separates the
-            // FAB from the card so the overlap reads cleanly. The
-            // ring used to be pure white when the nav was white —
-            // now that the nav surface is `#FAF5EC`, the ring needs
-            // to match or it leaves a sliver of pure-white visible
-            // between the FAB and the card.
-            border: Border.all(
-              color: AppColors.surfaceCream,
-              width: 3,
-            ),
-            boxShadow: [
-              // Rose-tinted glow — uses the brighter end of the
-              // gradient so the halo reads as the same hot pink as
-              // the matrimony hero icon's glow.
-              BoxShadow(
-                color: AppColors.loveRoseLight.withValues(alpha: 0.40),
-                blurRadius: 16,
-                spreadRadius: -2,
-                offset: const Offset(0, 6),
+      // Column = lifted heart FAB + a "Matrimony" caption beneath it.
+      // The caption gives the centre action the same plain-language
+      // label the four flanking slots already carry, so users can
+      // tell what the rose heart opens instead of guessing. mainAxis
+      // min keeps the column tight; the whole column shares the FAB's
+      // tap target.
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          // Subtle scale-up when active so tapping the FAB also feels
+          // like a state change. Same 180ms curve as the other slots
+          // for consistency.
+          AnimatedScale(
+            scale: isActive ? 1.06 : 1.0,
+            duration: const Duration(milliseconds: 180),
+            curve: Curves.easeOutCubic,
+            child: Container(
+              width: _kCenterFabSize,
+              height: _kCenterFabSize,
+              decoration: BoxDecoration(
+                shape: BoxShape.circle,
+                gradient: const LinearGradient(
+                  colors: [
+                    AppColors.loveRoseLight,
+                    AppColors.loveRose,
+                  ],
+                  begin: Alignment.topLeft,
+                  end: Alignment.bottomRight,
+                ),
+                // Cream ring (matches the new nav surface) separates
+                // the FAB from the card so the overlap reads cleanly.
+                // The ring used to be pure white when the nav was
+                // white — now that the nav surface is `#FAF5EC`, the
+                // ring needs to match or it leaves a sliver of
+                // pure-white visible between the FAB and the card.
+                border: Border.all(
+                  color: AppColors.surfaceCream,
+                  width: 3,
+                ),
+                boxShadow: [
+                  // Rose-tinted glow — uses the brighter end of the
+                  // gradient so the halo reads as the same hot pink as
+                  // the matrimony hero icon's glow.
+                  BoxShadow(
+                    color:
+                        AppColors.loveRoseLight.withValues(alpha: 0.40),
+                    blurRadius: 16,
+                    spreadRadius: -2,
+                    offset: const Offset(0, 6),
+                  ),
+                ],
               ),
-            ],
+              alignment: Alignment.center,
+              child: const Icon(
+                AppIcons.heart,
+                color: Colors.white,
+                size: 22,
+              ),
+            ),
           ),
-          alignment: Alignment.center,
-          child: const Icon(
-            AppIcons.heart,
-            color: Colors.white,
-            size: 22,
+          // Larger gap than a normal icon→label pair: the heart FAB
+          // sits higher (it's lifted above the card), so the caption
+          // needs extra drop to land on the same baseline as the
+          // Home/Connect/Bible/Me labels.
+          const SizedBox(height: 3),
+          // Rose accent when active, muted otherwise — mirrors the
+          // active/inactive colour logic of the flanking labels while
+          // tying the caption to the heart's rose palette.
+          Text(
+            'Matrimony',
+            maxLines: 1,
+            softWrap: false,
+            overflow: TextOverflow.visible,
+            style: GoogleFonts.inter(
+              fontSize: 10.5,
+              fontWeight: FontWeight.w600,
+              color: isActive ? AppColors.loveRose : AppColors.muted,
+              letterSpacing: 0.3,
+            ),
           ),
-        ),
+        ],
       ),
     );
   }

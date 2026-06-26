@@ -265,6 +265,18 @@ class _UserNotificationsPageState extends State<UserNotificationsPage> {
           context.push('/user/priest/$replyPriestId');
         }
         return;
+      case 'priest_available':
+        // "A speaker you follow is online" — lands on that speaker's
+        // profile so the user can start a call/chat straight away.
+        // Mirrors the route the CF puts on the FCM push payload so the
+        // in-app inbox tap and the OS-push tap behave identically.
+        final availablePriestId = notif.priestId;
+        if (availablePriestId != null &&
+            availablePriestId.isNotEmpty &&
+            mounted) {
+          context.push('/user/priest/$availablePriestId');
+        }
+        return;
       case 'session_ended':
       case 'low_balance':
       default:

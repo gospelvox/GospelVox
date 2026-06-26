@@ -72,6 +72,40 @@ class AppColors {
   // SOLID gold accent used elsewhere on the home feed.
   static const Color coinGoldLight = Color(0xFFE0A845);
   static const Color coinGoldDeep = Color(0xFFA67520);
+
+  // ─── Consolidated semantic tokens ───────────────────────────
+  // These four values existed already — but as hand-copied hex
+  // literals re-declared as file-private consts across dozens of
+  // pages, so the "same" colour quietly drifted between screens.
+  // Promoted here verbatim (identical values) so every surface
+  // reads one source of truth. See app_colors audit notes.
+
+  // Warm forest-green for success / completed / earnings states.
+  // Distinct from the cooler Material `success` (#4CAF50): this is
+  // the brand's hand-tuned positive green ~28 call sites each
+  // re-declared (`_kSuccessGreen`, `_kNetGreen`, `_kCompletedGreen`…).
+  static const Color successGreen = Color(0xFF2E7D4F);
+
+  // Pale mint tint behind successGreen marks (e.g. the payment-success
+  // checkmark circle). Was a raw #F0FDF4 literal that happened to equal
+  // the admin success-bg — this is the user-side token so the warm app
+  // doesn't reach into the admin palette.
+  static const Color successGreenBg = Color(0xFFF0FDF4);
+
+  // "LIVE / streaming now" pulsing indicator red. Hotter than
+  // `error` (#E53935) and intentionally NOT the warm `terraCotta`
+  // urgency colour — used on live-session overlays and live cards
+  // (was `_kLiveRed` / inline #E53E3E in several files).
+  static const Color liveRed = Color(0xFFE53E3E);
+
+  // Warm off-white field / input fill. Slightly warmer-neutral than
+  // the page surfaces; hand-copied as Color(0xFFF7F5F2) in ~35 places.
+  static const Color fieldFill = Color(0xFFF7F5F2);
+
+  // "In a Bible session" busy-state plum. Reads as distinct from the
+  // available-now `sageOnline` green without leaving the muted palette
+  // (was a "keep in sync" private const in priest_card + priest_profile).
+  static const Color bibleBusy = Color(0xFF6B5B95);
 }
 
 // ─── Locked radius scale ────────────────────────────────────

@@ -23,7 +23,6 @@ here have the meaning given in the Terms & Conditions.
 | Session that failed to connect / dropped due to Platform fault | **Yes — Coins re-credited** | 24–72 hours from incident | Automatic where detected; otherwise report from session screen |
 | Session where Speaker no-shows | **Yes — Coins re-credited** | 24–72 hours from incident | Automatic where detected; otherwise report from session screen |
 | Speaker activation fee | **No** (non-refundable once paid) | — | — |
-| Welcome / promotional offer | Non-refundable promotional value; underlying cash component handled as above | — | — |
 
 Statutory rights under the Consumer Protection Act, 2019 (India), the
 Consumer Protection (E-Commerce) Rules, 2020, and any non-waivable
@@ -35,14 +34,15 @@ Policy.
 - **Coin packs** — virtual credit used to start chat or voice
   Sessions with Speakers and to access Bible Sessions or other paid
   features.
-- **Welcome offer** — a one-time, discounted Coin pack offered to
-  first-time buyers.
 - **Speaker activation fee** — a one-time fee paid by Speakers to
   start receiving paid Sessions on the Platform.
 
-All purchases are processed by **Razorpay Software Private Limited**
-("Razorpay") in INR. Prices shown in the app are inclusive of GST
-where applicable.
+All in-app purchases are processed through **Google Play's billing
+system**. Prices shown in the app are in your local currency where
+Google Play supports it and are inclusive of applicable taxes. Because
+these are Google Play purchases, you may also request a refund
+directly through Google Play under Google's refund policy, in addition
+to the routes below.
 
 ## 3. Coin packs — refund rules
 
@@ -53,12 +53,14 @@ credited.
 
 3.2 **Payment debited but Coins not credited.** If the bank or
 payment instrument is debited and Coins have not appeared in the
-Wallet within **24 hours**, contact us with the Razorpay Payment ID
-and we will, within **5 business days**:
+Wallet within **24 hours**, contact us with your Google Play order ID
+(shown in your Google Play purchase-confirmation email or at
+play.google.com/store/account) and we will, within **5 business
+days**:
 
 - credit the Coins purchased, **or**
-- if crediting is not possible, refund the full INR amount to the
-  original payment source.
+- if crediting is not possible, help you obtain a refund through
+  Google Play to your original payment method.
 
 3.3 **Duplicate charges.** If you have been charged more than once
 for the same Coin order, write to us with all Payment IDs. We will
@@ -107,11 +109,11 @@ the Session summary screen, or email **support@gospelvox.com**
 with the Session ID, date/time, and a brief description, within
 **7 days** of the Session.
 
-## 5. Welcome offer and promotional packs
+## 5. Promotional offers
 
-5.1 The welcome offer and other promotional Coin packs are offered at
-a discounted price and are **limited to one redemption per User**
-unless stated otherwise.
+5.1 Where we run a promotional Coin pack or discount, the terms and
+any limits (for example, one redemption per User) are shown at the
+point of purchase.
 
 5.2 If the underlying payment fails or is reversed, the promotional
 Coins associated with that purchase will be reversed from the
@@ -131,9 +133,9 @@ ground, except where required by applicable law.
 
 6.2 **Payment debited but activation not granted.** If the fee is
 debited and the Speaker account is not activated within 24 hours,
-contact us with the Razorpay Payment ID and we will, within
-**5 business days**, either activate the account or refund the fee
-to the original payment source.
+contact us with your Google Play order ID and we will, within
+**5 business days**, either activate the account or arrange a refund
+of the fee through Google Play.
 
 ## 7. Speaker earnings — withdrawals and reversals
 
@@ -166,12 +168,13 @@ to contest chargebacks we believe to be invalid.
 |---|---|
 | Acknowledgement of refund request | **48 hours** |
 | Verification by GospelVox | **5 business days** |
-| Razorpay refund initiation | Immediate on approval |
-| Credit to your card / UPI / bank | **5–7 business days** from Razorpay's initiation (depends on issuer) |
+| Google Play refund initiation | Immediate on approval |
+| Credit to your original payment method | Up to **5–10 business days** after Google Play initiates it (depends on your payment method / issuer) |
 
 Delays beyond these timelines, where caused by the payment network,
-issuer, or bank, are outside our control. We will share the Razorpay
-Refund ID so you can follow up with your issuer if needed.
+issuer, or bank, are outside our control. Refunds for Google Play
+purchases are issued by Google to your original payment method; you
+can track them in your Google Play account under Order history.
 
 ## 10. How to request a refund
 
@@ -181,7 +184,7 @@ To request a refund or report a payment issue:
    and tap **"Report an issue"**.
 2. **By email:** write to **support@gospelvox.com** with:
    - the registered email or phone number on your account;
-   - the Razorpay Payment ID and/or Session ID;
+   - your Google Play order ID and/or Session ID;
    - a brief description of the issue.
 3. **Grievance escalation:** if you are not satisfied with our
    response within 15 calendar days, write to our Grievance Officer

@@ -61,7 +61,11 @@ class PriestRegistrationCubit extends Cubit<PriestRegistrationState> {
   // paths don't survive an app restart, so we never jump there —
   // users always pick documents fresh.
   int _determineStep(PriestRegistrationModel data) {
-    if (data.fullName.isEmpty || data.phone.isEmpty) return _kStepPersonal;
+    if (data.fullName.isEmpty ||
+        data.phone.isEmpty ||
+        data.communityRole.isEmpty) {
+      return _kStepPersonal;
+    }
     if (data.denomination.isEmpty || data.bio.isEmpty) return _kStepMinistry;
     return _kStepDocuments;
   }
@@ -70,6 +74,7 @@ class PriestRegistrationCubit extends Cubit<PriestRegistrationState> {
     required String fullName,
     required String phone,
     required String email,
+    required String communityRole,
     String? photoPath,
   }) {
     final current = state;
@@ -79,6 +84,7 @@ class PriestRegistrationCubit extends Cubit<PriestRegistrationState> {
       fullName: fullName,
       phone: phone,
       email: email,
+      communityRole: communityRole,
       photoPath: photoPath,
     );
 

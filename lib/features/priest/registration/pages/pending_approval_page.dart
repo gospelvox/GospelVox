@@ -5,6 +5,10 @@
 // available yet, which reads as a broken app. A dedicated waiting room
 // sets expectations and gives admin moderation time without anxiety.
 
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
+import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:go_router/go_router.dart';
@@ -16,8 +20,53 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
-class PendingApprovalPage extends StatelessWidget {
+class PendingApprovalPage extends StatefulWidget {
   const PendingApprovalPage({super.key});
+
+  @override
+  State<PendingApprovalPage> createState() => _PendingApprovalPageState();
+}
+
+class _PendingApprovalPageState extends State<PendingApprovalPage> {
+  // Live watch on the priest's own doc. THIS is the fix for "still shows
+  // Application Under Review after approval": the page used to be a static
+  // StatelessWidget with no Firestore connection, so an approval that
+  // happened while the priest sat here was never noticed until a full app
+  // restart. Now the moment `status` leaves "pending" we hand off to the
+  // router.
+  StreamSubscription<DocumentSnapshot<Map<String, dynamic>>>? _statusSub;
+  bool _navigated = false;
+
+  @override
+  void initState() {
+    super.initState();
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid == null) return;
+    _statusSub = FirebaseFirestore.instance
+        .doc('priests/$uid')
+        .snapshots()
+        .listen(_onStatusSnapshot);
+  }
+
+  void _onStatusSnapshot(DocumentSnapshot<Map<String, dynamic>> snap) {
+    if (!mounted || _navigated) return;
+    final status = snap.data()?['status'] as String? ?? 'pending';
+    if (status == 'pending') return;
+    // Status moved on (approved / rejected / suspended). Route through
+    // '/priest' so the destination stays single-sourced in
+    // _resolvePriestDestination — approved → congrats (once) → dashboard,
+    // rejected → rejected page, etc. The _navigated latch + sub cancel
+    // guarantee we only navigate once.
+    _navigated = true;
+    _statusSub?.cancel();
+    context.go('/priest');
+  }
+
+  @override
+  void dispose() {
+    _statusSub?.cancel();
+    super.dispose();
+  }
 
   @override
   Widget build(BuildContext context) {

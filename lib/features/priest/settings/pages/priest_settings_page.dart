@@ -30,6 +30,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/app_version_text.dart';
 import 'package:gospel_vox/features/auth/data/auth_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class PriestSettingsPage extends StatefulWidget {
   const PriestSettingsPage({super.key});
@@ -260,14 +261,12 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                   _SettingsTile(
                     icon: AppIcons.wallet,
                     title: 'My Wallet',
-                    subtitle: 'Balance, withdrawals, earnings',
+                    // Bank details now live inside the Wallet (Add Bank
+                    // Details hero + Linked Bank card), so the standalone
+                    // Settings tile was removed to keep one home for
+                    // payout setup.
+                    subtitle: 'Balance, withdrawals, bank details',
                     onTap: () => context.push('/priest/wallet'),
-                  ),
-                  _SettingsTile(
-                    icon: AppIcons.bank,
-                    title: 'Bank Details',
-                    subtitle: 'Manage payout account',
-                    onTap: () => context.push('/priest/bank-details'),
                   ),
                 ],
               ),
@@ -330,12 +329,9 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                     showChevron: false,
                     trailing: _signingOut
                         ? SizedBox(
-                            width: 18,
-                            height: 18,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2,
-                              color: AppColors.errorRed,
-                            ),
+                            width: 29,
+                            height: 29,
+                            child: AppLoader(),
                           )
                         : null,
                     onTap:
@@ -428,7 +424,7 @@ class _PriestSettingsPageState extends State<PriestSettingsPage> {
                 height: 56,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFFF7F5F2),
+                  color: AppColors.fieldFill,
                   border: Border.all(
                     color: AppColors.amberGold.withValues(alpha: 0.3),
                     width: 2,
@@ -1037,7 +1033,7 @@ class _PriestDeleteAccountSheetState
             const SizedBox(height: 8),
             Container(
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
                 border: Border.all(
                   color: _isConfirmed
@@ -1204,12 +1200,9 @@ class _SheetActionDanger extends StatelessWidget {
         ),
         child: isLoading
             ? const SizedBox(
-                width: 18,
-                height: 18,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2,
-                  color: Colors.white,
-                ),
+                width: 29,
+                height: 29,
+                child: AppLoader(),
               )
             : Text(
                 label,

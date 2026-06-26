@@ -17,6 +17,7 @@ import 'package:gospel_vox/features/admin/reports/bloc/admin_reports_cubit.dart'
 import 'package:gospel_vox/features/admin/reports/bloc/admin_reports_state.dart';
 import 'package:gospel_vox/features/admin/reports/data/report_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 const _kFilters = ['pending', 'resolved', 'all'];
 
@@ -796,12 +797,9 @@ class _ResolveButtonState extends State<_ResolveButton> {
           child: Center(
             child: widget.loading
                 ? const SizedBox(
-                    width: 20,
-                    height: 20,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2,
-                      valueColor: AlwaysStoppedAnimation(Colors.white),
-                    ),
+                    width: 32,
+                    height: 32,
+                    child: AppLoader(),
                   )
                 : Text(
                     'Mark as Resolved',

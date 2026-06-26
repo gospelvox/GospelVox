@@ -41,14 +41,17 @@ import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/shared/data/session_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 import 'package:gospel_vox/features/shared/widgets/chat_session_view.dart'
     show CallEntryBubble;
 
-const Color _kOnlineGreen = Color(0xFF059669);
+// Online status — the canonical app-wide "available now" green
+// (was a drifted local #059669 that disagreed with the rest of the app).
+const Color _kOnlineGreen = AppColors.sageOnline;
 // Plum accent for the "In Bible Session" status pill — mirrors the
 // hue used on PriestCard and the priest profile page so the same
 // state reads the same way everywhere a priest is shown.
-const Color _kBibleAccent = Color(0xFF6B5B95);
+const Color _kBibleAccent = AppColors.bibleBusy;
 const int _kFallbackChatRate = 10;
 // Same cap the live chat uses for prefetched history. Keeps both
 // surfaces aligned on what "your conversation" means and prevents
@@ -123,6 +126,12 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
   // error), but the misleading UI would frustrate the user with a
   // click-fail loop.
   bool _isInBibleSession = false;
+  // True when the priest behind this thread has deleted their account.
+  // Reachable only via the notifications inbox now that the Sessions
+  // tab makes deleted rows inert; when set, the header hides the
+  // priest's identity ("Unavailable", no photo, not tappable) and the
+  // sticky "Start session" CTA is removed — there's nobody to call.
+  bool _isDeleted = false;
   int _chatRatePerMinute = _kFallbackChatRate;
   List<_Item> _items = const [];
   // Fallback name + photo, populated from priests/{id} when the
@@ -289,8 +298,13 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       final priestData = results[1] as Map<String, dynamic>?;
       final settings = results[2] as Map<String, dynamic>?;
 
-      final isOnline = (priestData?['isOnline'] as bool?) ?? false;
-      final isBusy = (priestData?['isBusy'] as bool?) ?? false;
+      final isDeleted = (priestData?['isDeleted'] as bool?) ?? false;
+      // A deleted priest is forced offline so every availability-gated
+      // affordance (status pill, CTA) reads as unavailable.
+      final isOnline =
+          isDeleted ? false : ((priestData?['isOnline'] as bool?) ?? false);
+      final isBusy =
+          isDeleted ? false : ((priestData?['isBusy'] as bool?) ?? false);
       // Two-signal in-bible-session check, mirrors SpeakerModel's
       // isInBibleSession getter. The lock is considered held only
       // when liveBibleSessionId is non-empty AND
@@ -325,6 +339,7 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
 
       if (!mounted) return;
       setState(() {
+        _isDeleted = isDeleted;
         _isOnline = isOnline;
         _isBusy = isBusy;
         _isInBibleSession = isInBibleSession;
@@ -474,6 +489,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
   // full profile — the profile becomes optional, accessed by intent
   // rather than forced into every flow.
   void _openProfile() {
+    // No profile to open for a deleted priest — the user-side detail
+    // route resolves them as not-found, so we keep the tap inert.
+    if (_isDeleted) return;
     context.push('/user/priest/${widget.priestId}');
   }
 
@@ -485,12 +503,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
       body: _isLoading
           ? const Center(
               child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.4,
-                  color: AppColors.primaryBrown,
-                ),
+                width: 38,
+                height: 38,
+                child: AppLoader(),
               ),
             )
           : Column(
@@ -498,7 +513,9 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
                 Expanded(
                   child: _items.isEmpty ? _buildEmpty() : _buildList(),
                 ),
-                _buildStickyCTA(),
+                // No "Start session" CTA for a deleted priest — there's
+                // no one on the other side to reach.
+                if (!_isDeleted) _buildStickyCTA(),
               ],
             ),
     );
@@ -510,17 +527,27 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
   // back to whatever we resolved from priests/{id}. The AppBar reads
   // these so a push-notification deep link (which can't carry extras)
   // still renders a populated header within ~300ms of opening.
-  String get _displayPriestName => widget.priestName.isNotEmpty
-      ? widget.priestName
-      : (_fallbackPriestName ?? '');
-  String get _displayPriestPhotoUrl => widget.priestPhotoUrl.isNotEmpty
-      ? widget.priestPhotoUrl
-      : (_fallbackPriestPhotoUrl ?? '');
+  // A deleted priest's identity is suppressed everywhere the header
+  // reads it — the route extras (carried from a notification) would
+  // otherwise still show their old name/photo.
+  String get _displayPriestName => _isDeleted
+      ? 'Unavailable'
+      : (widget.priestName.isNotEmpty
+          ? widget.priestName
+          : (_fallbackPriestName ?? ''));
+  String get _displayPriestPhotoUrl => _isDeleted
+      ? ''
+      : (widget.priestPhotoUrl.isNotEmpty
+          ? widget.priestPhotoUrl
+          : (_fallbackPriestPhotoUrl ?? ''));
 
   PreferredSizeWidget _buildAppBar() {
     final name = _displayPriestName;
     final photo = _displayPriestPhotoUrl;
-    final initial = name.isNotEmpty ? name[0].toUpperCase() : '?';
+    // Neutral glyph for a deleted priest — never the "U" of
+    // "Unavailable".
+    final initial =
+        _isDeleted ? '?' : (name.isNotEmpty ? name[0].toUpperCase() : '?');
 
     return AppBar(
       backgroundColor: AppColors.background,
@@ -546,7 +573,7 @@ class _ChatHistoryPageState extends State<ChatHistoryPage> {
               height: 32,
               decoration: BoxDecoration(
                 shape: BoxShape.circle,
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 border: Border.all(
                   color: AppColors.muted.withValues(alpha: 0.12),
                   width: 1.5,

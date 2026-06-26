@@ -1,5 +1,8 @@
 // Admin dashboard — home hub for the admin role
 
+import 'dart:async';
+
+import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:firebase_auth/firebase_auth.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
@@ -10,6 +13,8 @@ import 'package:intl/intl.dart';
 import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
+import 'package:gospel_vox/core/services/notification_service.dart';
 import 'package:gospel_vox/core/theme/admin_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/dashboard/bloc/dashboard_cubit.dart';
@@ -33,10 +38,77 @@ class AdminDashboardPage extends StatefulWidget {
   State<AdminDashboardPage> createState() => _AdminDashboardPageState();
 }
 
-class _AdminDashboardPageState extends State<AdminDashboardPage> {
+class _AdminDashboardPageState extends State<AdminDashboardPage>
+    with WidgetsBindingObserver {
+  // Press-again-to-exit guard so a stray back press on the admin home
+  // doesn't drop the admin straight out of the app.
+  DateTime? _lastBackPressed;
+
+  @override
+  void initState() {
+    super.initState();
+    WidgetsBinding.instance.addObserver(this);
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      // 1. Apply a notification-tap route stashed from a cold-start tap.
+      _drainPendingRoute();
+      // 2. Ask for push permission now (admin has signed in + landed on
+      //    their home — the policy-safe moment, same as user/priest
+      //    shells). The admin page never did this before, so on Android
+      //    13+ admins were never prompted and got no pushes.
+      unawaited(NotificationService().requestPermissionsIfNeeded());
+      // 3. Ensure this admin's FCM token is saved. Admin sign-in skips
+      //    createUserDocument (the explicit saveToken path for users/
+      //    priests); the admin's users/{uid} doc already exists, so this
+      //    update lands and makes admin pushes deliverable.
+      unawaited(NotificationService().saveToken());
+    });
+  }
+
+  // Drains a stashed notification-tap route onto the admin stack. Called
+  // on mount (cold-start tap) and on resume (background tap, since the
+  // already-mounted dashboard won't re-run initState). Skips '/admin'
+  // (already there) and empty.
+  void _drainPendingRoute() {
+    final route = NotificationService.pendingRoute;
+    NotificationService.pendingRoute = null;
+    if (route != null && route.isNotEmpty && route != '/admin' && mounted) {
+      context.push(route);
+    }
+  }
+
+  @override
+  void didChangeAppLifecycleState(AppLifecycleState state) {
+    super.didChangeAppLifecycleState(state);
+    if (state == AppLifecycleState.resumed) {
+      WidgetsBinding.instance
+          .addPostFrameCallback((_) => _drainPendingRoute());
+    }
+  }
+
+  @override
+  void dispose() {
+    WidgetsBinding.instance.removeObserver(this);
+    super.dispose();
+  }
+
+  void _onBackInvoked(bool didPop, Object? result) {
+    if (didPop) return;
+    final now = DateTime.now();
+    if (_lastBackPressed == null ||
+        now.difference(_lastBackPressed!) > const Duration(seconds: 2)) {
+      _lastBackPressed = now;
+      AppSnackBar.info(context, 'Press back again to exit');
+      return;
+    }
+    SystemNavigator.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return AnnotatedRegion<SystemUiOverlayStyle>(
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: _onBackInvoked,
+      child: AnnotatedRegion<SystemUiOverlayStyle>(
       value: const SystemUiOverlayStyle(
         statusBarColor: Colors.transparent,
         statusBarIconBrightness: Brightness.dark,
@@ -70,6 +142,7 @@ class _AdminDashboardPageState extends State<AdminDashboardPage> {
           ),
         ),
       ),
+      ),
     );
   }
 }
@@ -98,7 +171,10 @@ class _Content extends StatelessWidget {
           children: [
             _Header(onSignOut: () async {
               clearCachedRole();
-              await sl<AuthRepository>().signOut();
+              await runWithAppLoader(
+                context,
+                sl<AuthRepository>().signOut(),
+              );
               if (context.mounted) context.go('/select-role');
             }),
             if (data.hasAttentionItems) _AttentionStrip(data: data),
@@ -257,7 +333,14 @@ class _HeaderState extends State<_Header> {
                           color: AdminColors.textPrimary)),
                 ],
               ),
-              GestureDetector(
+              Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  _AdminNotifBell(
+                    uid: FirebaseAuth.instance.currentUser?.uid,
+                  ),
+                  const SizedBox(width: 12),
+                  GestureDetector(
                 onTapDown: (_) => setState(() => _pressed = true),
                 onTapUp: (_) => setState(() => _pressed = false),
                 onTapCancel: () => setState(() => _pressed = false),
@@ -284,6 +367,8 @@ class _HeaderState extends State<_Header> {
                   ),
                 ),
               ),
+                ],
+              ),
             ],
           ),
           Container(
@@ -298,6 +383,86 @@ class _HeaderState extends State<_Header> {
             ),
           ),
         ],
+      ),
+    );
+  }
+}
+
+// Notification bell + live unread count for the admin header. Streams
+// notifications addressed to this admin (userId == uid AND isRead ==
+// false — the same indexed query the priest dashboard bell uses) and
+// taps through to the admin inbox. Dismissed rows are filtered client-
+// side so a cleared alert doesn't keep the badge lit.
+class _AdminNotifBell extends StatelessWidget {
+  final String? uid;
+  const _AdminNotifBell({required this.uid});
+
+  @override
+  Widget build(BuildContext context) {
+    if (uid == null) return _glyph(context, 0);
+    return StreamBuilder<QuerySnapshot<Map<String, dynamic>>>(
+      stream: FirebaseFirestore.instance
+          .collection('notifications')
+          .where('userId', isEqualTo: uid)
+          .where('isRead', isEqualTo: false)
+          .snapshots(),
+      builder: (context, snap) {
+        final count = (snap.data?.docs ?? [])
+            .where((d) => d.data()['dismissReason'] == null)
+            .length;
+        return _glyph(context, count);
+      },
+    );
+  }
+
+  Widget _glyph(BuildContext context, int count) {
+    return GestureDetector(
+      behavior: HitTestBehavior.opaque,
+      onTap: () => context.push('/admin/notifications'),
+      child: Container(
+        width: 42,
+        height: 42,
+        decoration: BoxDecoration(
+          color: Colors.white,
+          shape: BoxShape.circle,
+          border: Border.all(color: AdminColors.borderLight),
+        ),
+        child: Stack(
+          clipBehavior: Clip.none,
+          alignment: Alignment.center,
+          children: [
+            const AppIcon(
+              AppIcons.bellOutline,
+              size: 20,
+              color: AdminColors.textPrimary,
+            ),
+            if (count > 0)
+              Positioned(
+                top: 5,
+                right: 5,
+                child: Container(
+                  constraints:
+                      const BoxConstraints(minWidth: 16, minHeight: 16),
+                  padding: const EdgeInsets.symmetric(horizontal: 4),
+                  decoration: BoxDecoration(
+                    color: AdminColors.error,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white, width: 1.5),
+                  ),
+                  alignment: Alignment.center,
+                  child: Text(
+                    count > 99 ? '99+' : '$count',
+                    style: GoogleFonts.inter(
+                      fontSize: 9,
+                      fontWeight: FontWeight.w700,
+                      color: Colors.white,
+                      height: 1.05,
+                    ),
+                  ),
+                ),
+              ),
+          ],
+        ),
       ),
     );
   }
@@ -347,11 +512,11 @@ class _AttentionStrip extends StatelessWidget {
                   const SizedBox(width: 10),
                   Expanded(
                     child: _AttentionCard(
-                      count: data.pendingMatrimony,
-                      label: 'Pending\nMatrimony',
-                      color: AdminColors.warning,
+                      count: data.openReports,
+                      label: 'Open\nReports',
+                      color: AdminColors.error,
                       onTap: () =>
-                          _pushAndRefresh(context, '/admin/matrimony'),
+                          _pushAndRefresh(context, '/admin/reports'),
                     ),
                   ),
                 ],
@@ -361,16 +526,6 @@ class _AttentionStrip extends StatelessWidget {
                 children: [
                   Expanded(
                     child: _AttentionCard(
-                      count: data.openReports,
-                      label: 'Open\nReports',
-                      color: AdminColors.error,
-                      onTap: () =>
-                          _pushAndRefresh(context, '/admin/reports'),
-                    ),
-                  ),
-                  const SizedBox(width: 10),
-                  Expanded(
-                    child: _AttentionCard(
                       count: data.pendingWithdrawals,
                       label: 'Pending\nWithdrawals',
                       color: AdminColors.warning,
@@ -378,6 +533,12 @@ class _AttentionStrip extends StatelessWidget {
                           _pushAndRefresh(context, '/admin/withdrawals'),
                     ),
                   ),
+                  const SizedBox(width: 10),
+                  // Matrimony approvals aren't built yet, so there is no
+                  // attention card for them — a count the admin can't act
+                  // on would read as a broken control. The empty half keeps
+                  // the two-column alignment consistent with the row above.
+                  const Expanded(child: SizedBox()),
                 ],
               ),
             ],
@@ -617,7 +778,7 @@ class _ManageGrid extends StatelessWidget {
           data.pendingSpeakers, '/admin/speakers'),
       _MI('\u{1F465}', 'Users', 'View & manage', 0, '/admin/users'),
       _MI('\u{1F48D}', 'Matrimony', 'Profile approvals',
-          data.pendingMatrimony, '/admin/matrimony'),
+          data.pendingMatrimony, '/admin/matrimony', soon: true),
       _MI('\u{1F6A9}', 'Reports', 'Review queue', data.openReports,
           '/admin/reports'),
       _MI('\u{1F4AC}', 'Sessions', 'Live monitoring', 0,
@@ -627,9 +788,9 @@ class _ManageGrid extends StatelessWidget {
       _MI('\u{1F4CA}', 'Revenue', 'Earnings breakdown', 0,
           '/admin/revenue'),
       _MI('\u{1F4D6}', 'Bible Sessions', 'Session overview', 0,
-          '/admin/bible-sessions'),
+          '/admin/bible-sessions', soon: true),
       _MI('\u{1F6CD}\uFE0F', 'Products', 'Speaker listings', 0,
-          '/admin/products'),
+          '/admin/products', soon: true),
       _MI('\u2699\uFE0F', 'Settings', 'Rates & config', 0,
           '/admin/settings'),
       _MI('\u{1FA99}', 'Coin Packs', 'Recharge packs', 0,
@@ -659,7 +820,15 @@ class _ManageGrid extends StatelessWidget {
                 title: m.title,
                 sub: m.sub,
                 badge: m.badge,
-                onTap: () => _pushAndRefresh(context, m.route),
+                soon: m.soon,
+                // Not-yet-built sections show a "Soon" pill and must NOT
+                // navigate — their route only lands on the styled "Coming
+                // Soon" placeholder, which reads as a dead-end. Give calm
+                // feedback instead so the tap is acknowledged.
+                onTap: m.soon
+                    ? () =>
+                        AppSnackBar.info(context, '${m.title} is coming soon')
+                    : () => _pushAndRefresh(context, m.route),
               );
             },
           ),
@@ -672,12 +841,18 @@ class _ManageGrid extends StatelessWidget {
 class _MI {
   final String emoji, title, sub, route;
   final int badge;
-  const _MI(this.emoji, this.title, this.sub, this.badge, this.route);
+  // Section not built yet (its route lands on the styled "coming soon"
+  // placeholder). We render a calm "Soon" pill instead of a count so the
+  // tap doesn't read as a broken/dead button.
+  final bool soon;
+  const _MI(this.emoji, this.title, this.sub, this.badge, this.route,
+      {this.soon = false});
 }
 
 class _ManageCard extends StatefulWidget {
   final String emoji, title, sub;
   final int badge;
+  final bool soon;
   final VoidCallback onTap;
 
   const _ManageCard({
@@ -686,6 +861,7 @@ class _ManageCard extends StatefulWidget {
     required this.sub,
     required this.badge,
     required this.onTap,
+    this.soon = false,
   });
 
   @override
@@ -743,7 +919,27 @@ class _ManageCardState extends State<_ManageCard> {
                           color: AdminColors.textLight)),
                 ],
               ),
-              if (widget.badge > 0)
+              // "Soon" pill takes priority over the count: a not-yet-built
+              // section shouldn't advertise an actionable number.
+              if (widget.soon)
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 8, vertical: 3),
+                    decoration: BoxDecoration(
+                      color: AdminColors.inputBackground,
+                      borderRadius: BorderRadius.circular(11),
+                    ),
+                    child: Text('Soon',
+                        style: GoogleFonts.inter(
+                            fontSize: 10,
+                            fontWeight: FontWeight.w600,
+                            color: AdminColors.textMuted)),
+                  ),
+                )
+              else if (widget.badge > 0)
                 Positioned(
                   top: 0,
                   right: 0,

@@ -26,6 +26,7 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/user/home/widgets/no_priests_widget.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class PriestAvailabilityPage extends StatefulWidget {
   const PriestAvailabilityPage({super.key});
@@ -150,10 +151,7 @@ class _PriestAvailabilityPageState extends State<PriestAvailabilityPage> {
       appBar: _buildAppBar(),
       body: _loading
           ? const Center(
-              child: CircularProgressIndicator(
-                color: AppColors.primaryBrown,
-                strokeWidth: 2.5,
-              ),
+              child: AppLoader(),
             )
           : SafeArea(
               child: SingleChildScrollView(
@@ -315,7 +313,7 @@ class _Toggle extends StatelessWidget {
     // pill from chat's live-state palette.
     final trackColor = value
         ? AppColors.muted
-        : const Color(0xFF2E7D4F);
+        : AppColors.successGreen;
 
     return GestureDetector(
       behavior: HitTestBehavior.opaque,

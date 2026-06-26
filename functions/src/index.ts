@@ -39,6 +39,13 @@ export {getPublicPriestReviews} from "./sessions/getPublicPriestReviews";
 // ═══ Admin ═══
 export {approveRejectPriest} from "./admin/approveRejectPriest";
 export {onReportResolved} from "./admin/onReportResolved";
+// Admin-facing alerts (fan out to every users/{uid} with role=='admin'
+// via notifyAdmins). onReportCreated → new report filed; onPriest
+// Registration → new speaker application; the withdrawal-requested
+// alert is fired inline from requestWithdrawal. notifyAdmins itself is
+// a helper, not a deployed function, so it isn't exported here.
+export {onReportCreated} from "./admin/onReportCreated";
+export {onPriestRegistration} from "./admin/onPriestRegistration";
 // approveRejectMatrimony + updateAppConfig are unimplemented stubs —
 // not exported so they aren't deployed. Admin currently edits
 // app_config/settings directly via the Firestore-rules-protected
@@ -49,6 +56,16 @@ export {onReportResolved} from "./admin/onReportResolved";
 // through verifyActivationPurchase (Play-verified). Keeping the stub
 // exported would deploy a CF that only throws.
 export {requestWithdrawal} from "./priest/requestWithdrawal";
+// Firestore trigger: notifies the priest at each withdrawal status
+// change (processing / sent + reference / on hold / cancelled).
+export {onWithdrawalStatus} from "./priest/onWithdrawalStatus";
+// Admin block & refund — transactional + idempotent (no double refund,
+// can't block a paid payout, writes the refund ledger row).
+export {blockWithdrawal} from "./priest/blockWithdrawal";
+// Re-snapshots on-hold withdrawals onto the priest's corrected bank
+// details and returns them to the admin's Pending queue.
+export {onPriestBankDetailsChanged} from
+  "./priest/onPriestBankDetailsChanged";
 
 // ═══ Users ═══
 export {onUserCreated} from "./users/onUserCreated";

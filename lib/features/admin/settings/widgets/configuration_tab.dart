@@ -10,6 +10,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/confirm_changes_sheet.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/settings_cubit.dart';
 import 'package:gospel_vox/features/admin/settings/bloc/settings_state.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class ConfigurationTab extends StatefulWidget {
   const ConfigurationTab({super.key});
@@ -24,20 +25,58 @@ class _ConfigurationTabState extends State<ConfigurationTab>
   final Map<String, TextEditingController> _ctrls = {};
   bool _hasChanges = false;
 
+  // Only fields the app actually reads post-Play-Billing. Removed (dead
+  // after the migration, read nowhere at runtime): matrimony*Fee ×3
+  // (matrimony is Coming Soon), lowBalanceWarning (warning is a hardcoded
+  // 5-min threshold), welcomeOffer* ×2 (offer disabled at cutover). Their
+  // Firestore values are left untouched — only hidden from this UI — so
+  // re-enabling those features later just means re-adding their rows.
   static const _fields = [
     'chatRatePerMinute',
     'voiceRatePerMinute',
     'commissionPercent',
     'bibleCommissionPercent',
     'priestActivationFee',
-    'matrimonyListingFee',
-    'matrimonyUnlockFee',
-    'matrimonyChatTierFee',
-    'lowBalanceWarning',
     'minWithdrawal',
-    'welcomeOfferPrice',
-    'welcomeOfferCoins',
   ];
+
+  // Per-field validation bounds, enforced on save. `min` is the lowest
+  // ALLOWED value. Rates/thresholds must be ≥1 (a 0 rate would mean free
+  // sessions / a 0 floor); commission % is 0–100 (0 = priest keeps all).
+  // priestActivationFee is intentionally absent — it's display-only (the
+  // real charge is the Play SKU) and is shown read-only, so there's
+  // nothing for the admin to mis-enter.
+  static const _bounds = <String, ({int min, int max, String label})>{
+    'chatRatePerMinute': (min: 1, max: 100000, label: 'Chat Rate'),
+    'voiceRatePerMinute': (min: 1, max: 100000, label: 'Voice Rate'),
+    'commissionPercent': (min: 0, max: 100, label: 'Commission'),
+    'bibleCommissionPercent':
+        (min: 0, max: 100, label: 'Bible Commission'),
+    'minWithdrawal': (min: 1, max: 10000000, label: 'Min Withdrawal'),
+  };
+
+  // Returns the first validation error (for an AppSnackBar) or null when
+  // every field is within bounds. Blocks blank, non-numeric, 0-where-not-
+  // allowed, and out-of-range values from ever reaching app_config.
+  String? _validate() {
+    for (final entry in _bounds.entries) {
+      final b = entry.value;
+      final text = _ctrls[entry.key]?.text.trim() ?? '';
+      final val = int.tryParse(text);
+      if (val == null) {
+        return '${b.label} must be a whole number.';
+      }
+      if (val < b.min) {
+        return b.min == 0
+            ? "${b.label} can't be negative."
+            : '${b.label} must be at least ${b.min}.';
+      }
+      if (val > b.max) {
+        return "${b.label} can't be more than ${b.max}.";
+      }
+    }
+    return null;
+  }
 
   @override
   bool get wantKeepAlive => true;
@@ -80,13 +119,7 @@ class _ConfigurationTabState extends State<ConfigurationTab>
       'commissionPercent': ('Commission', '%'),
       'bibleCommissionPercent': ('Bible Session Commission', '%'),
       'priestActivationFee': ('Speaker Activation', '₹'),
-      'matrimonyListingFee': ('Matrimony Listing', '₹'),
-      'matrimonyUnlockFee': ('Matrimony Unlock', '₹'),
-      'matrimonyChatTierFee': ('Chat Extension', '₹'),
-      'lowBalanceWarning': ('Low Balance Alert', 'coins'),
       'minWithdrawal': ('Min Withdrawal', '₹'),
-      'welcomeOfferPrice': ('User Pays', '₹'),
-      'welcomeOfferCoins': ('Coins Given', 'coins'),
     };
 
     for (final key in _fields) {
@@ -105,6 +138,15 @@ class _ConfigurationTabState extends State<ConfigurationTab>
   }
 
   Future<void> _save() async {
+    // Validate BEFORE the confirm sheet — the old code did
+    // `int.tryParse(text) ?? 0`, which silently wrote 0 for a blank or
+    // bad value. Now a bad value is caught and surfaced instead.
+    final validationError = _validate();
+    if (validationError != null) {
+      if (mounted) AppSnackBar.error(context, validationError);
+      return;
+    }
+
     final changes = _getChangedItems();
     if (changes.isEmpty) {
       if (mounted) AppSnackBar.info(context, 'No changes to save');
@@ -164,26 +206,16 @@ class _ConfigurationTabState extends State<ConfigurationTab>
                     'bibleCommissionPercent', '%'),
               ]),
               _section('FEES', [
-                _row('Speaker Activation', 'One-time unlock fee',
-                    'priestActivationFee', '₹'),
-                _row('Matrimony Listing', 'Profile publish fee',
-                    'matrimonyListingFee', '₹'),
-                _row('Matrimony Unlock', 'Unlock + 50 messages',
-                    'matrimonyUnlockFee', '₹'),
-                _row('Chat Extension', '200 more messages',
-                    'matrimonyChatTierFee', '₹'),
+                // Read-only: the real charge is the `priest_activation`
+                // Play SKU. This Firestore value is only used to stamp the
+                // audit record, so it's shown for reference (set in Play
+                // Console) and not editable — prevents it drifting from
+                // what Play actually charges.
+                _readOnlyRow('Speaker Activation', 'priestActivationFee', '₹'),
               ]),
               _section('THRESHOLDS', [
                 _row('Min Withdrawal', 'Speaker minimum payout',
                     'minWithdrawal', '₹'),
-                _row('Low Balance Alert', 'Warn during session',
-                    'lowBalanceWarning', 'coins'),
-              ]),
-              _section('FIRST-TIME OFFER', [
-                _row('User Pays', 'Amount charged',
-                    'welcomeOfferPrice', '₹'),
-                _row('Coins Given', 'Coins credited',
-                    'welcomeOfferCoins', 'coins'),
               ]),
               AnimatedSwitcher(
                 duration: const Duration(milliseconds: 200),
@@ -241,6 +273,51 @@ class _ConfigurationTabState extends State<ConfigurationTab>
           ),
         ),
       ],
+    );
+  }
+
+  // Read-only display row for a Play-controlled value. Shows the current
+  // Firestore value (for reference) but offers no input — the real price
+  // lives in the Play Console, and editing it here would only corrupt the
+  // audit record.
+  Widget _readOnlyRow(String title, String key, String suffix) {
+    final value = _original[key];
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Row(
+                  children: [
+                    Text(title,
+                        style: GoogleFonts.inter(
+                            fontSize: 14,
+                            fontWeight: FontWeight.w500,
+                            color: AdminColors.textPrimary)),
+                    const SizedBox(width: 6),
+                    const Icon(Icons.lock_outline,
+                        size: 12, color: AdminColors.textLight),
+                  ],
+                ),
+                const SizedBox(height: 2),
+                Text('Set in Play Console',
+                    style: GoogleFonts.inter(
+                        fontSize: 11,
+                        fontWeight: FontWeight.w400,
+                        color: AdminColors.textLight)),
+              ],
+            ),
+          ),
+          Text(value == null ? '—' : '$suffix$value',
+              style: GoogleFonts.inter(
+                  fontSize: 14,
+                  fontWeight: FontWeight.w600,
+                  color: AdminColors.textMuted)),
+        ],
+      ),
     );
   }
 
@@ -344,10 +421,9 @@ class _SaveButtonState extends State<_SaveButton> {
           alignment: Alignment.center,
           child: widget.isSaving
               ? const SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                      color: Colors.white, strokeWidth: 2))
+                  width: 32,
+                  height: 32,
+                  child: AppLoader())
               : Text('Save All Changes',
                   style: GoogleFonts.inter(
                       fontSize: 15,
@@ -373,7 +449,7 @@ class _ConfigShimmer extends StatelessWidget {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
-            for (final count in [3, 1, 4, 2, 2]) ...[
+            for (final count in [3, 1, 1, 1]) ...[
               const SizedBox(height: 20),
               Container(width: 100, height: 12, color: Colors.white),
               const SizedBox(height: 12),

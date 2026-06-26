@@ -57,27 +57,31 @@ class SessionPreflight {
     futures.add(db.doc('app_config/settings').get());
 
     try {
-      final results = await Future.wait(futures)
-          .timeout(const Duration(seconds: 6));
+      final results = await Future.wait(
+        futures,
+      ).timeout(const Duration(seconds: 6));
       var idx = 0;
       if (needsBalance) {
         final userSnap = results[idx++];
-        balance =
-            (userSnap.data()?['coinBalance'] as num?)?.toInt() ?? 0;
+        balance = (userSnap.data()?['coinBalance'] as num?)?.toInt() ?? 0;
       }
       final settingsSnap = results[idx];
       final settings = settingsSnap.data() ?? const <String, dynamic>{};
       if (needsRate) {
-        final fallback =
-            type == 'voice' ? _kFallbackVoiceRate : _kFallbackChatRate;
-        ratePerMinute = (settings[
-                    type == 'voice' ? 'voiceRatePerMinute' : 'chatRatePerMinute']
-                as num?)
+        final fallback = type == 'voice'
+            ? _kFallbackVoiceRate
+            : _kFallbackChatRate;
+        ratePerMinute =
+            (settings[type == 'voice'
+                        ? 'voiceRatePerMinute'
+                        : 'chatRatePerMinute']
+                    as num?)
                 ?.toInt() ??
             fallback;
       }
       minMinutes =
-          (settings['minSessionMinutes'] as num?)?.toInt() ?? _kFallbackMinMinutes;
+          (settings['minSessionMinutes'] as num?)?.toInt() ??
+          _kFallbackMinMinutes;
     } catch (_) {
       // Read failed — let the server be the source of truth. The CF
       // will still enforce the gate; the worst case is the user sees
@@ -101,6 +105,10 @@ class SessionPreflight {
       context,
       currentBalance: balance,
       infoHeadline: 'Add ₹$deficit more to start your session',
+      // Keep the user in the start-session flow — the quick 4-pack grid
+      // is enough; opening the full wallet here would route them to Home
+      // on completion and abandon the session they're trying to begin.
+      showSeeAllPlans: false,
     );
 
     if (!context.mounted) return false;

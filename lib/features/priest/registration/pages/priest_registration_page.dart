@@ -92,12 +92,14 @@ class _PriestRegistrationViewState extends State<_PriestRegistrationView> {
     String phone,
     String email,
     String? photoPath,
+    String communityRole,
   ) {
     context.read<PriestRegistrationCubit>().completeStep1(
           fullName: fullName,
           phone: phone,
           email: email,
           photoPath: photoPath,
+          communityRole: communityRole,
         );
   }
 
@@ -394,6 +396,7 @@ class _PriestRegistrationViewState extends State<_PriestRegistrationView> {
           initialPhone: safeData?.phone ?? '',
           initialEmail: safeData?.email ?? (user?.email ?? ''),
           initialPhotoPath: safeData?.photoPath,
+          initialCommunityRole: safeData?.communityRole ?? '',
           onNext: _handleStep1Done,
         ),
         RegistrationStep2(

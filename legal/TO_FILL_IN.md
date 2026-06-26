@@ -49,9 +49,11 @@ edit each of the four policy markdowns and the matching HTML files.
 
 | Field | Value | Reason |
 |---|---|---|
-| Paid features available in | **India only** | Razorpay-only stack; Stripe / IAP not enabled yet |
-| Currency | INR | Razorpay India settlement |
-| GSTIN | Not currently registered | Document says GSTIN will be published when applicable |
+| Payment rail | **Google Play Billing** (Android) | All digital goods — coins, activation fee, Bible sessions — flow through Play Billing; purchase tokens verified server-side. |
+| Paid features available in | **Wherever the app is distributed on Google Play + Play billing is supported** | Play Billing handles currency/tax per country; no longer India-only. Matches the India→US/UK/GCC rollout. |
+| Currency | Local currency via Google Play | Google sets buyer-facing price/currency per region. |
+| Speaker payouts | Bank/UPI transfer (payment partner / manual, admin-controlled) | Payouts are NOT a Play purchase — outside Play Billing scope. |
+| Taxes | Not collecting GST from users/priests | No GST/GSTIN wording in any user-facing doc; Google handles any marketplace taxes on Play purchases. |
 
 ## E. Dispute resolution
 
@@ -69,12 +71,12 @@ industry-standard defaults. **If any of these is wrong, change it
 now**: the values appear in the Terms, the Refund Policy, and what
 you commit to in writing to the user.
 
-| Field | Default applied | Where it appears | Status |
+| Field | Value | Where it appears | Status |
 |---|---|---|---|
-| **Speaker activation fee** | **₹999** (one-time, non-refundable) | T&C §5.3 | ⚠️ Confirm |
-| **Platform commission** | **20%** of gross Session value | T&C §8.1 | ⚠️ Confirm |
-| **Coin → INR rate (for Speaker withdrawals)** | **1 Coin = ₹1** | T&C §8.2 | ⚠️ Confirm |
-| **Minimum withdrawal threshold** | **₹500** | T&C §8.3 | ⚠️ Confirm |
+| **Speaker activation fee** | **₹500** (one-time, non-refundable) | T&C §5.3 | ✅ matches `app_config/settings.priestActivationFee` (seed = 500) |
+| **Platform commission** | **40%** of gross Session value (all sessions) | T&C §8.1 | ⚠️ set `app_config/settings.commissionPercent = 40` in Admin → Settings (live value governs billing) |
+| **Coin → INR rate (for Speaker withdrawals)** | **1 Coin = ₹1** | T&C §8.2 | ✅ matches withdrawal logic |
+| **Minimum withdrawal threshold** | **₹1,000** | T&C §8.3 | ✅ confirmed by owner — set `app_config/settings.minWithdrawal = 1000` |
 
 Other defaults you can change if needed:
 
@@ -82,9 +84,12 @@ Other defaults you can change if needed:
 |---|---|---|
 | Withdrawal settlement SLA | 5–7 business days | T&C §8.4, Help |
 | Coin expiry on inactivity | 24 months | T&C §6.7 |
-| Welcome offer | 100 Coins for ₹29 | T&C §6.5 (matches the existing default in [wallet_repository.dart](../lib/features/user/wallet/data/wallet_repository.dart)) |
 | Chat-message retention after account closure | 12 months | Privacy Policy §6 |
 | Session-failure refund SLA | 24–72 hours | Refund Policy §4.1 |
+
+> No welcome offer at launch — promotional wording in T&C §6.5 and
+> Refund §5 is now generic ("offers shown at point of purchase"), no
+> specific amounts promised. Chat is text-only (no image attachments).
 
 ## G. Hosting URLs (this release)
 
@@ -153,15 +158,33 @@ common cause of "policy URL not accessible" rejection.
 - [ ] App content → Account deletion → Web URL = `https://gospelvox-a2208.web.app/delete-account`
 - [ ] App content → Account deletion → Confirm both "delete account" and "delete data" are available in-app
 - [ ] Data safety form → fill in matching Privacy Policy §2 and §4
+      (declare: microphone audio, photos, name/email/phone, app
+      activity, device IDs; purchases handled by Google Play Billing)
 - [ ] Store listing → Email = support@gospelvox.com
-- [ ] Sensitive permissions (microphone, foreground service) → prominent disclosure shown before request in-app
+- [ ] Sensitive permissions (microphone, foreground service) →
+      prominent disclosure shown before request in-app
 
-### Razorpay merchant dashboard
+**Critical declarations (these are the most common rejection causes):**
 
-- [ ] Settings → Profile → "Terms" URL = `https://gospelvox-a2208.web.app/terms`
-- [ ] Settings → Profile → "Privacy" URL = `https://gospelvox-a2208.web.app/privacy-policy`
-- [ ] Settings → Profile → "Refund" URL = `https://gospelvox-a2208.web.app/refund-policy`
-- [ ] Settings → Profile → "Contact us" URL = `https://gospelvox-a2208.web.app/help`
+- [ ] **Foreground service** → App content → "Foreground service
+      permissions" form → declare `microphone` FGS, purpose = keeping
+      an ongoing voice call alive when the app is backgrounded /
+      screen locked. Attach a short screen-recording of a live call if
+      asked.
+- [ ] **Child safety standards** → App content → "Child safety
+      standards" → mark the app as having user-to-user communication,
+      paste the published URL
+      `https://gospelvox-a2208.web.app/child-safety-standards`, give a
+      CSAE point-of-contact email, confirm in-app reporting exists.
+- [ ] **UGC / in-app reporting** → confirm the new ⋮ → Report flow in
+      chat + voice (and Block) ships in this build. This is what backs
+      the UGC + Child-safety declarations above.
+- [ ] **16 KB page size** → upload to internal testing first; Play
+      warns if any native lib (Agora especially) isn't 16 KB-aligned
+      before you can promote to production.
+- [ ] Payments → no separate payment-processor config needed: digital
+      goods go through Google Play Billing (no external payment-gateway
+      URLs to register).
 
 ---
 
@@ -181,13 +204,13 @@ common cause of "policy URL not accessible" rejection.
    The drafts are tight but a lawyer's signoff is still cheap
    insurance.
 
-4. **Watch the Apple IAP angle** on first iOS review. If reviewers
-   challenge the Razorpay flow as "in-app digital purchase needing
-   IAP", point them at:
-   - The Speaker is a real human with verified ID and ordination.
-   - Sessions are person-to-person real-world services.
-   - The framing in Terms §4 ("technology intermediary, sessions
-     delivered by independent Speakers").
+4. **iOS purchases are gated for now.** Coins/activation/Bible-session
+   purchases run through Google Play Billing on Android only; the
+   StoreKit (Apple IAP) slice isn't wired yet and the Cloud Functions
+   only verify Play tokens today. Do NOT enable paid surfaces on an
+   iOS build until StoreKit + Apple-receipt verification ship —
+   shipping non-Apple billing for digital goods on iOS would breach
+   App Store Guideline 3.1.1.
 
 5. **Mental-health disclaimer surfacing** — consider adding a
    one-line "spiritual guidance only — not a substitute for

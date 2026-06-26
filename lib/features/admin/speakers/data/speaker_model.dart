@@ -15,6 +15,10 @@ class SpeakerModel {
   final String email;
   final String phone;
   final String photoUrl;
+  // Christian community role chosen at registration (Priest, Pastor,
+  // Evangelist, … or a custom value the priest typed via 'Other').
+  // Defaults to '' so older priest docs without the field read cleanly.
+  final String communityRole;
   final String denomination;
   final String subDenomination;
   final String churchName;
@@ -29,6 +33,14 @@ class SpeakerModel {
   // pending | approved | rejected | suspended
   final String status;
   final bool isActivated;
+  // True once the priest deletes their own account (set by the
+  // account-deletion flow alongside isOnline=false). User-facing
+  // surfaces treat a deleted priest as if they no longer exist —
+  // hidden from the feed / search / profile entirely, and rendered
+  // as a neutral "Unavailable" row (no name, no photo, not tappable)
+  // anywhere their identity was denormalised into history. Defaults
+  // to false so every existing priest doc reads as live.
+  final bool isDeleted;
   // Availability — set automatically by app lifecycle (foregrounded
   // => online, backgrounded for 2+ minutes => offline). A Cloud
   // Function watchdog also flips it off if the heartbeat stops.
@@ -71,6 +83,7 @@ class SpeakerModel {
     required this.email,
     required this.phone,
     required this.photoUrl,
+    this.communityRole = '',
     required this.denomination,
     required this.subDenomination,
     required this.churchName,
@@ -84,6 +97,7 @@ class SpeakerModel {
     required this.certificateUrl,
     required this.status,
     required this.isActivated,
+    this.isDeleted = false,
     this.isOnline = false,
     this.isBusy = false,
     this.liveBibleSessionId = '',
@@ -108,6 +122,7 @@ class SpeakerModel {
       email: data['email'] as String? ?? '',
       phone: data['phone'] as String? ?? '',
       photoUrl: data['photoUrl'] as String? ?? '',
+      communityRole: data['communityRole'] as String? ?? '',
       denomination: data['denomination'] as String? ?? '',
       subDenomination: data['subDenomination'] as String? ?? '',
       churchName: data['churchName'] as String? ?? '',
@@ -124,6 +139,7 @@ class SpeakerModel {
       certificateUrl: data['certificateUrl'] as String? ?? '',
       status: data['status'] as String? ?? 'pending',
       isActivated: data['isActivated'] as bool? ?? false,
+      isDeleted: data['isDeleted'] as bool? ?? false,
       isOnline: data['isOnline'] as bool? ?? false,
       isBusy: data['isBusy'] as bool? ?? false,
       // Defaults to empty string when the field is missing — older

@@ -13,10 +13,12 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
-import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class LoginPage extends StatelessWidget {
   // Kept for router compatibility (router still passes a role from the
@@ -175,25 +177,14 @@ class _AdminLoginScreenState extends State<_AdminLoginScreen> {
                   const SizedBox(height: 48),
                   Align(
                     alignment: Alignment.centerLeft,
-                    child: GestureDetector(
-                      onTap: () => context.go('/select-role'),
-                      behavior: HitTestBehavior.opaque,
-                      child: Container(
-                        width: 44,
-                        height: 44,
-                        decoration: BoxDecoration(
-                          color: AppColors.white,
-                          borderRadius: BorderRadius.circular(12),
-                          border: Border.all(
-                            color: AppColors.muted.withValues(alpha: 0.2),
-                          ),
-                        ),
-                        child: const AppIcon(
-                          AppIcons.back,
-                          color: AppColors.deepDarkBrown,
-                          size: 20,
-                        ),
-                      ),
+                    // Canonical back button (matches every other page's
+                    // arrow + haptic). Keeps the explicit /select-role
+                    // destination and ignores taps while signing in.
+                    child: AppBackButton(
+                      onTap: () {
+                        if (_isSubmitting) return;
+                        context.go('/select-role');
+                      },
                     ),
                   ),
                   const SizedBox(height: 32),
@@ -348,12 +339,9 @@ class _SubmitButtonState extends State<_SubmitButton> {
             child: Center(
               child: widget.isLoading
                   ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2,
-                      ),
+                      width: 32,
+                      height: 32,
+                      child: AppLoader(),
                     )
                   : Text(
                       'Sign In',

@@ -38,6 +38,16 @@ class AdminColors {
   static const Color info = Color(0xFF3B82F6);
   static const Color infoBg = Color(0xFFEFF6FF);
 
+  // Withdrawal-pipeline statuses. "Processing" (blue) and "On hold"
+  // (burnt orange) were hand-copied as raw hex across all three
+  // withdrawal screens (tab badge, status badge, sheet buttons,
+  // focus borders), so a shade tweak in one left the others stale.
+  // One token each now.
+  static const Color processing = Color(0xFF1A56DB);
+  static const Color processingBg = Color(0xFFE8F0FE);
+  static const Color onHold = Color(0xFFC2410C);
+  static const Color onHoldBg = Color(0xFFFFF1E6);
+
   // Card styling constants
   static const double cardRadius = 14.0;
 

@@ -30,7 +30,7 @@ import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 const Color _kCompletedGreen = Color(0xFF059669);
 const Color _kDeclinedRed = Color(0xFFDC2626);
-const Color _kEarningsGreen = Color(0xFF2E7D4F);
+const Color _kEarningsGreen = AppColors.successGreen;
 
 class SessionDetailPage extends StatefulWidget {
   final SessionModel session;
@@ -143,7 +143,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
             height: 72,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               border: Border.all(
                 color: AppColors.muted.withValues(alpha: 0.12),
                 width: 2,
@@ -329,7 +329,7 @@ class _SessionDetailPageState extends State<SessionDetailPage> {
               width: double.infinity,
               padding: const EdgeInsets.all(14),
               decoration: BoxDecoration(
-                color: const Color(0xFFF7F5F2),
+                color: AppColors.fieldFill,
                 borderRadius: BorderRadius.circular(12),
               ),
               child: Text(

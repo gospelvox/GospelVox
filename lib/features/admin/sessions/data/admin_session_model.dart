@@ -57,31 +57,96 @@ class AdminSessionModel {
     String docId,
     Map<String, dynamic> data,
   ) {
-    DateTime? ts(dynamic v) =>
-        v is Timestamp ? v.toDate() : null;
+    // Type-checked accessors instead of raw `as` casts. A single
+    // session doc with a field written as the wrong type (e.g. a voice
+    // session whose `durationMinutes` came through as the bool `false`
+    // from a buggy/legacy write) used to throw a CastError —
+    // "type 'bool' is not a subtype of type 'num?'" — inside the live
+    // stream's .map, which took down the ENTIRE monitor with a format
+    // error rather than just dropping the one bad row. These helpers
+    // coerce any unexpected type to a safe default so the monitor
+    // always renders.
+    DateTime? ts(dynamic v) => v is Timestamp ? v.toDate() : null;
+    String str(dynamic v, [String fallback = '']) =>
+        v is String ? v : fallback;
+    String? strOrNull(dynamic v) => v is String ? v : null;
+    int intOf(dynamic v) => v is num ? v.toInt() : 0;
+    double? doubleOrNull(dynamic v) => v is num ? v.toDouble() : null;
 
     return AdminSessionModel(
       id: docId,
-      userId: data['userId'] as String? ?? '',
-      priestId: data['priestId'] as String? ?? '',
-      userName: data['userName'] as String? ?? 'Unknown',
-      priestName: data['priestName'] as String? ?? 'Unknown',
-      type: data['type'] as String? ?? 'chat',
-      status: data['status'] as String? ?? '',
-      ratePerMinute: (data['ratePerMinute'] as num?)?.toInt() ?? 0,
-      durationMinutes: (data['durationMinutes'] as num?)?.toInt() ?? 0,
-      totalCharged: (data['totalCharged'] as num?)?.toInt() ?? 0,
-      priestEarnings: (data['priestEarnings'] as num?)?.toInt() ?? 0,
-      commissionPercent:
-          (data['commissionPercent'] as num?)?.toInt() ?? 0,
-      userRating: (data['userRating'] as num?)?.toDouble(),
-      userFeedback: data['userFeedback'] as String?,
-      endReason: data['endReason'] as String?,
+      userId: str(data['userId']),
+      priestId: str(data['priestId']),
+      userName: str(data['userName'], 'Unknown'),
+      priestName: str(data['priestName'], 'Unknown'),
+      type: str(data['type'], 'chat'),
+      status: str(data['status']),
+      ratePerMinute: intOf(data['ratePerMinute']),
+      durationMinutes: intOf(data['durationMinutes']),
+      totalCharged: intOf(data['totalCharged']),
+      priestEarnings: intOf(data['priestEarnings']),
+      commissionPercent: intOf(data['commissionPercent']),
+      userRating: doubleOrNull(data['userRating']),
+      userFeedback: strOrNull(data['userFeedback']),
+      endReason: strOrNull(data['endReason']),
       createdAt: ts(data['createdAt']),
       startedAt: ts(data['startedAt']),
       endedAt: ts(data['endedAt']),
     );
   }
+
+  // Value equality over the displayed fields. This is what stops the
+  // live monitor from rebuilding on every Firestore tick: an active
+  // session doc gets a `lastHeartbeat` write every few seconds, but
+  // that field isn't parsed into this model, so two models built
+  // across a heartbeat-only change compare EQUAL. The cubit's emit
+  // then no-ops (Bloc skips an emit equal to the current state) and
+  // the page doesn't rebuild. Real changes (status, duration, charge)
+  // still differ and still rebuild.
+  @override
+  bool operator ==(Object other) {
+    return other is AdminSessionModel &&
+        other.id == id &&
+        other.userId == userId &&
+        other.priestId == priestId &&
+        other.userName == userName &&
+        other.priestName == priestName &&
+        other.type == type &&
+        other.status == status &&
+        other.ratePerMinute == ratePerMinute &&
+        other.durationMinutes == durationMinutes &&
+        other.totalCharged == totalCharged &&
+        other.priestEarnings == priestEarnings &&
+        other.commissionPercent == commissionPercent &&
+        other.userRating == userRating &&
+        other.userFeedback == userFeedback &&
+        other.endReason == endReason &&
+        other.createdAt == createdAt &&
+        other.startedAt == startedAt &&
+        other.endedAt == endedAt;
+  }
+
+  @override
+  int get hashCode => Object.hash(
+        id,
+        userId,
+        priestId,
+        userName,
+        priestName,
+        type,
+        status,
+        ratePerMinute,
+        durationMinutes,
+        totalCharged,
+        priestEarnings,
+        commissionPercent,
+        userRating,
+        userFeedback,
+        endReason,
+        createdAt,
+        startedAt,
+        endedAt,
+      );
 
   // Charged minus what the priest takes home — what stays with the
   // platform after commission. Derived rather than stored because

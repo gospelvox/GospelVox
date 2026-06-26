@@ -955,7 +955,7 @@ class _UserAvatar extends StatelessWidget {
       height: 38,
       decoration: BoxDecoration(
         shape: BoxShape.circle,
-        color: const Color(0xFFF7F5F2),
+        color: AppColors.fieldFill,
         border: Border.all(
           color: AppColors.muted.withValues(alpha: 0.12),
         ),

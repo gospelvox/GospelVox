@@ -117,7 +117,7 @@ information provided is false, the Speaker's conduct violates these
 Terms, or where required by law.
 
 5.3 Speakers must pay a one-time **activation fee** of
-**₹999** before they can receive paid Sessions on the
+**₹500** before they can receive paid Sessions on the
 Platform. The activation fee is **non-refundable** once paid, except
 where required by applicable law.
 
@@ -135,25 +135,28 @@ Users.**
 
 6.2 **Purchasing Coins.** Users may purchase Coin packs at the
 prevailing prices shown in the app. Prices are inclusive of applicable
-indirect taxes (including GST in India) unless stated otherwise.
+taxes unless stated otherwise.
 
-6.3 **Payment processor.** All Coin purchases by Users in India are
-processed through **Razorpay Software Private Limited** ("**Razorpay**"),
-our authorised payment service provider. By making a purchase you also
-agree to Razorpay's terms and privacy policy.
+6.3 **Payment processor.** All in-app purchases — Coin packs, the
+Speaker activation fee, and paid Bible Sessions — are processed through
+**Google Play's billing system** on Android devices. Payment is
+collected and handled by Google in accordance with the Google Play
+Terms of Service; we never receive or store your card, UPI,
+net-banking, or other payment credentials. By making a purchase you
+also agree to the Google Play Terms of Service.
 
-6.4 **Geographic availability of paid features.** Paid Coin purchases
-are currently available only to Users transacting from **India**.
-Users in other regions may
-access only the free portions of the Platform until additional payment
-rails are enabled. We will update this section when other rails go
-live.
+6.4 **Geographic availability of paid features.** Paid features are
+available to Users in the countries where the GospelVox app is
+distributed on Google Play and where Google Play's billing system
+supports purchases. Where available, prices are shown in your local
+currency. Users in regions where in-app purchases are not supported may
+access only the free portions of the Platform.
 
-6.5 **Welcome offer / promotional packs.** From time to time we may
-offer promotional Coin packs (e.g., a one-time welcome offer of
-**100 Coins for ₹29**). Promotional packs are subject
-to additional terms shown at the point of purchase and are limited to
-one redemption per User unless stated otherwise.
+6.5 **Promotional offers.** From time to time we may offer
+promotional Coin packs or discounts, subject to the terms shown at the
+point of purchase. Where a promotional offer is limited (for example,
+to first-time buyers or to one redemption per User), that limit will
+be stated at the point of purchase.
 
 6.6 **Coin spend.** Coins are deducted from the User's Wallet when a
 Session begins and, for time-billed Sessions, periodically during the
@@ -166,14 +169,15 @@ remains active. **Coins are forfeited if your account is closed
 24 months**, in each case subject to applicable law.
 
 6.8 **Pricing changes.** We may change Coin pack pricing, Session
-rates, and welcome-offer terms at any time. Changes apply
+rates, and promotional terms at any time. Changes apply
 prospectively; Coins you have already purchased are not affected by
 later price changes.
 
-6.9 **Invoices and GST.** Where applicable, we will make tax invoices
-available in your account for Coin purchases. Our GSTIN, where
-not currently registered. Our GSTIN, when applicable, will be
-published on tax invoices.
+6.9 **Invoices.** Purchases are made through Google Play. Google
+issues the payment receipt for each transaction and, where applicable,
+collects and remits any applicable taxes as the marketplace operator.
+Where we are additionally required to issue an invoice, we will make
+it available in your account.
 
 ## 7. Sessions — Conduct and Limits
 
@@ -210,7 +214,7 @@ or third-party infrastructure outages.
 
 8.1 **Earnings.** Speakers earn Coins for paid Sessions and Bible
 Sessions completed through the Platform, net of the Platform's
-service fee ("**Commission**") of **20%** of the gross Session
+service fee ("**Commission**") of **40%** of the gross Session
 value. Commission rates may be revised on prior notice in the app.
 
 8.2 **Conversion.** Earned Coins are converted to INR at the rate of
@@ -222,7 +226,7 @@ balance held at the time of conversion.
 INR-equivalent balance to their saved bank account or UPI ID, subject
 to:
 
-- a minimum withdrawal threshold of **₹500**;
+- a minimum withdrawal threshold of **₹1,000**;
 - successful KYC and bank-detail verification;
 - our anti-fraud, anti-money-laundering, and sanctions checks.
 
@@ -238,9 +242,9 @@ in breach of these Terms, or where required by law or banking
 regulators.
 
 8.6 **Taxes.** Speakers are independent service providers and are
-solely responsible for their own income tax, GST, and other tax
+solely responsible for their own income tax and other tax
 filings on amounts earned. Where required by law (e.g., TDS under
-Section 194-O of the Income-Tax Act, 1961, or GST TCS), we may
+Section 194-O of the Income-Tax Act, 1961), we may
 withhold or deduct tax at source from withdrawals and remit it to the
 relevant authority on the Speaker's behalf.
 
@@ -390,7 +394,8 @@ respective use:
   / Google India Private Limited.
 - **Google Sign-In** — provided by Google LLC.
 - **Apple Sign-In** — provided by Apple Inc.
-- **Razorpay** — provided by Razorpay Software Private Limited.
+- **Google Play Billing** — in-app purchase and billing infrastructure
+  provided by Google LLC (Google Play).
 - **Agora** — voice infrastructure provided by Agora Lab, Inc.
 - **OneSignal** — push notification infrastructure provided by
   OneSignal, Inc.
@@ -453,7 +458,7 @@ We will not be liable for any failure or delay in performance caused
 by events beyond our reasonable control, including natural disasters,
 pandemics, war, terrorism, civil unrest, government action, internet
 outages, telecommunications failures, third-party-service outages
-(including Firebase, Razorpay, Agora, OneSignal), or cyber-attacks.
+(including Firebase, Google Play, Agora, OneSignal), or cyber-attacks.
 
 ## 20. Governing Law & Dispute Resolution
 

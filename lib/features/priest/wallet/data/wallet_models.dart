@@ -8,13 +8,17 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:flutter/material.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/features/priest/wallet/data/bank_account_scheme.dart';
+import 'package:gospel_vox/features/priest/wallet/data/withdrawal_status.dart';
 
 class WalletTransaction {
   final String id;
-  // "session_charge", "bible_session_earning", "activation_fee",
-  // "withdrawal", "refund". Anything we don't recognise falls back
-  // to a generic receipt icon so future server-side types don't
-  // crash the list.
+  // "session_charge", "session_earning", "bible_session_earning",
+  // "activation_fee", "withdrawal", "refund". Anything we don't
+  // recognise falls back to a generic receipt icon so future
+  // server-side types don't crash the list. (The "__platform__"
+  // commission rows are never queried by a priest/user, only summed
+  // by the admin dashboard, so they never reach this model.)
   final String type;
   // Positive = priest earned, negative = priest paid out. The
   // transactions collection stores both shapes uniformly so we don't
@@ -22,6 +26,11 @@ class WalletTransaction {
   final int coins;
   final String description;
   final String? sessionId;
+  // For type == "withdrawal" rows: the id of the withdrawals/{id} doc
+  // this debit belongs to. Lets the history row look up the payout's
+  // live status (Processing / Sent / …) so it isn't shown as if the
+  // money already left. Null on non-withdrawal rows / legacy data.
+  final String? withdrawalId;
   final DateTime? createdAt;
 
   const WalletTransaction({
@@ -30,6 +39,7 @@ class WalletTransaction {
     required this.coins,
     required this.description,
     this.sessionId,
+    this.withdrawalId,
     this.createdAt,
   });
 
@@ -43,6 +53,7 @@ class WalletTransaction {
       coins: (data['coins'] as num?)?.toInt() ?? 0,
       description: data['description'] as String? ?? '',
       sessionId: data['sessionId'] as String?,
+      withdrawalId: data['withdrawalId'] as String?,
       createdAt: data['createdAt'] is Timestamp
           ? (data['createdAt'] as Timestamp).toDate()
           : null,
@@ -55,6 +66,7 @@ class WalletTransaction {
   IconData get icon {
     switch (type) {
       case 'session_charge':
+      case 'session_earning':
         return AppIcons.chatOutline;
       case 'bible_session_earning':
         return AppIcons.bible;
@@ -63,6 +75,7 @@ class WalletTransaction {
       case 'withdrawal':
         return AppIcons.bank;
       case 'refund':
+      case 'withdrawal_refund':
         return AppIcons.replay;
       default:
         return AppIcons.receipt;
@@ -96,11 +109,40 @@ class BankDetails {
   // Optional on the model so existing priests (saved before this
   // field existed) still load cleanly; required by the form.
   final String branchName;
-  // "savings" or "current". Required by some bank-transfer rails
-  // (Razorpay X, NEFT/IMPS routing). Optional on the model for
-  // backwards compatibility; required by the form on new saves.
+  // "savings"/"current" (India) or "checking"/"savings" (US). The
+  // valid set is country-specific — see bank_account_scheme. Optional
+  // on the model for backwards compatibility; required by the form on
+  // new saves.
   final String accountType;
   final String? upiId;
+
+  // ── Cross-border fields (withdrawal rebuild) ──
+  // Country of the bank account (ISO alpha-2). Drives which of the
+  // fields below are populated and how they're validated. Defaults to
+  // 'IN' so every legacy record — saved before this field existed —
+  // reads back as an India account, exactly as it always was.
+  final String countryIso;
+  // Payout currency for this account ('INR', 'USD', …). Display-only;
+  // never used for conversion.
+  final String currency;
+  // Country-specific routing identifiers. Exactly one "family" is
+  // filled per account: India uses ifscCode; US uses routingNumber;
+  // UK uses sortCode; Europe/GCC use iban + swiftBic; other countries
+  // use accountNumber + swiftBic. The unused ones stay ''.
+  final String routingNumber;
+  final String sortCode;
+  final String iban;
+  final String swiftBic;
+
+  // ── Contact (mandatory on new saves; for the admin to reach the
+  // priest about a payout). Stored as bankContactPhone/bankContactEmail
+  // but fall back to the priest's registration phone/email on read so
+  // legacy records show something. Deliberately NOT part of isComplete —
+  // gating withdrawal eligibility on them would block existing priests
+  // who never captured them; the FORM enforces them on new saves.
+  // Phone is stored composed as "+<dial> <number>", e.g. "+91 98765…".
+  final String phone;
+  final String email;
 
   const BankDetails({
     required this.accountHolderName,
@@ -110,6 +152,14 @@ class BankDetails {
     this.branchName = '',
     this.accountType = '',
     this.upiId,
+    this.countryIso = 'IN',
+    this.currency = '',
+    this.routingNumber = '',
+    this.sortCode = '',
+    this.iban = '',
+    this.swiftBic = '',
+    this.phone = '',
+    this.email = '',
   });
 
   factory BankDetails.fromFirestore(Map<String, dynamic> data) {
@@ -121,7 +171,34 @@ class BankDetails {
       branchName: data['bankBranchName'] as String? ?? '',
       accountType: data['bankAccountType'] as String? ?? '',
       upiId: data['upiId'] as String?,
+      // Legacy records have no bankCountry — treat them as India, which
+      // is what they always were, so isComplete keeps its old meaning.
+      countryIso: (data['bankCountry'] as String?)?.trim().isNotEmpty == true
+          ? (data['bankCountry'] as String)
+          : 'IN',
+      currency: data['bankCurrency'] as String? ?? '',
+      routingNumber: data['bankRoutingNumber'] as String? ?? '',
+      sortCode: data['bankSortCode'] as String? ?? '',
+      iban: data['bankIban'] as String? ?? '',
+      swiftBic: data['bankSwiftBic'] as String? ?? '',
+      // Prefer the bank-contact fields; fall back to the priest's
+      // registration phone/email so legacy records still surface a
+      // contact for the admin.
+      phone: _firstNonEmpty(
+        data['bankContactPhone'] as String?,
+        data['phone'] as String?,
+      ),
+      email: _firstNonEmpty(
+        data['bankContactEmail'] as String?,
+        data['email'] as String?,
+      ),
     );
+  }
+
+  static String _firstNonEmpty(String? a, String? b) {
+    if (a != null && a.trim().isNotEmpty) return a;
+    if (b != null && b.trim().isNotEmpty) return b;
+    return '';
   }
 
   // The CF writes the same field names; keeping the keys aligned
@@ -138,18 +215,74 @@ class BankDetails {
         'bankBranchName': branchName,
         'bankAccountType': accountType,
         'upiId': upiId ?? '',
+        // Cross-border fields. Written unconditionally (as '' when not
+        // used by this country) so a record never carries a stale value
+        // from a previous country selection.
+        'bankCountry': countryIso,
+        'bankCurrency': currency,
+        'bankRoutingNumber': routingNumber,
+        'bankSortCode': sortCode,
+        'bankIban': iban,
+        'bankSwiftBic': swiftBic,
+        'bankContactPhone': phone,
+        'bankContactEmail': email,
       };
 
-  // Withdrawal eligibility — branch + account type are NOT required
-  // here so existing priests with legacy records can still withdraw
-  // while the form gently nudges them to fill the new fields on the
-  // next edit. The Cloud Function only enforces holder + account +
-  // IFSC at the moment, so we stay aligned with that contract.
-  bool get isComplete =>
-      accountHolderName.isNotEmpty &&
-      accountNumber.isNotEmpty &&
-      ifscCode.isNotEmpty &&
-      bankName.isNotEmpty;
+  // Returns the stored value for a schema field key, so completeness
+  // (and, later, the form) can address fields generically by key
+  // instead of branching on country everywhere. Unknown keys → ''.
+  String valueForKey(String key) {
+    switch (key) {
+      case 'bankAccountName':
+        return accountHolderName;
+      case 'bankAccountNumber':
+        return accountNumber;
+      case 'bankIfscCode':
+        return ifscCode;
+      case 'bankName':
+        return bankName;
+      case 'bankBranchName':
+        return branchName;
+      case 'bankAccountType':
+        return accountType;
+      case 'bankRoutingNumber':
+        return routingNumber;
+      case 'bankSortCode':
+        return sortCode;
+      case 'bankIban':
+        return iban;
+      case 'bankSwiftBic':
+        return swiftBic;
+      default:
+        return '';
+    }
+  }
+
+  // Withdrawal eligibility — the routing-critical fields for THIS
+  // account's country must be present. We derive the required set from
+  // the country scheme and check non-empty (not full validity — the
+  // form enforces format at entry time; here we only gate the CTA on
+  // "is the data there").
+  //
+  // Choice fields (account type) are intentionally skipped: requiring
+  // them would flip legacy India priests — who never stored an account
+  // type — to "needs bank details" and block their withdrawals. For
+  // India this evaluates to exactly the old rule (holder + account +
+  // IFSC + bank name), so existing behaviour is unchanged.
+  bool get isComplete {
+    for (final field in resolveBankScheme(countryIso).fields) {
+      if (field.kind == BankFieldKind.choice) continue;
+      // Branch name is collected by the form on new saves but is NOT a
+      // routing-critical field — gating completeness on it would flip
+      // legacy India priests (who never stored a branch) to "needs bank
+      // details" and block their withdrawals. Skip it here, exactly as
+      // we skip account type, so India keeps its old rule (holder +
+      // account + IFSC + bank name).
+      if (field.key == 'bankBranchName') continue;
+      if (valueForKey(field.key).trim().isEmpty) return false;
+    }
+    return true;
+  }
 }
 
 class WithdrawalResult {
@@ -227,32 +360,90 @@ class WithdrawalException implements Exception {
   String toString() => 'WithdrawalException($reason): $message';
 }
 
+// One row in the priest's withdrawal history / status feed. Carries
+// the full lifecycle so the status screen can draw the Requested →
+// Processing → Sent timeline, surface the bank reference once paid,
+// and show the reason + a fix prompt when a payout is put on hold.
 class WithdrawalRecord {
   final String id;
   final int amount;
-  // "completed" or "blocked" — admin can flip to blocked for fraud,
-  // but withdrawals are otherwise auto-processed.
-  final String status;
+  final WithdrawalStatus status;
+  // Payout currency captured at request time, for display ('INR',
+  // 'USD', …). Empty on legacy records (assumed INR by the UI).
+  final String currency;
+  // Bank reference number (UTR, wire ref, …) the admin enters when
+  // marking the payout sent. Null until then.
+  final String? reference;
+  // Bank transaction ID — a separate identifier some banks return
+  // alongside the reference. Optional; null when not provided.
+  final String? transactionId;
+  // Why the payout was put on hold (e.g. "account number invalid").
+  // Null unless status == onHold.
+  final String? onHoldReason;
+
+  // Per-stage timestamps. Each is set when the payout enters that
+  // stage; null while it hasn't reached it.
   final DateTime? createdAt;
+  final DateTime? processingAt;
+  final DateTime? paidAt;
+  final DateTime? blockedAt;
+  final DateTime? onHoldAt;
 
   const WithdrawalRecord({
     required this.id,
     required this.amount,
     required this.status,
+    this.currency = '',
+    this.reference,
+    this.transactionId,
+    this.onHoldReason,
     this.createdAt,
+    this.processingAt,
+    this.paidAt,
+    this.blockedAt,
+    this.onHoldAt,
   });
 
   factory WithdrawalRecord.fromFirestore(
     String docId,
     Map<String, dynamic> data,
   ) {
+    DateTime? ts(dynamic v) => v is Timestamp ? v.toDate() : null;
+    String? nonEmpty(dynamic v) {
+      final s = (v as String?)?.trim();
+      return (s == null || s.isEmpty) ? null : s;
+    }
+
     return WithdrawalRecord(
       id: docId,
       amount: (data['amount'] as num?)?.toInt() ?? 0,
-      status: data['status'] as String? ?? 'completed',
-      createdAt: data['createdAt'] is Timestamp
-          ? (data['createdAt'] as Timestamp).toDate()
-          : null,
+      status: WithdrawalStatus.fromWire(data['status'] as String?),
+      currency: data['currency'] as String? ?? '',
+      reference: nonEmpty(data['paymentReference']),
+      transactionId: nonEmpty(data['transactionId']),
+      onHoldReason: nonEmpty(data['onHoldReason']),
+      createdAt: ts(data['createdAt']),
+      processingAt: ts(data['processingAt']),
+      paidAt: ts(data['paidAt']),
+      blockedAt: ts(data['blockedAt']),
+      onHoldAt: ts(data['onHoldAt']),
     );
+  }
+
+  // The timestamp that matches the CURRENT status — i.e. "when did it
+  // become what it is now" — for the headline date on a status card.
+  DateTime? get statusAt {
+    switch (status) {
+      case WithdrawalStatus.pending:
+        return createdAt;
+      case WithdrawalStatus.processing:
+        return processingAt ?? createdAt;
+      case WithdrawalStatus.paid:
+        return paidAt;
+      case WithdrawalStatus.onHold:
+        return onHoldAt;
+      case WithdrawalStatus.blocked:
+        return blockedAt;
+    }
   }
 }

@@ -2,6 +2,7 @@
 // switch over the four cases exhaustively without a default branch.
 
 import 'package:gospel_vox/features/priest/wallet/data/wallet_models.dart';
+import 'package:gospel_vox/features/priest/wallet/data/withdrawal_status.dart';
 
 sealed class PriestWalletState {
   const PriestWalletState();
@@ -32,6 +33,10 @@ class PriestWalletLoaded extends PriestWalletState {
   // routes to the "Add Bank Details" CTA.
   final BankDetails? bankDetails;
   final int minWithdrawalAmount;
+  // Live list of the priest's withdrawals (newest first), streamed
+  // from the withdrawals collection. Drives the "in progress" card and
+  // the status tags on history rows.
+  final List<WithdrawalRecord> withdrawals;
   // True between the user tapping the second-confirmation "Yes,
   // Withdraw" button and the CF returning. We use it to block re-
   // entry rather than relying on Navigator state, since the sheet
@@ -45,8 +50,29 @@ class PriestWalletLoaded extends PriestWalletState {
     required this.transactions,
     required this.bankDetails,
     required this.minWithdrawalAmount,
+    this.withdrawals = const [],
     this.isWithdrawing = false,
   });
+
+  // The withdrawal to surface on the wallet "in progress" card, or null
+  // for none. We take the most recent withdrawal and show it while it's
+  // still moving (pending/processing/on_hold), or briefly after it
+  // finishes (sent/cancelled within the last 2 days) so the priest gets
+  // a clear "Sent ✓ / Refunded" confirmation before it drops off.
+  WithdrawalRecord? get spotlightWithdrawal {
+    if (withdrawals.isEmpty) return null;
+    final latest = withdrawals.first;
+    if (!latest.status.isTerminal) return latest;
+    final at = latest.statusAt;
+    if (at == null) return null;
+    final ageDays = DateTime.now().difference(at).inDays;
+    return ageDays <= 2 ? latest : null;
+  }
+
+  // withdrawalId -> current status, for tagging history rows.
+  Map<String, WithdrawalStatus> get withdrawalStatusById => {
+        for (final w in withdrawals) w.id: w.status,
+      };
 
   bool get canWithdraw =>
       balance >= minWithdrawalAmount &&
@@ -71,6 +97,7 @@ class PriestWalletLoaded extends PriestWalletState {
     bool overwriteBankDetails = false,
     BankDetails? bankDetails,
     int? minWithdrawalAmount,
+    List<WithdrawalRecord>? withdrawals,
     bool? isWithdrawing,
   }) {
     return PriestWalletLoaded(
@@ -82,6 +109,7 @@ class PriestWalletLoaded extends PriestWalletState {
           ? bankDetails
           : (bankDetails ?? this.bankDetails),
       minWithdrawalAmount: minWithdrawalAmount ?? this.minWithdrawalAmount,
+      withdrawals: withdrawals ?? this.withdrawals,
       isWithdrawing: isWithdrawing ?? this.isWithdrawing,
     );
   }

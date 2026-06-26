@@ -16,7 +16,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
-const Color _kSuccessGreen = Color(0xFF2E7D4F);
+const Color _kSuccessGreen = AppColors.successGreen;
 const Color _kSuccessGreenLight = Color(0xFF3A9D63);
 
 class ActivationSuccessPage extends StatefulWidget {

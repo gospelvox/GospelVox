@@ -6,6 +6,19 @@ import {creditCoins} from "./creditCoins";
 
 const db = admin.firestore();
 
+// Detects the Firestore ALREADY_EXISTS failure raised when the
+// creditCoins batch.create() on purchases/{token} collides with a
+// doc a CONCURRENT verify call already wrote. gRPC status 6 is
+// ALREADY_EXISTS; we also match the message/string code defensively
+// so a minor SDK version change can't turn an idempotent race into a
+// hard failure.
+function isAlreadyExists(err: unknown): boolean {
+  const code = (err as {code?: number | string} | null)?.code;
+  if (code === 6 || code === "already-exists") return true;
+  const msg = err instanceof Error ? err.message : String(err);
+  return /already.?exists/i.test(msg);
+}
+
 // Maps a Play product id (coins_<N>) to its Firestore pack doc id
 // (pack_<N>). The store catalog is the customer-facing source of
 // price; the Firestore pack doc is the source of truth for how many
@@ -150,17 +163,49 @@ export const verifyCoinPurchase = onCall(
     // ran (balance increment + wallet_transactions row + inbox
     // notification + push), plus stamps the new provider/token/
     // productId fields on the ledger row via ledgerExtra.
-    const {newBalance} = await creditCoins({
-      uid,
-      coins,
-      packId,
-      amountPaidRupees: priceRupees,
-      ledgerExtra: {
-        provider: "play",
+    let newBalance: number;
+    try {
+      const credited = await creditCoins({
+        uid,
+        coins,
+        packId,
+        amountPaidRupees: priceRupees,
+        // Drives the atomic purchases/{token} create-guard inside the
+        // credit batch — the deterministic dedupe that stops two
+        // concurrent calls from both crediting this token.
         purchaseToken,
-        productId,
-      },
-    });
+        ledgerExtra: {
+          provider: "play",
+          purchaseToken,
+          productId,
+        },
+      });
+      newBalance = credited.newBalance;
+    } catch (err) {
+      // A concurrent verify for the SAME token won the race and
+      // already credited — the create-guard made this batch fail with
+      // ALREADY_EXISTS. The user has their coins; treat as idempotent
+      // success rather than surfacing an error. Best-effort consume,
+      // then return the live balance.
+      if (isAlreadyExists(err)) {
+        try {
+          await consumeProduct({productId, purchaseToken});
+        } catch (consumeErr) {
+          console.error(
+            "[verifyCoinPurchase] post-race consume rescue failed:",
+            consumeErr instanceof Error ?
+              consumeErr.message :
+              String(consumeErr),
+          );
+        }
+        const userDoc = await db.doc(`users/${uid}`).get();
+        return {
+          newBalance: Number(userDoc.data()?.coinBalance ?? 0),
+          alreadyProcessed: true,
+        };
+      }
+      throw err;
+    }
 
     // ── 5. Consume on Play ──────────────────────────────────────
     // Marks the consumable as spent (so it can be repurchased) AND

@@ -371,7 +371,11 @@ class _SummaryStat extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Flexible(
+    // Expanded (not Flexible) so the two stat columns each take an
+    // equal half of the row and stay centred — otherwise a long value
+    // like "₹12345" sitting next to an em-dash "—" pulls the columns
+    // off-balance and the card looks lopsided.
+    return Expanded(
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -636,7 +640,7 @@ class _RegularCardContent extends StatelessWidget {
                     ? '${s.totalCharged} coins'
                     : '₹${s.priestEarnings}',
                 valueColor:
-                    isUserSide ? null : const Color(0xFF2E7D4F),
+                    isUserSide ? null : AppColors.successGreen,
               ),
               const SizedBox(width: 10),
             ],
@@ -809,7 +813,7 @@ class _BibleCardContent extends StatelessWidget {
               _DetailChip(
                 icon: AppIcons.wallet,
                 text: '₹$priestRevenueInr',
-                valueColor: const Color(0xFF2E7D4F),
+                valueColor: AppColors.successGreen,
               ),
               const SizedBox(width: 10),
             ],

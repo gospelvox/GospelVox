@@ -29,11 +29,16 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:image_picker/image_picker.dart';
 import 'package:shimmer/shimmer.dart';
 
+import 'package:gospel_vox/core/constants/community_roles.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
+import 'package:country_picker/country_picker.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/image_crop_page.dart';
+import 'package:gospel_vox/core/widgets/phone_country_prefix.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Source of truth for chip options. Kept here (rather than imported from
 // the registration step) because that file is in a "do not touch" area
@@ -90,6 +95,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   String _email = '';
   String _phone = '';
   String _denomination = '';
+  String _communityRole = '';
   String _photoUrl = '';
   String _bio = '';
   String _churchName = '';
@@ -104,6 +110,11 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   int _reviewCount = 0;
   int _totalSessions = 0;
 
+  // Selected country for the phone dial code. Hydrated from the saved
+  // phone when Edit is tapped; combined with _phoneController into
+  // "+<code> <number>" on save.
+  Country _phoneCountry = defaultPhoneCountry();
+
   // ── Edit-mode controllers. Hydrated when Edit is tapped.
   final _phoneController = TextEditingController();
   final _bioController = TextEditingController();
@@ -113,6 +124,12 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   final _experienceController = TextEditingController();
   final _otherSpecController = TextEditingController();
   final _otherLanguageController = TextEditingController();
+  final _otherRoleController = TextEditingController();
+  // Edit-mode role state. _editCommunityRole equals [kCommunityRoleOther]
+  // while the free-text field is showing; the typed value is merged on
+  // Save so the stored role never reads the literal 'Other'.
+  String? _editCommunityRole;
+  bool _editRoleOtherSelected = false;
   List<String> _editSpecializations = [];
   List<String> _editLanguages = [];
   // Tracks whether the user has tapped the "Other" chip in either
@@ -138,6 +155,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     _experienceController.dispose();
     _otherSpecController.dispose();
     _otherLanguageController.dispose();
+    _otherRoleController.dispose();
     super.dispose();
   }
 
@@ -166,6 +184,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         _email = data['email'] as String? ?? '';
         _phone = data['phone'] as String? ?? '';
         _denomination = data['denomination'] as String? ?? '';
+        _communityRole = data['communityRole'] as String? ?? '';
         _photoUrl = data['photoUrl'] as String? ?? '';
         _bio = data['bio'] as String? ?? '';
         _churchName = data['churchName'] as String? ?? '';
@@ -196,13 +215,33 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
   }
 
   void _enterEditMode() {
-    _phoneController.text = _phone;
+    // Split the saved "+<code> <number>" (or legacy bare digits) back into
+    // the country selector + the national-number field.
+    _phoneCountry = phoneCountryFromStored(_phone);
+    _phoneController.text = phoneNumberFromStored(_phone);
     _bioController.text = _bio;
     _churchController.text = _churchName;
     _dioceseController.text = _diocese;
     _locationController.text = _location;
     _experienceController.text =
         _yearsOfExperience > 0 ? _yearsOfExperience.toString() : '';
+
+    // Hydrate the role picker. A known role pre-selects its item; any
+    // other non-empty value is a custom 'Other' entry the priest typed,
+    // so we reopen on 'Other' with the value back in the field.
+    if (_communityRole.isEmpty) {
+      _editCommunityRole = null;
+      _editRoleOtherSelected = false;
+      _otherRoleController.text = '';
+    } else if (isKnownCommunityRole(_communityRole)) {
+      _editCommunityRole = _communityRole;
+      _editRoleOtherSelected = false;
+      _otherRoleController.text = '';
+    } else {
+      _editCommunityRole = kCommunityRoleOther;
+      _editRoleOtherSelected = true;
+      _otherRoleController.text = _communityRole;
+    }
 
     // Split saved specializations into "known chips" + "custom Other".
     // Anything that doesn't appear in _kSpecializations is treated as
@@ -264,7 +303,12 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
         imageQuality: 85,
       );
       if (picked == null || !mounted) return;
-      setState(() => _newPhotoPath = picked.path);
+      // Square-crop step so a portrait photo isn't half-cut by the
+      // cover-fit avatar. Null = user backed out of the cropper, so we
+      // keep the current photo untouched.
+      final cropped = await cropAvatarSquare(context, picked.path);
+      if (!mounted || cropped == null) return;
+      setState(() => _newPhotoPath = cropped);
     } catch (_) {
       if (mounted) AppSnackBar.error(context, 'Could not open photo picker.');
     }
@@ -322,7 +366,17 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     HapticFeedback.lightImpact();
     FocusScope.of(context).unfocus();
 
-    final phone = _phoneController.text.trim();
+    // Country-aware phone check before we write anything. Profile editing
+    // had no phone validation at all, so a malformed number could be
+    // saved silently.
+    final phoneError =
+        validatePhoneForCountry(_phoneCountry, _phoneController.text);
+    if (phoneError != null) {
+      AppSnackBar.error(context, phoneError);
+      return;
+    }
+
+    final phone = composePhone(_phoneCountry, _phoneController.text);
     final bio = _bioController.text.trim();
     final church = _churchController.text.trim();
     final diocese = _dioceseController.text.trim();
@@ -344,11 +398,23 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       otherText: _otherLanguageController.text,
     );
 
+    // Resolve the role: typed text for an 'Other' pick, else the chosen
+    // role. It's mandatory at registration, so a cleared value here is a
+    // user error we block rather than silently writing an empty role.
+    final resolvedRole = _editCommunityRole == kCommunityRoleOther
+        ? _otherRoleController.text.trim()
+        : (_editCommunityRole ?? '');
+    if (resolvedRole.isEmpty) {
+      AppSnackBar.error(context, 'Please select your role');
+      return;
+    }
+
     setState(() => _isSaving = true);
 
     try {
       final updates = <String, dynamic>{
         'phone': phone,
+        'communityRole': resolvedRole,
         'bio': bio,
         'churchName': church,
         'diocese': diocese,
@@ -381,6 +447,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       if (!mounted) return;
       setState(() {
         _phone = phone;
+        _communityRole = resolvedRole;
         _bio = bio;
         _churchName = church;
         _diocese = diocese;
@@ -434,6 +501,116 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
       }
     }
     return out;
+  }
+
+  // Role bottom sheet — same single-select pattern as registration so
+  // the priest sees a familiar picker when editing their role.
+  Future<void> _pickCommunityRole() async {
+    FocusScope.of(context).unfocus();
+    final picked = await showModalBottomSheet<String>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      isScrollControlled: true,
+      builder: (sheetCtx) {
+        return Container(
+          decoration: const BoxDecoration(
+            color: AppColors.surfaceWhite,
+            borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+          ),
+          child: SafeArea(
+            top: false,
+            child: Padding(
+              padding: const EdgeInsets.fromLTRB(20, 16, 20, 20),
+              child: Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.muted.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                  const SizedBox(height: 20),
+                  Text(
+                    'Select your role',
+                    style: GoogleFonts.inter(
+                      fontSize: 18,
+                      fontWeight: FontWeight.w700,
+                      color: AppColors.deepDarkBrown,
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  ConstrainedBox(
+                    constraints: BoxConstraints(
+                      maxHeight: MediaQuery.of(context).size.height * 0.5,
+                    ),
+                    child: ListView.builder(
+                      shrinkWrap: true,
+                      itemCount: kCommunityRoles.length,
+                      itemBuilder: (_, i) {
+                        final option = kCommunityRoles[i];
+                        final selected = option == _editCommunityRole;
+                        return GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTap: () => Navigator.pop(sheetCtx, option),
+                          child: Container(
+                            padding: const EdgeInsets.symmetric(
+                              horizontal: 12,
+                              vertical: 14,
+                            ),
+                            decoration: BoxDecoration(
+                              color: selected
+                                  ? AppColors.primaryBrown
+                                      .withValues(alpha: 0.06)
+                                  : Colors.transparent,
+                              borderRadius: BorderRadius.circular(10),
+                            ),
+                            child: Row(
+                              children: [
+                                Expanded(
+                                  child: Text(
+                                    option,
+                                    style: GoogleFonts.inter(
+                                      fontSize: 15,
+                                      fontWeight: selected
+                                          ? FontWeight.w600
+                                          : FontWeight.w400,
+                                      color: selected
+                                          ? AppColors.primaryBrown
+                                          : AppColors.deepDarkBrown,
+                                    ),
+                                  ),
+                                ),
+                                if (selected)
+                                  const AppIcon(
+                                    AppIcons.check,
+                                    color: AppColors.primaryBrown,
+                                    size: 18,
+                                  ),
+                              ],
+                            ),
+                          ),
+                        );
+                      },
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        );
+      },
+    );
+
+    if (picked != null && mounted) {
+      setState(() {
+        _editCommunityRole = picked;
+        _editRoleOtherSelected = picked == kCommunityRoleOther;
+        if (!_editRoleOtherSelected) _otherRoleController.clear();
+      });
+    }
   }
 
   @override
@@ -660,7 +837,7 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
                 height: 100,
                 decoration: BoxDecoration(
                   shape: BoxShape.circle,
-                  color: const Color(0xFFF7F5F2),
+                  color: AppColors.fieldFill,
                   border: Border.all(
                     color: AppColors.amberGold.withValues(alpha: 0.3),
                     width: 2.5,
@@ -832,16 +1009,16 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     final Color badgeBg;
     final String badgeText;
     if (_isActivated) {
-      badgeFg = const Color(0xFF2E7D4F);
-      badgeBg = const Color(0xFF2E7D4F).withValues(alpha: 0.08);
+      badgeFg = AppColors.successGreen;
+      badgeBg = AppColors.successGreen.withValues(alpha: 0.08);
       badgeText = 'Active';
     } else if (isSuspended) {
       badgeFg = AppColors.errorRed;
       badgeBg = AppColors.errorRed.withValues(alpha: 0.08);
       badgeText = 'Suspended';
     } else if (isApproved) {
-      badgeFg = const Color(0xFF2E7D4F);
-      badgeBg = const Color(0xFF2E7D4F).withValues(alpha: 0.08);
+      badgeFg = AppColors.successGreen;
+      badgeBg = AppColors.successGreen.withValues(alpha: 0.08);
       badgeText = 'Approved';
     } else {
       badgeFg = AppColors.muted;
@@ -984,15 +1161,33 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     if (_isEditing) {
       return Column(
         children: [
+          _RolePickerField(
+            label: 'Christian Community Role',
+            value: _editCommunityRole,
+            hint: 'Select your role',
+            onTap: _pickCommunityRole,
+          ),
+          if (_editRoleOtherSelected) ...[
+            const SizedBox(height: 10),
+            _OtherInputField(
+              controller: _otherRoleController,
+              hint: 'Type your role',
+            ),
+          ],
+          const SizedBox(height: 14),
           _FormField(
             label: 'Phone',
             icon: AppIcons.phone,
             controller: _phoneController,
-            hint: 'e.g. +91 98765 43210',
+            hint: '98765 43210',
             keyboardType: TextInputType.phone,
+            prefix: PhoneCountryPrefix(
+              country: _phoneCountry,
+              onSelected: (c) => setState(() => _phoneCountry = c),
+            ),
             inputFormatters: [
-              FilteringTextInputFormatter.allow(RegExp(r'[0-9+\s-]')),
-              LengthLimitingTextInputFormatter(20),
+              FilteringTextInputFormatter.digitsOnly,
+              LengthLimitingTextInputFormatter(15),
             ],
           ),
           const SizedBox(height: 14),
@@ -1038,9 +1233,14 @@ class _PriestMyProfilePageState extends State<PriestMyProfilePage> {
     return _ProfileGroup(
       children: [
         _ProfileField(
+          icon: AppIcons.userOutline,
+          label: 'Role',
+          value: _communityRole,
+        ),
+        _ProfileField(
           icon: AppIcons.phone,
           label: 'Phone',
-          value: _phone,
+          value: phoneForDisplay(_phone),
         ),
         _ProfileField(
           icon: Icons.location_city_outlined,
@@ -1594,12 +1794,9 @@ class _BottomBarButtonState extends State<_BottomBarButton> {
             ),
             child: widget.loading
                 ? const SizedBox(
-                    width: 22,
-                    height: 22,
-                    child: CircularProgressIndicator(
-                      strokeWidth: 2.4,
-                      color: Colors.white,
-                    ),
+                    width: 35,
+                    height: 35,
+                    child: AppLoader(),
                   )
                 : Text(
                     widget.label,
@@ -1839,6 +2036,9 @@ class _FormField extends StatefulWidget {
   final int? maxLines;
   final int? minLines;
   final int? maxLength;
+  // Optional leading widget between the icon and the text (e.g. the phone
+  // country-code selector).
+  final Widget? prefix;
 
   const _FormField({
     required this.label,
@@ -1850,6 +2050,7 @@ class _FormField extends StatefulWidget {
     this.maxLines = 1,
     this.minLines,
     this.maxLength,
+    this.prefix,
   });
 
   @override
@@ -1942,6 +2143,11 @@ class _FormFieldState extends State<_FormField> {
                 child: AppIcon(widget.icon, size: 18, color: iconColor),
               ),
               const SizedBox(width: 12),
+              if (widget.prefix != null)
+                Padding(
+                  padding: const EdgeInsets.only(top: 10),
+                  child: widget.prefix,
+                ),
               Expanded(
                 child: TextField(
                   controller: widget.controller,
@@ -1980,6 +2186,95 @@ class _FormFieldState extends State<_FormField> {
                 ),
               ),
             ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+// ─── Role picker (single-select dropdown) ───────────
+//
+// Tappable box that opens the role bottom sheet. Styled to match
+// _FormField so it reads as just another editable ministry field.
+
+class _RolePickerField extends StatelessWidget {
+  final String label;
+  final String? value;
+  final String hint;
+  final VoidCallback onTap;
+
+  const _RolePickerField({
+    required this.label,
+    required this.value,
+    required this.hint,
+    required this.onTap,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final hasValue = value != null && value!.isNotEmpty;
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Padding(
+          padding: const EdgeInsets.only(left: 4, bottom: 8),
+          child: Text(
+            label,
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.deepDarkBrown,
+            ),
+          ),
+        ),
+        GestureDetector(
+          behavior: HitTestBehavior.opaque,
+          onTap: onTap,
+          child: Container(
+            padding:
+                const EdgeInsets.symmetric(horizontal: 14, vertical: 14),
+            decoration: BoxDecoration(
+              color: AppColors.surfaceWhite,
+              borderRadius: BorderRadius.circular(14),
+              border: Border.all(
+                color: AppColors.muted.withValues(alpha: 0.18),
+              ),
+              boxShadow: [
+                BoxShadow(
+                  blurRadius: 6,
+                  offset: const Offset(0, 1),
+                  color: Colors.black.withValues(alpha: 0.02),
+                ),
+              ],
+            ),
+            child: Row(
+              children: [
+                AppIcon(
+                  AppIcons.userOutline,
+                  size: 18,
+                  color: AppColors.muted.withValues(alpha: 0.6),
+                ),
+                const SizedBox(width: 12),
+                Expanded(
+                  child: Text(
+                    hasValue ? value! : hint,
+                    style: GoogleFonts.inter(
+                      fontSize: 14,
+                      fontWeight: FontWeight.w500,
+                      color: hasValue
+                          ? AppColors.deepDarkBrown
+                          : AppColors.muted.withValues(alpha: 0.45),
+                    ),
+                  ),
+                ),
+                AppIcon(
+                  AppIcons.chevronDown,
+                  size: 18,
+                  color: AppColors.muted.withValues(alpha: 0.6),
+                ),
+              ],
+            ),
           ),
         ),
       ],
@@ -2103,7 +2398,7 @@ class _OtherInputFieldState extends State<_OtherInputField> {
       duration: const Duration(milliseconds: 160),
       padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 2),
       decoration: BoxDecoration(
-        color: const Color(0xFFF7F5F2),
+        color: AppColors.fieldFill,
         borderRadius: BorderRadius.circular(12),
         border: Border.all(
           color: borderColor,

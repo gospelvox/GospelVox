@@ -14,7 +14,7 @@ import 'package:gospel_vox/core/widgets/app_icons.dart';
 
 // Forest green for the net-earnings emphasis. Local constant because
 // AppColors has no dedicated success-green token.
-const Color _kNetGreen = Color(0xFF2E7D4F);
+const Color _kNetGreen = AppColors.successGreen;
 
 class SessionSummaryPage extends StatefulWidget {
   final SessionSummary summary;

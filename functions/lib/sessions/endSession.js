@@ -125,6 +125,30 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
                 description: `${session.type} session — minimum charge`,
                 createdAt: admin.firestore.FieldValue.serverTimestamp(),
             });
+            // Priest-side earning row + platform-commission row, co-located
+            // in the same batch as the credit so the ledger always agrees
+            // with the wallet. See billingTick.ts for the rationale.
+            const priestTxRef = db.collection("wallet_transactions").doc();
+            batch.set(priestTxRef, {
+                userId: session.priestId,
+                type: "session_earning",
+                sessionId: sessionId,
+                coins: priestEarning,
+                description: `${session.type} session earning — minimum charge`,
+                createdAt: admin.firestore.FieldValue.serverTimestamp(),
+            });
+            const platformCommission = rate - priestEarning;
+            if (platformCommission > 0) {
+                const platformTxRef = db.collection("wallet_transactions").doc();
+                batch.set(platformTxRef, {
+                    userId: "__platform__",
+                    type: "session_commission",
+                    sessionId: sessionId,
+                    coins: platformCommission,
+                    description: `Commission — ${session.type} session`,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+            }
             await batch.commit();
             finalDuration = 1;
             finalTotalCharged += rate;
@@ -185,6 +209,29 @@ exports.endSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (
                     description: `${session.type} session — partial-minute rollup`,
                     createdAt: admin.firestore.FieldValue.serverTimestamp(),
                 });
+                // Priest-side earning row + platform-commission row for the
+                // rollup chunk, co-located with the credit (see billingTick).
+                const priestTxRef = db.collection("wallet_transactions").doc();
+                batch.set(priestTxRef, {
+                    userId: session.priestId,
+                    type: "session_earning",
+                    sessionId: sessionId,
+                    coins: totalPriestEarning,
+                    description: `${session.type} session earning — partial-minute rollup`,
+                    createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                });
+                const platformCommission = totalCharge - totalPriestEarning;
+                if (platformCommission > 0) {
+                    const platformTxRef = db.collection("wallet_transactions").doc();
+                    batch.set(platformTxRef, {
+                        userId: "__platform__",
+                        type: "session_commission",
+                        sessionId: sessionId,
+                        coins: platformCommission,
+                        description: `Commission — ${session.type} session`,
+                        createdAt: admin.firestore.FieldValue.serverTimestamp(),
+                    });
+                }
                 await batch.commit();
                 finalDuration += affordableMinutes;
                 finalTotalCharged += totalCharge;

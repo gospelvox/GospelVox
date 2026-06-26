@@ -35,7 +35,9 @@ import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/utils/image_utils.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
+import 'package:gospel_vox/core/widgets/image_crop_page.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class EditProfilePage extends StatefulWidget {
   const EditProfilePage({super.key});
@@ -203,8 +205,13 @@ class _EditProfilePageState extends State<EditProfilePage> {
         AppSnackBar.error(context, error);
         return;
       }
+      // Square-crop step so a portrait photo isn't half-cut by the
+      // cover-fit circular avatar — same as the priest side. Null = the
+      // user backed out of the cropper, so we keep the current photo.
+      final cropped = await cropAvatarSquare(context, picked.path);
+      if (!mounted || cropped == null) return;
       setState(() {
-        _newPhotoPath = picked.path;
+        _newPhotoPath = cropped;
       });
     } on TimeoutException {
       if (!mounted) return;
@@ -268,7 +275,10 @@ class _EditProfilePageState extends State<EditProfilePage> {
         }
         final ref = FirebaseStorage.instance
             .ref('users/$uid/profile.jpg');
-        await ref.putFile(compressedFile);
+        await ref.putFile(
+          compressedFile,
+          SettableMetadata(contentType: 'image/jpeg'),
+        );
         newPhotoUrl = await ref.getDownloadURL();
       }
 
@@ -319,18 +329,123 @@ class _EditProfilePageState extends State<EditProfilePage> {
     }
   }
 
+  // Back-guard: typing a new name / picking a new photo then leaving
+  // used to silently throw the edits away. Now an explicit back (or the
+  // system/gesture back, via the PopScope below) asks first.
+  Future<void> _onBackRequested() async {
+    if (!_hasChanges) {
+      if (mounted) context.pop();
+      return;
+    }
+    final discard = await showModalBottomSheet<bool>(
+      context: context,
+      backgroundColor: Colors.transparent,
+      builder: (sheetCtx) => Container(
+        decoration: const BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
+        ),
+        child: SafeArea(
+          top: false,
+          child: Padding(
+            padding: const EdgeInsets.fromLTRB(24, 16, 24, 20),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                Center(
+                  child: Container(
+                    width: 40,
+                    height: 4,
+                    decoration: BoxDecoration(
+                      color: AppColors.muted.withValues(alpha: 0.2),
+                      borderRadius: BorderRadius.circular(2),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 20),
+                Text(
+                  'Discard changes?',
+                  style: GoogleFonts.inter(
+                    fontSize: 18,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 6),
+                Text(
+                  "Your edits won't be saved.",
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.muted,
+                  ),
+                ),
+                const SizedBox(height: 20),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(sheetCtx).pop(true),
+                    style: TextButton.styleFrom(
+                      backgroundColor: AppColors.errorRed,
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                      shape: RoundedRectangleBorder(
+                        borderRadius: BorderRadius.circular(14),
+                      ),
+                    ),
+                    child: Text(
+                      'Discard',
+                      style: GoogleFonts.inter(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w700,
+                        color: AppColors.white,
+                      ),
+                    ),
+                  ),
+                ),
+                const SizedBox(height: 8),
+                SizedBox(
+                  width: double.infinity,
+                  child: TextButton(
+                    onPressed: () => Navigator.of(sheetCtx).pop(false),
+                    style: TextButton.styleFrom(
+                      padding: const EdgeInsets.symmetric(vertical: 14),
+                    ),
+                    child: Text(
+                      'Keep editing',
+                      style: GoogleFonts.inter(
+                        fontSize: 15,
+                        fontWeight: FontWeight.w600,
+                        color: AppColors.deepDarkBrown,
+                      ),
+                    ),
+                  ),
+                ),
+              ],
+            ),
+          ),
+        ),
+      ),
+    );
+    if (discard == true && mounted) context.pop();
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
+    return PopScope(
+      canPop: !_hasChanges,
+      onPopInvokedWithResult: (didPop, result) {
+        if (!didPop) _onBackRequested();
+      },
+      child: Scaffold(
       backgroundColor: AppColors.background,
       appBar: AppBar(
         backgroundColor: AppColors.background,
         elevation: 0,
         scrolledUnderElevation: 0,
-        leading: const Padding(
-          padding: EdgeInsets.only(left: 8),
+        leading: Padding(
+          padding: const EdgeInsets.only(left: 8),
           child: Align(
-            child: AppBackButton(),
+            child: AppBackButton(onTap: _onBackRequested),
           ),
         ),
         title: Text(
@@ -348,12 +463,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
               padding: EdgeInsets.only(right: 20),
               child: Center(
                 child: SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(
-                    strokeWidth: 2,
-                    color: AppColors.primaryBrown,
-                  ),
+                  width: 32,
+                  height: 32,
+                  child: AppLoader(),
                 ),
               ),
             )
@@ -377,12 +489,9 @@ class _EditProfilePageState extends State<EditProfilePage> {
       body: _isLoading
           ? const Center(
               child: SizedBox(
-                width: 24,
-                height: 24,
-                child: CircularProgressIndicator(
-                  strokeWidth: 2.4,
-                  color: AppColors.primaryBrown,
-                ),
+                width: 38,
+                height: 38,
+                child: AppLoader(),
               ),
             )
           : SingleChildScrollView(
@@ -432,7 +541,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                   const SizedBox(height: 8),
                   Container(
                     decoration: BoxDecoration(
-                      color: const Color(0xFFF7F5F2),
+                      color: AppColors.fieldFill,
                       borderRadius: BorderRadius.circular(12),
                       border: Border.all(
                         color: AppColors.muted.withValues(alpha: 0.12),
@@ -522,6 +631,7 @@ class _EditProfilePageState extends State<EditProfilePage> {
                 ],
               ),
             ),
+      ),
     );
   }
 }
@@ -559,7 +669,7 @@ class _PhotoSection extends StatelessWidget {
             height: 96,
             decoration: BoxDecoration(
               shape: BoxShape.circle,
-              color: const Color(0xFFF7F5F2),
+              color: AppColors.fieldFill,
               border: Border.all(
                 color: AppColors.muted.withValues(alpha: 0.15),
                 width: 2,
@@ -644,7 +754,7 @@ class _PickerOption extends StatelessWidget {
       child: Container(
         padding: const EdgeInsets.all(16),
         decoration: BoxDecoration(
-          color: const Color(0xFFF7F5F2),
+          color: AppColors.fieldFill,
           borderRadius: BorderRadius.circular(14),
           border: Border.all(
             color: AppColors.muted.withValues(alpha: 0.08),

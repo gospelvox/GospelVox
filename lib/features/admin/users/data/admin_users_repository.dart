@@ -19,10 +19,19 @@ import 'package:cloud_firestore/cloud_firestore.dart';
 import 'package:gospel_vox/features/admin/users/data/admin_user_model.dart';
 
 class AdminUsersRepository {
+  // Safety bound so this screen can never hang or hit the 10s timeout as
+  // the user base grows: cap the fetch instead of pulling the entire
+  // collection. At current scale (well under the cap) behaviour is
+  // identical to before — every user is returned and sorted client-side.
+  // `where` + `limit` with no `orderBy` uses the automatic single-field
+  // index, so it can never throw FAILED_PRECONDITION (no new index needed).
+  static const int _fetchLimit = 1000;
+
   Future<List<AdminUserModel>> getUsers() async {
     final snap = await FirebaseFirestore.instance
         .collection('users')
         .where('role', isEqualTo: 'user')
+        .limit(_fetchLimit)
         .get()
         .timeout(const Duration(seconds: 10));
 

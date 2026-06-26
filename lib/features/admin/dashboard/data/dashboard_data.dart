@@ -21,9 +21,12 @@ class DashboardData {
     required this.allTimeRevenue,
   });
 
+  // Matrimony is intentionally excluded: its admin approval screen isn't
+  // built yet, so a pending matrimony count must not trigger the attention
+  // strip — there would be nothing the admin could actually act on. The
+  // field is still carried on the model for when that screen ships.
   bool get hasAttentionItems =>
       pendingSpeakers > 0 ||
-      pendingMatrimony > 0 ||
       openReports > 0 ||
       pendingWithdrawals > 0;
 }

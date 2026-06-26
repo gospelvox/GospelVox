@@ -11,6 +11,10 @@ class PriestRegistrationModel {
   final String fullName;
   final String phone;
   final String email;
+  // Christian community role (Priest, Pastor, Evangelist, …). Mandatory
+  // single-select on Step 1; an 'Other' pick stores the priest's typed
+  // value here directly (never the literal 'Other').
+  final String communityRole;
   // Local path before upload, Storage URL after. Both can coexist when
   // the user repicks a photo after already uploading once.
   final String? photoPath;
@@ -37,6 +41,7 @@ class PriestRegistrationModel {
     this.fullName = '',
     this.phone = '',
     this.email = '',
+    this.communityRole = '',
     this.photoPath,
     this.photoUrl,
     this.denomination = '',
@@ -58,6 +63,7 @@ class PriestRegistrationModel {
     String? fullName,
     String? phone,
     String? email,
+    String? communityRole,
     String? photoPath,
     String? photoUrl,
     String? denomination,
@@ -78,6 +84,7 @@ class PriestRegistrationModel {
       fullName: fullName ?? this.fullName,
       phone: phone ?? this.phone,
       email: email ?? this.email,
+      communityRole: communityRole ?? this.communityRole,
       photoPath: photoPath ?? this.photoPath,
       photoUrl: photoUrl ?? this.photoUrl,
       denomination: denomination ?? this.denomination,
@@ -104,6 +111,7 @@ class PriestRegistrationModel {
         'fullName': fullName,
         'phone': phone,
         'email': email,
+        'communityRole': communityRole,
         'photoUrl': photoUrl ?? '',
         'denomination': denomination,
         'subDenomination': subDenomination,
@@ -134,6 +142,7 @@ class PriestRegistrationModel {
         'fullName': fullName,
         'phone': phone,
         'email': email,
+        'communityRole': communityRole,
         'denomination': denomination,
         'subDenomination': subDenomination,
         'churchName': churchName,
@@ -150,6 +159,7 @@ class PriestRegistrationModel {
       fullName: data['fullName'] as String? ?? '',
       phone: data['phone'] as String? ?? '',
       email: data['email'] as String? ?? '',
+      communityRole: data['communityRole'] as String? ?? '',
       denomination: data['denomination'] as String? ?? '',
       subDenomination: data['subDenomination'] as String? ?? '',
       churchName: data['churchName'] as String? ?? '',

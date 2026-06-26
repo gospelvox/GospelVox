@@ -35,6 +35,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/features/shared/data/session_model.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class SessionRatingDialog extends StatefulWidget {
   final SessionModel session;
@@ -219,7 +220,7 @@ class _SessionRatingDialogState extends State<SessionRatingDialog> {
                 const SizedBox(height: 14),
                 Container(
                   decoration: BoxDecoration(
-                    color: const Color(0xFFF7F5F2),
+                    color: AppColors.fieldFill,
                     borderRadius: BorderRadius.circular(12),
                   ),
                   child: TextField(
@@ -380,12 +381,9 @@ class _SubmitButtonState extends State<_SubmitButton> {
             child: Center(
               child: widget.saving
                   ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2.5,
-                      ),
+                      width: 32,
+                      height: 32,
+                      child: AppLoader(),
                     )
                   : Text(
                       'Submit',

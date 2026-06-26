@@ -54,7 +54,7 @@ class _C {
   // occupied, sacred time" rather than the generic Busy amber. It's
   // still legible against the warm-cream card surface and against
   // dark photos behind the badge.
-  static const bibleAccent = Color(0xFF6B5B95);
+  static const bibleAccent = AppColors.bibleBusy;
 }
 
 // Default gradient stack used when callers don't supply their own.

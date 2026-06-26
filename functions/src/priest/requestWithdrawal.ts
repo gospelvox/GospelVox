@@ -32,6 +32,7 @@ import {onCall, HttpsError} from "firebase-functions/v2/https";
 import * as admin from "firebase-admin";
 import {REGION} from "../config/constants";
 import {sendPushNotification} from "../notifications/sendPush";
+import {notifyAdmins} from "../admin/notifyAdmins";
 
 const db = admin.firestore();
 
@@ -123,6 +124,10 @@ export const requestWithdrawal = onCall(
       newBalance: number;
       amount: number;
       deduplicated: boolean;
+      // Priest display name, carried out of the transaction so the
+      // post-commit admin notification can name who requested the
+      // payout without a second read. Only set on the fresh path.
+      priestName?: string;
     };
 
     const txResult = await db.runTransaction<TxResult>(async (tx) => {
@@ -179,8 +184,29 @@ export const requestWithdrawal = onCall(
       const bankAccountNumber =
         priestData.bankAccountNumber as string | undefined;
       const bankIfscCode = priestData.bankIfscCode as string | undefined;
+      // Cross-border routing identifiers — one family is populated per
+      // account (see the priest BankDetails model).
+      const bankRoutingNumber =
+        priestData.bankRoutingNumber as string | undefined;
+      const bankSortCode = priestData.bankSortCode as string | undefined;
+      const bankIban = priestData.bankIban as string | undefined;
+      const bankSwiftBic = priestData.bankSwiftBic as string | undefined;
 
-      if (!bankAccountName || !bankAccountNumber || !bankIfscCode) {
+      // Country-aware payout-destination check. A valid destination is
+      // any recognised routing pair: India account+IFSC, US
+      // account+routing, UK account+sort code, IBAN+SWIFT (Europe/GCC),
+      // or account+SWIFT (international). India's original requirement
+      // (account + IFSC) is one of these, so existing India priests are
+      // completely unaffected — this only ADMITS the other countries.
+      const hasDestination = Boolean(
+        (bankIban && bankSwiftBic) ||
+        (bankAccountNumber && bankIfscCode) ||
+        (bankAccountNumber && bankRoutingNumber) ||
+        (bankAccountNumber && bankSortCode) ||
+        (bankAccountNumber && bankSwiftBic),
+      );
+
+      if (!bankAccountName || !hasDestination) {
         throw new HttpsError(
           "failed-precondition",
           "Bank details are required for withdrawals",
@@ -213,11 +239,35 @@ export const requestWithdrawal = onCall(
         // is the fraud-block path; rejected by manual review.
         status: "pending",
         clientRequestId: clientRequestId,
-        bankAccountName,
-        bankAccountNumber,
-        bankIfscCode,
+        // Snapshot the destination so admin payouts (and the priest's
+        // status screen) read from the withdrawal doc itself, immune to
+        // later edits/deletes of the priest's saved bank details. All
+        // fields coalesce to "" — for an IBAN-country account the plain
+        // account number / IFSC are undefined, and Firestore rejects an
+        // undefined field value.
+        bankAccountName: bankAccountName ?? "",
+        bankAccountNumber: bankAccountNumber ?? "",
+        bankIfscCode: bankIfscCode ?? "",
         bankName: priestData.bankName ?? "",
+        // Account type (checking/savings) — required by US/UK ACH-style
+        // payouts, so the admin's payout sheet needs it.
+        bankAccountType: priestData.bankAccountType ?? "",
         upiId: priestData.upiId ?? "",
+        // Cross-border snapshot — country + currency for display, and
+        // whichever routing identifiers this account uses so the admin
+        // can build the bank's payout sheet.
+        bankCountry: priestData.bankCountry ?? "IN",
+        currency: priestData.bankCurrency ?? "",
+        bankRoutingNumber: bankRoutingNumber ?? "",
+        bankSortCode: bankSortCode ?? "",
+        bankIban: bankIban ?? "",
+        bankSwiftBic: bankSwiftBic ?? "",
+        // Contact for the admin — prefer the bank-contact fields, fall
+        // back to the priest's registration phone/email.
+        bankContactPhone:
+          priestData.bankContactPhone ?? priestData.phone ?? "",
+        bankContactEmail:
+          priestData.bankContactEmail ?? priestData.email ?? "",
         createdAt: admin.firestore.FieldValue.serverTimestamp(),
       });
 
@@ -249,6 +299,10 @@ export const requestWithdrawal = onCall(
         newBalance: currentBalance - amount,
         amount: amount,
         deduplicated: false,
+        priestName:
+          (priestData.fullName as string | undefined) ||
+          bankAccountName ||
+          "A speaker",
       };
     });
 
@@ -274,6 +328,29 @@ export const requestWithdrawal = onCall(
       } catch (_) {
         // Push is best-effort; the in-app notification doc above is
         // the authoritative receipt.
+      }
+
+      // Alert every admin that a new payout is waiting in their queue.
+      // Outside the txn so it can't roll back the committed debit, and
+      // wrapped in its OWN try/catch so the throw-safety is explicit at
+      // the call site — a future change inside notifyAdmins can never
+      // surface as a caller error after the money already moved. Skipped
+      // on the dedup path so a retried client call doesn't re-ping the
+      // admins; keyed on the withdrawal id so retries converge on one
+      // alert.
+      try {
+        await notifyAdmins({
+          type: "admin_new_withdrawal",
+          title: "New withdrawal request",
+          body:
+            `${txResult.priestName ?? "A speaker"} requested ` +
+            `₹${txResult.amount} — review the payout queue.`,
+          route: "/admin/withdrawals",
+          dedupeKey: txResult.withdrawalId,
+          data: {withdrawalId: txResult.withdrawalId},
+        });
+      } catch (e) {
+        console.error("[requestWithdrawal] admin notify failed", e);
       }
     }
 

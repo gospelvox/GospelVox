@@ -1,0 +1,54 @@
+rules_version = '2';
+
+// Cloud Storage security rules for Gospel Vox.
+//
+// IMPORTANT CONTEXT: every in-app image DISPLAY goes through a tokenised
+// download URL (getDownloadURL), which bypasses these rules. So the READ
+// rules below are a safety net for direct path access, not the app's
+// display path — admins viewing a priest's KYC docs, user/priest avatars
+// on cards, etc. all work via the stored download URL regardless. The
+// rules that actually matter for the 403-on-upload bug are the WRITE
+// rules: each account may only write under its own uid folder.
+//
+// Paths the app uses (verified against the codebase):
+//   users/{uid}/profile.jpg          — user avatar
+//   priests/{uid}/photo.jpg          — priest avatar (shown on cards)
+//   priests/{uid}/<id_proof|cert>... — priest KYC documents (sensitive)
+
+service firebase.storage {
+  match /b/{bucket}/o {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+    function isOwner(uid) {
+      return request.auth != null && request.auth.uid == uid;
+    }
+    function isValidImageUpload(maxBytes) {
+      return request.resource.contentType.matches('image/.*')
+             && request.resource.size < maxBytes;
+    }
+
+    // User avatars. Only the owner may write their own; any signed-in
+    // user may read (display still uses tokenised URLs anyway).
+    match /users/{userId}/{file} {
+      allow read: if isSignedIn();
+      allow write: if isOwner(userId) && isValidImageUpload(5 * 1024 * 1024);
+    }
+
+    // Priest folder holds BOTH the public avatar (photo.jpg, shown on
+    // speaker cards) AND sensitive KYC documents (ID proof, certificate).
+    //  • photo.jpg  → readable by any signed-in user.
+    //  • everything else → readable only by the owning priest. Admins
+    //    review KYC via the tokenised download URLs stored in Firestore,
+    //    so they don't need a path-level read grant here.
+    // The owning priest is the only writer in every case.
+    match /priests/{priestId}/{file} {
+      allow read: if (isSignedIn() && file == 'photo.jpg') || isOwner(priestId);
+      allow write: if isOwner(priestId) && isValidImageUpload(10 * 1024 * 1024);
+    }
+
+    // Anything not matched above is denied by default (Storage denies
+    // unmatched paths), so no catch-all rule is needed.
+  }
+}

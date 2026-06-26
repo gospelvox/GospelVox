@@ -17,20 +17,22 @@ import 'package:shimmer/shimmer.dart';
 
 import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 // Forest green for "completed" status pills — AppColors has no
 // proper "success-green" token, so we use the same value the rest
 // of the priest UI does (matches AppSnackBar's success colour).
-const Color _kCompletedGreen = Color(0xFF2E7D4F);
+const Color _kCompletedGreen = AppColors.successGreen;
 // Live red — distinct from errorRed so a pulsing live badge reads as
 // urgency-of-attention rather than failure.
-const Color _kLiveRed = Color(0xFFE53E3E);
+const Color _kLiveRed = AppColors.liveRed;
 
 class PriestBibleSessionsPage extends StatefulWidget {
   const PriestBibleSessionsPage({super.key});
@@ -107,6 +109,12 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
       for (final s in list) {
         if (s.isEffectivelyLive) {
           live.add(s);
+        } else if (s.isExpiredUpcoming) {
+          // Scheduled slot came and went but the priest never tapped
+          // "Start Meeting" — it's dead. Show it in PAST instead of
+          // pinning a past-dated session at the top of Upcoming. The
+          // priest can still open it to cancel/clean it up.
+          past.add(s);
         } else if (s.isUpcoming) {
           upcoming.add(s);
         } else {
@@ -188,6 +196,11 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
         scrolledUnderElevation: 0,
         surfaceTintColor: Colors.transparent,
         foregroundColor: AppColors.deepDarkBrown,
+        leadingWidth: 64,
+        leading: const Padding(
+          padding: EdgeInsets.only(left: 16),
+          child: AppBackButton(),
+        ),
         title: Text(
           "Bible Sessions",
           style: GoogleFonts.inter(
@@ -587,6 +600,24 @@ class _StatusPill extends StatelessWidget {
         ),
       );
     }
+    // Expired-upcoming (never started, slot passed) is checked BEFORE
+    // the plain Upcoming branch because it's still status='upcoming'.
+    // It lives in the PAST section, so it needs an honest terminal-ish
+    // pill rather than the amber "Upcoming".
+    if (session.isExpiredUpcoming) {
+      return _Pill(
+        bg: AppColors.muted.withValues(alpha: 0.12),
+        fg: AppColors.muted,
+        child: Text(
+          "Not Started",
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppColors.muted,
+          ),
+        ),
+      );
+    }
     if (session.isUpcoming) {
       return _Pill(
         bg: AppColors.amberGold.withValues(alpha: 0.14),
@@ -938,7 +969,11 @@ class _CreateBibleSessionSheetState
     // surfaces as an explicit error rather than silently mispricing.
     const price = IapProducts.bibleSessionPriceRupees;
 
-    final confirmed = await showModalBottomSheet<bool>(
+    // The review sheet runs the create itself (via onConfirm) and only
+    // returns true once the session is actually created — keeping its
+    // own spinner up the whole time. So there's no "pop back to the
+    // form, wait, then go forward" bounce: confirm → spinner → done.
+    final published = await showModalBottomSheet<bool>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
@@ -952,30 +987,43 @@ class _CreateBibleSessionSheetState
         price: price,
         maxAttendees: maxAttendees,
         meetingLink: link,
+        onConfirm: () => _create(
+          scheduledAt: utcScheduledAt,
+          link: link,
+          price: price,
+          maxAttendees: maxAttendees,
+        ),
       ),
     );
     if (!mounted) return;
-    if (confirmed != true) return;
+    // published == true → session created; close the form and confirm.
+    // Anything else (cancelled, or create failed) leaves the form open
+    // so the priest can retry or read the error in _formError.
+    if (published != true) return;
 
-    await _create(
-      scheduledAt: utcScheduledAt,
-      link: link,
-      price: price,
-      maxAttendees: maxAttendees,
+    Navigator.of(context).pop(true);
+    AppSnackBar.success(
+      context,
+      "Session published — users can register now.",
     );
   }
 
-  Future<void> _create({
+  // Returns true when the session was created. The caller (the review
+  // sheet) keeps its own spinner up while this runs and only closes on
+  // true — so the priest never bounces back to the form mid-create. On
+  // failure we set _formError and return false; the review sheet then
+  // dismisses so the priest sees the error on the form.
+  Future<bool> _create({
     required DateTime scheduledAt,
     required String link,
     required int price,
     required int maxAttendees,
   }) async {
-    if (_creating) return;
+    if (_creating) return false;
     final user = FirebaseAuth.instance.currentUser;
     if (user == null) {
       setState(() => _formError = "You're signed out.");
-      return;
+      return false;
     }
 
     setState(() {
@@ -988,7 +1036,7 @@ class _CreateBibleSessionSheetState
           .doc('priests/${user.uid}')
           .get()
           .timeout(const Duration(seconds: 8));
-      if (!mounted) return;
+      if (!mounted) return false;
       final priestData = priestDoc.data() ?? const {};
       final name = (priestData['fullName'] as String?) ??
           user.displayName ??
@@ -1011,12 +1059,9 @@ class _CreateBibleSessionSheetState
         meetingLink: link,
       );
 
-      if (!mounted) return;
-      Navigator.of(context).pop(true);
-      AppSnackBar.success(
-        context,
-        "Session published — users can register now.",
-      );
+      if (!mounted) return false;
+      setState(() => _creating = false);
+      return true;
     } on FirebaseFunctionsException catch (e) {
       // The CF now owns create — its HttpsError codes map cleanly
       // to user-facing copy. `already-exists` is the overlap case
@@ -1025,27 +1070,30 @@ class _CreateBibleSessionSheetState
       // covers not-approved / not-activated. `invalid-argument`
       // covers shape failures the form should have prevented but
       // a race / tampered client slipped through.
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _creating = false;
         _formError = e.message?.isNotEmpty == true
             ? e.message
             : "Couldn't create session. Please try again.";
       });
+      return false;
     } on FirebaseException catch (e) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _creating = false;
         _formError = e.code == 'permission-denied'
             ? "You're not approved to create sessions yet."
             : "Couldn't create session. Please try again.";
       });
+      return false;
     } catch (_) {
-      if (!mounted) return;
+      if (!mounted) return false;
       setState(() {
         _creating = false;
         _formError = "Couldn't create session. Please try again.";
       });
+      return false;
     }
   }
 
@@ -1300,14 +1348,9 @@ class _CreateBibleSessionSheetState
                   child: Center(
                     child: _creating
                         ? const SizedBox(
-                            width: 22,
-                            height: 22,
-                            child: CircularProgressIndicator(
-                              strokeWidth: 2.5,
-                              valueColor: AlwaysStoppedAnimation<Color>(
-                                Colors.white,
-                              ),
-                            ),
+                            width: 35,
+                            height: 35,
+                            child: AppLoader(),
                           )
                         : Text(
                             "Review & Publish",
@@ -1343,7 +1386,7 @@ class _CreateBibleSessionSheetState
 // CF). Deliberately keeps the same value-formatting as the cards so
 // the priest sees the session exactly as users will see it.
 
-class _ReviewSheet extends StatelessWidget {
+class _ReviewSheet extends StatefulWidget {
   final String title;
   final String description;
   final String category;
@@ -1352,6 +1395,9 @@ class _ReviewSheet extends StatelessWidget {
   final int price;
   final int maxAttendees;
   final String meetingLink;
+  // Runs the actual create; returns true on success. The sheet keeps
+  // its spinner up while this is awaited and only closes on true.
+  final Future<bool> Function() onConfirm;
 
   const _ReviewSheet({
     required this.title,
@@ -1362,11 +1408,34 @@ class _ReviewSheet extends StatelessWidget {
     required this.price,
     required this.maxAttendees,
     required this.meetingLink,
+    required this.onConfirm,
   });
 
   @override
+  State<_ReviewSheet> createState() => _ReviewSheetState();
+}
+
+class _ReviewSheetState extends State<_ReviewSheet> {
+  bool _submitting = false;
+
+  Future<void> _handleConfirm() async {
+    if (_submitting) return;
+    setState(() => _submitting = true);
+    final ok = await widget.onConfirm();
+    if (!mounted) return;
+    // On success close with true (caller pops the form + shows the
+    // success snackbar). On failure close with false so the underlying
+    // form is revealed with its _formError.
+    Navigator.of(context).pop(ok);
+  }
+
+  @override
   Widget build(BuildContext context) {
-    return Container(
+    return PopScope(
+      // Block back-dismiss mid-create so the priest can't leave a
+      // half-finished publish in an ambiguous state.
+      canPop: !_submitting,
+      child: Container(
       constraints: BoxConstraints(
         maxHeight: MediaQuery.of(context).size.height * 0.92,
       ),
@@ -1413,29 +1482,30 @@ class _ReviewSheet extends StatelessWidget {
             ),
             const SizedBox(height: 24),
 
-            _ReviewRow(label: "Title", value: title),
-            _ReviewRow(label: "Category", value: category),
-            _ReviewRow(label: "Description", value: description),
+            _ReviewRow(label: "Title", value: widget.title),
+            _ReviewRow(label: "Category", value: widget.category),
+            _ReviewRow(label: "Description", value: widget.description),
             _ReviewRow(
               label: "Date & Time",
               value:
-                  "${_formatFullDate(scheduledAt)} · ${_formatTimeFromDate(scheduledAt)} IST",
+                  "${_formatFullDate(widget.scheduledAt)} · ${_formatTimeFromDate(widget.scheduledAt)} IST",
             ),
             _ReviewRow(
               label: "Duration",
-              value: _formatDurationLabel(durationMinutes),
+              value: _formatDurationLabel(widget.durationMinutes),
             ),
-            _ReviewRow(label: "Price", value: "₹$price per person"),
+            _ReviewRow(label: "Price", value: "₹${widget.price} per person"),
             _ReviewRow(
               label: "Max Participants",
-              value: maxAttendees == 0 ? "Unlimited" : "$maxAttendees",
+              value:
+                  widget.maxAttendees == 0 ? "Unlimited" : "${widget.maxAttendees}",
             ),
             _ReviewRow(
               label: "Meeting Link",
-              value: meetingLink.isEmpty
+              value: widget.meetingLink.isEmpty
                   ? "Not added yet — add before Start Meeting"
-                  : meetingLink,
-              mutedIfEmpty: meetingLink.isEmpty,
+                  : widget.meetingLink,
+              mutedIfEmpty: widget.meetingLink.isEmpty,
             ),
 
             const SizedBox(height: 16),
@@ -1481,36 +1551,43 @@ class _ReviewSheet extends StatelessWidget {
               children: [
                 Expanded(
                   child: _PressableButton(
-                    onTap: () => Navigator.of(context).pop(false),
-                    child: Container(
-                      height: 50,
-                      decoration: BoxDecoration(
-                        color: Colors.transparent,
-                        borderRadius: BorderRadius.circular(12),
-                        border: Border.all(
-                          color: AppColors.muted.withValues(alpha: 0.4),
-                          width: 1.5,
+                    // Disabled mid-create so the priest can't edit while
+                    // the session is being published.
+                    onTap: _submitting
+                        ? null
+                        : () => Navigator.of(context).pop(false),
+                    child: Opacity(
+                      opacity: _submitting ? 0.5 : 1,
+                      child: Container(
+                        height: 50,
+                        decoration: BoxDecoration(
+                          color: Colors.transparent,
+                          borderRadius: BorderRadius.circular(12),
+                          border: Border.all(
+                            color: AppColors.muted.withValues(alpha: 0.4),
+                            width: 1.5,
+                          ),
                         ),
-                      ),
-                      child: Center(
-                        child: Row(
-                          mainAxisSize: MainAxisSize.min,
-                          children: [
-                            AppIcon(
-                              AppIcons.back,
-                              size: 16,
-                              color: AppColors.deepDarkBrown,
-                            ),
-                            const SizedBox(width: 6),
-                            Text(
-                              "Edit",
-                              style: GoogleFonts.inter(
-                                fontSize: 14,
-                                fontWeight: FontWeight.w600,
+                        child: Center(
+                          child: Row(
+                            mainAxisSize: MainAxisSize.min,
+                            children: [
+                              AppIcon(
+                                AppIcons.back,
+                                size: 16,
                                 color: AppColors.deepDarkBrown,
                               ),
-                            ),
-                          ],
+                              const SizedBox(width: 6),
+                              Text(
+                                "Edit",
+                                style: GoogleFonts.inter(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w600,
+                                  color: AppColors.deepDarkBrown,
+                                ),
+                              ),
+                            ],
+                          ),
                         ),
                       ),
                     ),
@@ -1520,7 +1597,7 @@ class _ReviewSheet extends StatelessWidget {
                 Expanded(
                   flex: 2,
                   child: _PressableButton(
-                    onTap: () => Navigator.of(context).pop(true),
+                    onTap: _submitting ? null : _handleConfirm,
                     child: Container(
                       height: 50,
                       decoration: BoxDecoration(
@@ -1536,14 +1613,20 @@ class _ReviewSheet extends StatelessWidget {
                         ],
                       ),
                       child: Center(
-                        child: Text(
-                          "Confirm & Publish",
-                          style: GoogleFonts.inter(
-                            fontSize: 14,
-                            fontWeight: FontWeight.w700,
-                            color: Colors.white,
-                          ),
-                        ),
+                        child: _submitting
+                            ? const SizedBox(
+                                width: 32,
+                                height: 32,
+                                child: AppLoader(),
+                              )
+                            : Text(
+                                "Confirm & Publish",
+                                style: GoogleFonts.inter(
+                                  fontSize: 14,
+                                  fontWeight: FontWeight.w700,
+                                  color: Colors.white,
+                                ),
+                              ),
                       ),
                     ),
                   ),
@@ -1554,6 +1637,7 @@ class _ReviewSheet extends StatelessWidget {
               height: MediaQuery.of(context).padding.bottom + 12,
             ),
           ],
+        ),
         ),
       ),
     );
@@ -1685,7 +1769,7 @@ class _FieldHelper extends StatelessWidget {
   final _HelperMood mood;
   const _FieldHelper({required this.text, required this.mood});
 
-  static const _successGreen = Color(0xFF2E7D4F);
+  static const _successGreen = AppColors.successGreen;
 
   @override
   Widget build(BuildContext context) {

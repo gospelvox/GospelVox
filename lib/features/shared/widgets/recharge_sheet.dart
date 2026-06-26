@@ -36,6 +36,7 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class RechargeSheet extends StatefulWidget {
   // Current wallet balance — displayed in the "Current balance" info
@@ -49,12 +50,20 @@ class RechargeSheet extends StatefulWidget {
   // layout has no slot for a third line — intentionally unused.
   // ignore: unused_element_parameter
   final String? infoSubtext;
+  // Whether to show the "See all plans" link that opens the full
+  // Wallet page. Defaults to true. Session surfaces (live call / chat /
+  // pre-session gate) pass false: opening the full wallet from there
+  // pushes a route over the live session, and finishing a purchase in
+  // the wallet now returns the user to Home — which would drop them out
+  // of the call. The 4-pack quick grid is enough mid-session.
+  final bool showSeeAllPlans;
 
   const RechargeSheet({
     super.key,
     this.currentBalance,
     this.infoHeadline,
     this.infoSubtext,
+    this.showSeeAllPlans = true,
   });
 
   static Future<bool?> show(
@@ -62,6 +71,7 @@ class RechargeSheet extends StatefulWidget {
     int? currentBalance,
     String? infoHeadline,
     String? infoSubtext,
+    bool showSeeAllPlans = true,
   }) {
     // Cap sheet height at 92% of screen so on short phones / when
     // text scaling pushes content tall, the sheet still reads as a
@@ -97,6 +107,7 @@ class RechargeSheet extends StatefulWidget {
         currentBalance: currentBalance,
         infoHeadline: infoHeadline,
         infoSubtext: infoSubtext,
+        showSeeAllPlans: showSeeAllPlans,
       ),
     );
   }
@@ -176,7 +187,8 @@ class _RechargeSheetState extends State<RechargeSheet> {
         _packs = packs;
         // Preserve the user's selection if they already picked one
         // before the refresh landed.
-        _selected = _selected ??
+        _selected =
+            _selected ??
             (popular ?? (display.isNotEmpty ? display.first : null));
         _loading = false;
         _error = null;
@@ -334,20 +346,14 @@ class _RechargeSheetState extends State<RechargeSheet> {
     }
   }
 
-  // Picks the 4 packs to show and arranges them so the popular one
-  // (if any) sits in slot 0 (top-left). Remaining slots are filled in
-  // price-ascending order — so the user reads a coherent ladder of
-  // increasing value, with the "best value" pre-selected at the top.
+  // Picks the 4 packs to show in a strict price-ascending ladder so
+  // the user always reads a consistent left→right order (e.g. ₹99
+  // then ₹199). The "best value" pack is still pre-selected via the
+  // isPopular flag at the call sites — independent of slot position.
   List<CoinPackModel> _orderedDisplayPacks(List<CoinPackModel> all) {
     final active = all.where((p) => p.isActive).toList()
       ..sort((a, b) => a.price.compareTo(b.price));
-    final firstFour = active.take(4).toList();
-    final popIdx = firstFour.indexWhere((p) => p.isPopular);
-    if (popIdx > 0) {
-      final pop = firstFour.removeAt(popIdx);
-      firstFour.insert(0, pop);
-    }
-    return firstFour;
+    return active.take(4).toList();
   }
 
   // Data-driven image mapping. Admin can change coin counts on any
@@ -372,9 +378,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
       clipBehavior: Clip.antiAlias,
       decoration: const BoxDecoration(
         color: AppColors.surfaceWhite,
-        borderRadius: BorderRadius.vertical(
-          top: Radius.circular(24),
-        ),
+        borderRadius: BorderRadius.vertical(top: Radius.circular(24)),
       ),
       child: SafeArea(
         top: false,
@@ -399,7 +403,8 @@ class _RechargeSheetState extends State<RechargeSheet> {
                   // here — it lives inside _InfoStripWithWallet below,
                   // anchored to the info strip's top border.
                   _HeaderText(
-                    subtitle: widget.infoHeadline ??
+                    subtitle:
+                        widget.infoHeadline ??
                         'Add coins to continue your session',
                   ),
                   // Gap is sized so the wallet image (which overhangs
@@ -421,9 +426,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
             Positioned(
               top: 14,
               right: 14,
-              child: _CloseButton(
-                onTap: () => Navigator.of(context).pop(),
-              ),
+              child: _CloseButton(onTap: () => Navigator.of(context).pop()),
             ),
           ],
         ),
@@ -436,14 +439,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
       return const Padding(
         padding: EdgeInsets.symmetric(vertical: 40),
         child: Center(
-          child: SizedBox(
-            width: 28,
-            height: 28,
-            child: CircularProgressIndicator(
-              color: AppColors.amberGold,
-              strokeWidth: 2.5,
-            ),
-          ),
+          child: SizedBox(width: 45, height: 45, child: AppLoader()),
         ),
       );
     }
@@ -491,8 +487,13 @@ class _RechargeSheetState extends State<RechargeSheet> {
           enabled: _selected != null,
           onTap: _startPayment,
         ),
-        const SizedBox(height: 4),
-        _SeeAllPlansLink(onTap: _openWalletForAllPlans),
+        // Hidden in session surfaces (call/chat/preflight) so the user
+        // can't leave the live session for the full wallet — see
+        // showSeeAllPlans.
+        if (widget.showSeeAllPlans) ...[
+          const SizedBox(height: 4),
+          _SeeAllPlansLink(onTap: _openWalletForAllPlans),
+        ],
       ],
     );
   }
@@ -647,10 +648,7 @@ class _InfoStrip extends StatelessWidget {
       decoration: BoxDecoration(
         color: AppColors.warmBeige.withValues(alpha: 0.55),
         borderRadius: BorderRadius.circular(14),
-        border: Border.all(
-          color: AppColors.borderLight,
-          width: 1,
-        ),
+        border: Border.all(color: AppColors.borderLight, width: 1),
       ),
       child: IntrinsicHeight(
         child: Row(
@@ -840,8 +838,7 @@ class _PackCardState extends State<_PackCard> {
     final pack = widget.pack;
     final selected = widget.selected;
 
-    final borderColor =
-        selected ? AppColors.amberGold : AppColors.borderLight;
+    final borderColor = selected ? AppColors.amberGold : AppColors.borderLight;
     final bgColor = selected
         ? AppColors.amberGold.withValues(alpha: 0.08)
         : AppColors.surfaceWhite;
@@ -876,8 +873,9 @@ class _PackCardState extends State<_PackCard> {
                       ? null
                       : [
                           BoxShadow(
-                            color: AppColors.deepDarkBrown
-                                .withValues(alpha: 0.03),
+                            color: AppColors.deepDarkBrown.withValues(
+                              alpha: 0.03,
+                            ),
                             blurRadius: 5,
                             offset: const Offset(0, 1),
                           ),
@@ -901,8 +899,9 @@ class _PackCardState extends State<_PackCard> {
                               height: 48,
                               decoration: BoxDecoration(
                                 shape: BoxShape.circle,
-                                color: AppColors.warmBeige
-                                    .withValues(alpha: 0.7),
+                                color: AppColors.warmBeige.withValues(
+                                  alpha: 0.7,
+                                ),
                               ),
                               padding: const EdgeInsets.all(5),
                               child: Image.asset(
@@ -913,8 +912,7 @@ class _PackCardState extends State<_PackCard> {
                             const SizedBox(width: 8),
                             Expanded(
                               child: Column(
-                                crossAxisAlignment:
-                                    CrossAxisAlignment.start,
+                                crossAxisAlignment: CrossAxisAlignment.start,
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   FittedBox(
@@ -961,10 +959,8 @@ class _PackCardState extends State<_PackCard> {
                         Container(
                           height: 1,
                           color: selected
-                              ? AppColors.amberGold
-                                  .withValues(alpha: 0.25)
-                              : AppColors.borderLight
-                                  .withValues(alpha: 0.7),
+                              ? AppColors.amberGold.withValues(alpha: 0.25)
+                              : AppColors.borderLight.withValues(alpha: 0.7),
                           margin: const EdgeInsets.only(bottom: 8),
                         ),
                         Row(
@@ -996,10 +992,7 @@ class _PackCardState extends State<_PackCard> {
             top: -9,
             left: 10,
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 8,
-                vertical: 3,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
               decoration: BoxDecoration(
                 gradient: const LinearGradient(
                   begin: Alignment.topLeft,
@@ -1063,11 +1056,7 @@ class _BestValuePill extends StatelessWidget {
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
-          const AppIcon(
-            AppIcons.thumbUp,
-            size: 11,
-            color: AppColors.amberGold,
-          ),
+          const AppIcon(AppIcons.thumbUp, size: 11, color: AppColors.amberGold),
           const SizedBox(width: 4),
           Text(
             'Best value',
@@ -1137,17 +1126,11 @@ class _TrustPillsRow extends StatelessWidget {
         child: Row(
           children: const [
             Expanded(
-              child: _TrustItem(
-                icon: AppIcons.shield,
-                label: 'Secure',
-              ),
+              child: _TrustItem(icon: AppIcons.shield, label: 'Secure'),
             ),
             _TrustDivider(),
             Expanded(
-              child: _TrustItem(
-                icon: AppIcons.bolt,
-                label: 'Instant credit',
-              ),
+              child: _TrustItem(icon: AppIcons.bolt, label: 'Instant credit'),
             ),
             _TrustDivider(),
             Expanded(
@@ -1250,10 +1233,7 @@ class _ProceedButtonState extends State<_ProceedButton> {
                   : const LinearGradient(
                       begin: Alignment.topLeft,
                       end: Alignment.bottomRight,
-                      colors: [
-                        AppColors.amberGold,
-                        Color(0xFFB87C2A),
-                      ],
+                      colors: [AppColors.amberGold, Color(0xFFB87C2A)],
                     ),
               color: disabled
                   ? AppColors.amberGold.withValues(alpha: 0.45)
@@ -1272,14 +1252,7 @@ class _ProceedButtonState extends State<_ProceedButton> {
             ),
             child: Center(
               child: widget.loading
-                  ? const SizedBox(
-                      width: 20,
-                      height: 20,
-                      child: CircularProgressIndicator(
-                        color: Colors.white,
-                        strokeWidth: 2.5,
-                      ),
-                    )
+                  ? const SizedBox(width: 32, height: 32, child: AppLoader())
                   : Row(
                       mainAxisSize: MainAxisSize.min,
                       mainAxisAlignment: MainAxisAlignment.center,
@@ -1380,10 +1353,7 @@ class _ErrorState extends StatelessWidget {
             behavior: HitTestBehavior.opaque,
             onTap: onRetry,
             child: Container(
-              padding: const EdgeInsets.symmetric(
-                horizontal: 18,
-                vertical: 8,
-              ),
+              padding: const EdgeInsets.symmetric(horizontal: 18, vertical: 8),
               decoration: BoxDecoration(
                 color: AppColors.primaryBrown.withValues(alpha: 0.08),
                 borderRadius: BorderRadius.circular(10),

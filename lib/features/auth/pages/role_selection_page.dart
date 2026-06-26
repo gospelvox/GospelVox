@@ -15,9 +15,22 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/services/injection_container.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
+import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_cubit.dart';
 import 'package:gospel_vox/features/auth/bloc/auth_state.dart';
 import 'package:gospel_vox/features/auth/widgets/admin_login_bottom_sheet.dart';
+import 'package:gospel_vox/features/auth/widgets/demo_login_bottom_sheet.dart';
+import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
+
+// Soft halo tint behind each card illustration.
+const Color _kHalo = AppColors.backgroundPrimary;
+
+// Soft green tint behind the privacy shield.
+const Color _kShieldBg = Color(0xFFE4F0E7);
+
+// Soft warm tint for the SELECTED card's inner surface. Swap this to
+// try other looks:  cream #FAF5EC  ·  soft gold #FBF3E6.
+const Color _kSelectedCardBg = Color(0xFFF7EFE7);
 
 class RoleSelectionPage extends StatefulWidget {
   const RoleSelectionPage({super.key});
@@ -33,9 +46,9 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
   // ─── Hidden admin unlock ──────────────────────────────────
   // A secret tap sequence on the existing UI opens the admin sheet —
   // invisible to anyone who doesn't already know it. Tokens:
-  //   'member'  = tap the Member card
-  //   'speaker' = tap the Speaker card
-  //   'heading' = tap the "Who are you?" text
+  //   'member'  = tap the Member ("I'm seeking guidance") card
+  //   'speaker' = tap the Speaker ("I'm a spiritual guide") card
+  //   'heading' = tap the "Choose your role" text
   // Sequence: Speaker, Member, Member, Speaker, then double-tap the
   // heading, then triple-tap Speaker.
   static const List<String> _kAdminUnlockSequence = [
@@ -140,9 +153,23 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
     );
   }
 
-  // Records one step of the hidden admin unlock sequence. Keeps only the
-  // last N taps so stray taps never block a correct run, and resets if
-  // the user pauses >5s between taps so the gesture stays deliberate.
+  // Store-reviewer email/password login, hidden behind a long-press on the
+  // "GospelVox" wordmark. `outerContext` must be from below the AuthCubit
+  // provider (the BlocBuilder's builder context) so the sheet can read the
+  // shared cubit. The sheet routes itself by the account's real role.
+  void _showDemoLogin(BuildContext outerContext) {
+    HapticFeedback.mediumImpact();
+    showModalBottomSheet<void>(
+      context: outerContext,
+      isScrollControlled: true,
+      backgroundColor: Colors.transparent,
+      builder: (_) => BlocProvider.value(
+        value: outerContext.read<AuthCubit>(),
+        child: const DemoLoginBottomSheet(),
+      ),
+    );
+  }
+
   // `context` MUST be a context from below the AuthCubit provider (the
   // BlocBuilder's builder context) — _showAdminLogin reads AuthCubit
   // from it. The State's own `this.context` sits ABOVE the provider
@@ -182,97 +209,135 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
   @override
   Widget build(BuildContext context) {
     final screenWidth = MediaQuery.of(context).size.width;
-    final isSmallScreen = screenWidth < 360;
-    final horizontalPadding = isSmallScreen ? 16.0 : 24.0;
-    final cardHorizontalPadding = isSmallScreen ? 12.0 : 16.0;
+    final small = screenWidth < 360;
+    final pad = small ? 20.0 : 24.0;
 
     return BlocProvider(
       create: (_) => sl<AuthCubit>(),
-      // No listener at this level — the only auth interaction reachable
-      // from this page is the admin login bottom sheet, which owns its
-      // own listener. Having two listeners on the same cubit was racing
-      // navigation calls on AuthAuthenticated.
       child: BlocBuilder<AuthCubit, AuthState>(
         builder: (context, state) {
           return Stack(
             children: [
               Scaffold(
                 backgroundColor: AppColors.warmBeige,
-                resizeToAvoidBottomInset: true,
+                resizeToAvoidBottomInset: false,
                 body: SafeArea(
-                  child: Column(
-                    children: [
-                      const SizedBox(height: 52),
-                      SlideTransition(
-                        position: _headingSlide,
-                        child: FadeTransition(
-                          opacity: _headingFade,
-                          child: Padding(
-                            padding: EdgeInsets.symmetric(
-                                horizontal: horizontalPadding),
-                            child: _Heading(
-                              isSmallScreen: isSmallScreen,
-                              onSecretTap: () =>
-                                  _recordAdminTap('heading', context),
-                            ),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 32),
-                      Expanded(
-                        child: SingleChildScrollView(
-                          physics: const BouncingScrollPhysics(),
-                          child: Column(
-                            children: [
-                              Padding(
-                                padding: EdgeInsets.symmetric(
-                                    horizontal: cardHorizontalPadding),
-                                child: _RoleCard(
+                  child: Padding(
+                    padding: EdgeInsets.fromLTRB(pad, 16, pad, 16),
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.stretch,
+                      children: [
+                        // Header + cards + privacy. Held in a clamping
+                        // scroll view as a safety net: it sits still
+                        // (no scroll) on a normal screen, and only on a
+                        // very small phone will it scroll instead of
+                        // overflowing. Sizes/spacing are unchanged.
+                        Expanded(
+                          child: SingleChildScrollView(
+                            physics: const ClampingScrollPhysics(),
+                            child: Column(
+                              crossAxisAlignment: CrossAxisAlignment.stretch,
+                              children: [
+                                // ── Logo + heading (animated) ──
+                                FadeTransition(
+                                  opacity: _headingFade,
+                                  child: SlideTransition(
+                                    position: _headingSlide,
+                                    child: Column(
+                                      children: [
+                                        // Long-pressing the wordmark opens the
+                                        // hidden store-reviewer email/password
+                                        // login. A normal tap does nothing.
+                                        GestureDetector(
+                                          behavior: HitTestBehavior.opaque,
+                                          onLongPress: () =>
+                                              _showDemoLogin(context),
+                                          child: const _Logo(),
+                                        ),
+                                        SizedBox(height: small ? 26 : 32),
+                                        // "Choose your role" — heading AND
+                                        // the hidden trigger's heading step
+                                        // (tap area = glyphs only).
+                                        Center(
+                                          child: GestureDetector(
+                                            onTap: () => _recordAdminTap(
+                                                'heading', context),
+                                            child: Text(
+                                              'Choose your role',
+                                              textAlign: TextAlign.center,
+                                              style: GoogleFonts.playfairDisplay(
+                                                fontSize: small ? 30 : 34,
+                                                fontWeight: FontWeight.w700,
+                                                color: AppColors.black,
+                                                height: 1.05,
+                                              ),
+                                            ),
+                                          ),
+                                        ),
+                                        const SizedBox(height: 10),
+                                        Text(
+                                          'This helps us personalise your '
+                                          'experience.',
+                                          textAlign: TextAlign.center,
+                                          style: GoogleFonts.inter(
+                                            fontSize: 13.5,
+                                            fontWeight: FontWeight.w400,
+                                            height: 1.4,
+                                            color: AppColors.muted,
+                                          ),
+                                        ),
+                                      ],
+                                    ),
+                                  ),
+                                ),
+                                SizedBox(height: small ? 26 : 32),
+                                // ── Role cards ──
+                                _RoleCard(
                                   isUser: true,
                                   isSelected: _selectedRole == 'user',
-                                  otherSelected: _selectedRole == 'priest',
-                                  fadeAnimation: _userFade,
-                                  scaleAnimation: _userScale,
+                                  fade: _userFade,
+                                  scale: _userScale,
                                   onTap: () {
                                     setState(() => _selectedRole = 'user');
                                     _recordAdminTap('member', context);
                                   },
                                 ),
-                              ),
-                              const _OrSeparator(),
-                              Padding(
-                                padding: EdgeInsets.symmetric(
-                                    horizontal: cardHorizontalPadding),
-                                child: _RoleCard(
+                                const SizedBox(height: 16),
+                                _RoleCard(
                                   isUser: false,
                                   isSelected: _selectedRole == 'priest',
-                                  otherSelected: _selectedRole == 'user',
-                                  fadeAnimation: _speakerFade,
-                                  scaleAnimation: _speakerScale,
+                                  fade: _speakerFade,
+                                  scale: _speakerScale,
                                   onTap: () {
                                     setState(() => _selectedRole = 'priest');
                                     _recordAdminTap('speaker', context);
                                   },
                                 ),
-                              ),
-                              const SizedBox(height: 16),
-                            ],
+                                const SizedBox(height: 18),
+                                // ── Privacy reassurance ──
+                                FadeTransition(
+                                  opacity: _ctaFade,
+                                  child: const _PrivacyNote(),
+                                ),
+                                const SizedBox(height: 8),
+                              ],
+                            ),
                           ),
                         ),
-                      ),
-                      const SizedBox(height: 16),
-                      Padding(
-                        padding: EdgeInsets.symmetric(
-                            horizontal: horizontalPadding),
-                        child: _CtaButton(
-                          enabled: _selectedRole != null,
-                          fadeAnimation: _ctaFade,
-                          slideAnimation: _ctaSlide,
-                          onTap: _onContinue,
+                        // Fixed bottom — CTA (footer removed).
+                        const SizedBox(height: 12),
+                        FadeTransition(
+                          opacity: _ctaFade,
+                          child: SlideTransition(
+                            position: _ctaSlide,
+                            child: _ContinueButton(
+                              enabled: _selectedRole != null,
+                              onTap: _onContinue,
+                            ),
+                          ),
                         ),
-                      ),
-                      const SizedBox(height: 24),
-                    ],
+                      ],
+                    ),
                   ),
                 ),
               ),
@@ -280,9 +345,7 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
                 Container(
                   color: Colors.black.withValues(alpha: 0.3),
                   child: const Center(
-                    child: CircularProgressIndicator(
-                      color: AppColors.primaryBrown,
-                    ),
+                    child: AppLoader(),
                   ),
                 ),
             ],
@@ -293,173 +356,147 @@ class _RoleSelectionPageState extends State<RoleSelectionPage>
   }
 }
 
-class _Heading extends StatelessWidget {
-  final bool isSmallScreen;
-  final VoidCallback onSecretTap;
+// ─── Logo (SVG mark + wordmark) ───────────────────────────────────
 
-  const _Heading({required this.isSmallScreen, required this.onSecretTap});
+class _Logo extends StatelessWidget {
+  const _Logo();
 
   @override
   Widget build(BuildContext context) {
-    return Align(
-      alignment: Alignment.centerLeft,
-      // GestureDetector wraps ONLY the text, so the hidden trigger's hit
-      // area is the glyphs themselves — not the full-width band the old
-      // long-press used (which made the empty right side hot too).
-      child: GestureDetector(
-        onTap: onSecretTap,
-        child: Text(
-          'Who are\nyou?',
-          style: GoogleFonts.inter(
-            fontSize: isSmallScreen ? 32 : 40,
-            fontWeight: FontWeight.w900,
-            color: AppColors.black,
-            letterSpacing: isSmallScreen ? -0.96 : -1.2,
-            height: 1.1,
-          ),
+    return Center(
+      child: Text(
+        'GospelVox',
+        textAlign: TextAlign.center,
+        style: GoogleFonts.playfairDisplay(
+          fontSize: 22,
+          fontWeight: FontWeight.w700,
+          height: 1.0,
+          color: AppColors.deepDarkBrown,
         ),
       ),
     );
   }
 }
 
+// ─── Role card ────────────────────────────────────────────────────
+
 class _RoleCard extends StatelessWidget {
   final bool isUser;
   final bool isSelected;
-  final bool otherSelected;
-  final Animation<double> fadeAnimation;
-  final Animation<double> scaleAnimation;
+  final Animation<double> fade;
+  final Animation<double> scale;
   final VoidCallback onTap;
 
   const _RoleCard({
     required this.isUser,
     required this.isSelected,
-    required this.otherSelected,
-    required this.fadeAnimation,
-    required this.scaleAnimation,
+    required this.fade,
+    required this.scale,
     required this.onTap,
   });
 
   @override
   Widget build(BuildContext context) {
-    final bgColor = isUser ? AppColors.primaryBrown : AppColors.amberGold;
-    final textColor = isUser ? AppColors.warmBeige : AppColors.black;
-    final subtleColor = textColor.withValues(alpha: 0.5);
-    final label = isUser ? 'member' : 'speaker';
-    final title = isUser ? 'I seek\nguidance' : 'I guide\nothers';
+    final title = isUser ? "I'm seeking guidance" : "I'm a spiritual guide";
     final subtitle = isUser
-        ? 'connect with a\nspiritual guide'
-        : 'counsel and\nspiritually lead';
+        ? 'Connect with a spiritual guide for prayer and support.'
+        : 'Counsel and spiritually lead others in faith.';
     final imageAsset = isUser
         ? 'assets/Generated_Image_April_30__2026_-_10_05AM-removebg-preview.png'
         : 'assets/Generated_Image_April_30__2026_-_10_07AM-removebg-preview.png';
 
     return FadeTransition(
-      opacity: fadeAnimation,
+      opacity: fade,
       child: ScaleTransition(
-        scale: scaleAnimation,
-        child: AnimatedOpacity(
-          duration: const Duration(milliseconds: 200),
-          opacity: otherSelected ? 0.4 : 1.0,
-          child: AnimatedScale(
-            scale: isSelected ? 0.97 : 1.0,
-            duration: const Duration(milliseconds: 80),
-            child: LayoutBuilder(
-              builder: (context, constraints) {
-                final cardWidth = constraints.maxWidth;
-                final innerWidth = cardWidth - 6;
-                final iconAreaWidth = innerWidth * 0.45;
-                final iconPlaceholderWidth = iconAreaWidth - 16;
-
-                return GestureDetector(
-                  onTap: onTap,
-                  behavior: HitTestBehavior.opaque,
-                  child: SizedBox(
-                    width: cardWidth,
-                    height: 196,
-                    child: Stack(
-                      clipBehavior: Clip.none,
-                      children: [
-                        Positioned(
-                          bottom: 0,
-                          left: isUser ? null : 0,
-                          right: isUser ? 0 : null,
-                          width: innerWidth,
-                          height: 160,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: Colors.transparent,
-                              borderRadius: BorderRadius.circular(24),
-                              border: Border.all(
-                                color: AppColors.primaryBrown,
-                                width: 1.5,
+        scale: scale,
+        child: GestureDetector(
+          onTap: onTap,
+          behavior: HitTestBehavior.opaque,
+          child: AnimatedContainer(
+            duration: const Duration(milliseconds: 160),
+            padding: const EdgeInsets.fromLTRB(14, 16, 14, 16),
+            decoration: BoxDecoration(
+              color: isSelected ? _kSelectedCardBg : AppColors.surfaceWhite,
+              borderRadius: BorderRadius.circular(20),
+              border: Border.all(
+                color: isSelected
+                    ? AppColors.primaryBrown
+                    : AppColors.borderLight,
+                width: isSelected ? 2 : 1,
+              ),
+              boxShadow: kWarmCardShadow,
+            ),
+            child: Stack(
+              children: [
+                Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
+                  children: [
+                    // Illustration with a soft halo behind it.
+                    SizedBox(
+                      width: 124,
+                      height: 152,
+                      child: Stack(
+                        alignment: Alignment.center,
+                        children: [
+                          Container(
+                            width: 104,
+                            height: 104,
+                            decoration: const BoxDecoration(
+                              color: _kHalo,
+                              shape: BoxShape.circle,
+                            ),
+                          ),
+                          Image.asset(
+                            imageAsset,
+                            height: 152,
+                            fit: BoxFit.contain,
+                            filterQuality: FilterQuality.high,
+                          ),
+                        ],
+                      ),
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Padding(
+                        // Keep the title clear of the corner tick.
+                        padding: const EdgeInsets.only(right: 22),
+                        child: Column(
+                          crossAxisAlignment: CrossAxisAlignment.start,
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Text(
+                              title,
+                              style: GoogleFonts.playfairDisplay(
+                                fontSize: 19,
+                                fontWeight: FontWeight.w700,
+                                height: 1.15,
+                                color: AppColors.deepDarkBrown,
                               ),
                             ),
-                          ),
-                        ),
-                        Positioned(
-                          top: 30,
-                          left: isUser ? 0 : null,
-                          right: isUser ? null : 0,
-                          width: innerWidth,
-                          height: 160,
-                          child: Container(
-                            decoration: BoxDecoration(
-                              color: bgColor,
-                              borderRadius: BorderRadius.circular(20),
+                            const SizedBox(height: 6),
+                            Text(
+                              subtitle,
+                              style: GoogleFonts.inter(
+                                fontSize: 12.5,
+                                fontWeight: FontWeight.w400,
+                                height: 1.4,
+                                color: AppColors.muted,
+                              ),
                             ),
-                            child: Row(
-                              children: isUser
-                                  ? [
-                                      SizedBox(width: iconAreaWidth),
-                                      Expanded(
-                                        child: Padding(
-                                          padding: const EdgeInsets.only(
-                                              right: 20),
-                                          child: _CardText(
-                                            label: label,
-                                            title: title,
-                                            subtitle: subtitle,
-                                            textColor: textColor,
-                                            subtleColor: subtleColor,
-                                            alignRight: true,
-                                          ),
-                                        ),
-                                      ),
-                                    ]
-                                  : [
-                                      Expanded(
-                                        child: Padding(
-                                          padding: const EdgeInsets.only(
-                                              left: 20),
-                                          child: _CardText(
-                                            label: label,
-                                            title: title,
-                                            subtitle: subtitle,
-                                            textColor: textColor,
-                                            subtleColor: subtleColor,
-                                            alignRight: false,
-                                          ),
-                                        ),
-                                      ),
-                                      SizedBox(width: iconAreaWidth),
-                                    ],
-                            ),
-                          ),
+                          ],
                         ),
-                        Positioned(
-                          top: 0,
-                          left: isUser ? 16 : null,
-                          right: isUser ? null : 16,
-                          width: iconPlaceholderWidth,
-                          height: 190,
-                          child: _RoleIllustration(assetPath: imageAsset),
-                        ),
-                      ],
+                      ),
                     ),
-                  ),
-                );
-              },
+                  ],
+                ),
+                // Tick in the top-right corner of the card.
+                Positioned(
+                  top: 0,
+                  right: 0,
+                  child: _SelectionDot(selected: isSelected),
+                ),
+              ],
             ),
           ),
         ),
@@ -468,117 +505,82 @@ class _RoleCard extends StatelessWidget {
   }
 }
 
-class _CardText extends StatelessWidget {
-  final String label;
-  final String title;
-  final String subtitle;
-  final Color textColor;
-  final Color subtleColor;
-  final bool alignRight;
-
-  const _CardText({
-    required this.label,
-    required this.title,
-    required this.subtitle,
-    required this.textColor,
-    required this.subtleColor,
-    required this.alignRight,
-  });
+class _SelectionDot extends StatelessWidget {
+  final bool selected;
+  const _SelectionDot({required this.selected});
 
   @override
   Widget build(BuildContext context) {
-    final textAlign = alignRight ? TextAlign.right : TextAlign.left;
-    final crossAxis =
-        alignRight ? CrossAxisAlignment.end : CrossAxisAlignment.start;
-
-    return Column(
-      mainAxisAlignment: MainAxisAlignment.center,
-      crossAxisAlignment: crossAxis,
-      children: [
-        Text(
-          label,
-          style: GoogleFonts.inter(
-            fontSize: 11,
-            fontWeight: FontWeight.w600,
-            letterSpacing: 0.8,
-            color: subtleColor,
-          ),
+    return Container(
+      width: 26,
+      height: 26,
+      decoration: BoxDecoration(
+        shape: BoxShape.circle,
+        color: selected ? AppColors.primaryBrown : AppColors.surfaceWhite,
+        border: Border.all(
+          color: selected ? AppColors.primaryBrown : AppColors.borderLight,
+          width: 1.5,
         ),
-        const SizedBox(height: 8),
-        Text(
-          title,
-          textAlign: textAlign,
-          style: GoogleFonts.inter(
-            fontSize: 22,
-            fontWeight: FontWeight.w800,
-            letterSpacing: -0.44,
-            height: 1.15,
-            color: textColor,
-          ),
-        ),
-        const SizedBox(height: 8),
-        Text(
-          subtitle,
-          textAlign: textAlign,
-          style: GoogleFonts.inter(
-            fontSize: 11,
-            fontWeight: FontWeight.w300,
-            letterSpacing: 0.22,
-            color: subtleColor,
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _RoleIllustration extends StatelessWidget {
-  final String assetPath;
-
-  const _RoleIllustration({required this.assetPath});
-
-  @override
-  Widget build(BuildContext context) {
-    return Center(
-      child: Image.asset(
-        assetPath,
-        fit: BoxFit.contain,
-        filterQuality: FilterQuality.high,
       ),
+      child: selected
+          ? const Center(
+              child: AppIcon(AppIcons.check, size: 12, color: Colors.white),
+            )
+          : null,
     );
   }
 }
 
-class _OrSeparator extends StatelessWidget {
-  const _OrSeparator();
+// ─── Privacy note ─────────────────────────────────────────────────
+
+class _PrivacyNote extends StatelessWidget {
+  const _PrivacyNote();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(24, 20, 24, 20),
+    return Container(
+      padding: const EdgeInsets.all(13),
+      decoration: BoxDecoration(
+        color: AppColors.surfaceCream,
+        borderRadius: BorderRadius.circular(14),
+        border: Border.all(color: AppColors.borderLight),
+      ),
       child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Expanded(
-            child: Container(
-              height: 0.5,
-              color: AppColors.primaryBrown.withValues(alpha: 0.15),
+          Container(
+            width: 30,
+            height: 30,
+            decoration: const BoxDecoration(
+              color: _kShieldBg,
+              shape: BoxShape.circle,
             ),
+            child: AppIcon(AppIcons.shield, size: 14, color: AppColors.sageOnline),
           ),
-          Padding(
-            padding: const EdgeInsets.symmetric(horizontal: 16),
-            child: Text(
-              'or',
-              style: GoogleFonts.inter(
-                fontSize: 14,
-                fontWeight: FontWeight.w500,
-                color: AppColors.primaryBrown.withValues(alpha: 0.4),
-              ),
-            ),
-          ),
+          const SizedBox(width: 11),
           Expanded(
-            child: Container(
-              height: 0.5,
-              color: AppColors.primaryBrown.withValues(alpha: 0.15),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'Your privacy is protected',
+                  style: GoogleFonts.inter(
+                    fontSize: 13,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.deepDarkBrown,
+                  ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  'We respect your privacy and keep your information secure.',
+                  style: GoogleFonts.inter(
+                    fontSize: 11.5,
+                    fontWeight: FontWeight.w400,
+                    height: 1.35,
+                    color: AppColors.muted,
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -587,83 +589,66 @@ class _OrSeparator extends StatelessWidget {
   }
 }
 
-class _CtaButton extends StatefulWidget {
+// ─── Continue button ──────────────────────────────────────────────
+
+class _ContinueButton extends StatefulWidget {
   final bool enabled;
-  final Animation<double> fadeAnimation;
-  final Animation<Offset> slideAnimation;
   final VoidCallback onTap;
 
-  const _CtaButton({
-    required this.enabled,
-    required this.fadeAnimation,
-    required this.slideAnimation,
-    required this.onTap,
-  });
+  const _ContinueButton({required this.enabled, required this.onTap});
 
   @override
-  State<_CtaButton> createState() => _CtaButtonState();
+  State<_ContinueButton> createState() => _ContinueButtonState();
 }
 
-class _CtaButtonState extends State<_CtaButton> {
+class _ContinueButtonState extends State<_ContinueButton> {
   bool _pressed = false;
 
   @override
   Widget build(BuildContext context) {
-    return FadeTransition(
-      opacity: widget.fadeAnimation,
-      child: SlideTransition(
-        position: widget.slideAnimation,
-        child: GestureDetector(
-          onTapDown: widget.enabled
-              ? (_) => setState(() => _pressed = true)
-              : null,
-          onTapUp: widget.enabled
-              ? (_) => setState(() => _pressed = false)
-              : null,
-          onTapCancel: widget.enabled
-              ? () => setState(() => _pressed = false)
-              : null,
-          onTap: widget.enabled ? widget.onTap : null,
-          child: AnimatedScale(
-            scale: _pressed ? 0.97 : 1.0,
-            duration: const Duration(milliseconds: 80),
-            child: AnimatedOpacity(
-              duration: const Duration(milliseconds: 200),
-              opacity: widget.enabled ? 1.0 : 0.4,
-              child: Container(
-                width: double.infinity,
-                height: 56,
-                decoration: BoxDecoration(
-                  color: AppColors.black,
-                  borderRadius: BorderRadius.circular(28),
-                ),
-                child: Center(
-                  child: RichText(
-                    text: TextSpan(
-                      children: [
-                        TextSpan(
-                          text: 'Continue ',
-                          style: GoogleFonts.inter(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.warmBeige,
-                            letterSpacing: 0.15,
-                          ),
-                        ),
-                        TextSpan(
-                          text: '→',
-                          style: GoogleFonts.inter(
-                            fontSize: 15,
-                            fontWeight: FontWeight.w700,
-                            color: AppColors.amberGold,
-                            letterSpacing: 0.15,
-                          ),
-                        ),
-                      ],
-                    ),
+    return GestureDetector(
+      onTapDown:
+          widget.enabled ? (_) => setState(() => _pressed = true) : null,
+      onTapUp: widget.enabled ? (_) => setState(() => _pressed = false) : null,
+      onTapCancel:
+          widget.enabled ? () => setState(() => _pressed = false) : null,
+      onTap: widget.enabled ? widget.onTap : null,
+      child: AnimatedScale(
+        scale: _pressed ? 0.98 : 1.0,
+        duration: const Duration(milliseconds: 80),
+        child: AnimatedOpacity(
+          duration: const Duration(milliseconds: 200),
+          opacity: widget.enabled ? 1.0 : 0.5,
+          child: Container(
+            width: double.infinity,
+            height: 56,
+            decoration: BoxDecoration(
+              color: AppColors.primaryBrown,
+              borderRadius: BorderRadius.circular(18),
+              boxShadow: widget.enabled
+                  ? [
+                      BoxShadow(
+                        color: AppColors.primaryBrown.withValues(alpha: 0.25),
+                        blurRadius: 14,
+                        offset: const Offset(0, 6),
+                      ),
+                    ]
+                  : null,
+            ),
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.center,
+              children: [
+                Text(
+                  'Continue',
+                  style: GoogleFonts.inter(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: Colors.white,
                   ),
                 ),
-              ),
+                const SizedBox(width: 10),
+                AppIcon(AppIcons.arrowRight, size: 14, color: Colors.white),
+              ],
             ),
           ),
         ),
