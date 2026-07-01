@@ -4,6 +4,11 @@
 *.pyc
 *.swp
 .DS_Store
+
+# Build artifacts (too large for GitHub — never commit)
+*.aab
+*.apk
+*.ipa
 .atom/
 .build/
 .buildlog/
