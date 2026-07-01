@@ -37,7 +37,7 @@ const db = admin.firestore();
 // Returns {sessionId} so the client can navigate / link to the
 // freshly-created session without a second read.
 exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION }, async (request) => {
-    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q;
+    var _a, _b, _c, _d, _e, _f, _g, _h, _j, _k, _l, _m, _o, _p, _q, _r, _s, _t;
     if (!request.auth) {
         throw new https_1.HttpsError("unauthenticated", "Must be logged in");
     }
@@ -77,6 +77,24 @@ exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION },
     if (meetingLink !== "" && !meetingLink.startsWith("https://")) {
         throw new https_1.HttpsError("invalid-argument", "Meeting link must start with https://");
     }
+    // Platform allowlist. Anything unknown (or absent, e.g. an older
+    // client) falls back to google_meet — the historical default — so
+    // a drifted client can never write a garbage platform value.
+    const allowedPlatforms = ["google_meet", "zoom"];
+    const meetingPlatformRaw = ((_j = data.meetingPlatform) !== null && _j !== void 0 ? _j : "google_meet").trim();
+    const meetingPlatform = allowedPlatforms.includes(meetingPlatformRaw)
+        ? meetingPlatformRaw
+        : "google_meet";
+    // Optional Zoom join extras. Forgiving — no format check (passcodes
+    // and IDs vary) — just trimmed and length-capped to keep the doc
+    // sane. Only meaningful for platforms that use access codes; for
+    // others we store empty so the doc shape stays uniform.
+    const meetingId = meetingPlatform === "zoom"
+        ? String((_k = data.meetingId) !== null && _k !== void 0 ? _k : "").trim().slice(0, 80)
+        : "";
+    const meetingPasscode = meetingPlatform === "zoom"
+        ? String((_l = data.meetingPasscode) !== null && _l !== void 0 ? _l : "").trim().slice(0, 80)
+        : "";
     // Client sends an ISO-8601 string (toUtc().toIso8601String()).
     // Parse explicitly so a malformed payload throws here instead
     // of being treated as an "invalid date" Timestamp later.
@@ -93,7 +111,7 @@ exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION },
     if (!priestDoc.exists) {
         throw new https_1.HttpsError("not-found", "Priest profile not found");
     }
-    const priestData = (_j = priestDoc.data()) !== null && _j !== void 0 ? _j : {};
+    const priestData = (_m = priestDoc.data()) !== null && _m !== void 0 ? _m : {};
     if (priestData.status !== "approved") {
         throw new https_1.HttpsError("permission-denied", "Your priest profile is not approved yet");
     }
@@ -117,12 +135,12 @@ exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION },
         const existStart = existStartTs === null || existStartTs === void 0 ? void 0 : existStartTs.toDate();
         if (!existStart)
             continue;
-        const existDuration = Number((_k = existing.durationMinutes) !== null && _k !== void 0 ? _k : 60);
+        const existDuration = Number((_o = existing.durationMinutes) !== null && _o !== void 0 ? _o : 60);
         const existEnd = new Date(existStart.getTime() + existDuration * 60 * 1000);
         // Half-open interval intersection — two windows [aStart,aEnd)
         // and [bStart,bEnd) overlap iff aStart < bEnd && bStart < aEnd.
         if (startTime < existEnd && endTime > existStart) {
-            const existTitle = String((_l = existing.title) !== null && _l !== void 0 ? _l : "another session");
+            const existTitle = String((_p = existing.title) !== null && _p !== void 0 ? _p : "another session");
             const existWhen = existStart.toLocaleString("en-IN", {
                 timeZone: "Asia/Kolkata",
                 dateStyle: "medium",
@@ -140,12 +158,12 @@ exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION },
     const sessionRef = db.collection("bible_sessions").doc();
     await sessionRef.set({
         priestId: priestUid,
-        priestName: ((_m = data.priestName) !== null && _m !== void 0 ? _m : "").trim() !== ""
+        priestName: ((_q = data.priestName) !== null && _q !== void 0 ? _q : "").trim() !== ""
             ? data.priestName
-            : String((_o = priestData.fullName) !== null && _o !== void 0 ? _o : ""),
-        priestPhotoUrl: ((_p = data.priestPhotoUrl) !== null && _p !== void 0 ? _p : "") !== ""
+            : String((_r = priestData.fullName) !== null && _r !== void 0 ? _r : ""),
+        priestPhotoUrl: ((_s = data.priestPhotoUrl) !== null && _s !== void 0 ? _s : "") !== ""
             ? data.priestPhotoUrl
-            : String((_q = priestData.photoUrl) !== null && _q !== void 0 ? _q : ""),
+            : String((_t = priestData.photoUrl) !== null && _t !== void 0 ? _t : ""),
         title,
         description,
         category,
@@ -154,6 +172,9 @@ exports.createBibleSession = (0, https_1.onCall)({ region: constants_1.REGION },
         price,
         maxParticipants,
         meetingLink,
+        meetingPlatform,
+        meetingId,
+        meetingPasscode,
         status: "upcoming",
         registrationCount: 0,
         remindersSent: {},

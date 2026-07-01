@@ -26,6 +26,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 
 import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
+import 'package:gospel_vox/core/services/purchase_watchdog.dart';
 import 'package:gospel_vox/features/priest/activation/bloc/activation_state.dart';
 import 'package:gospel_vox/features/priest/activation/data/activation_repository.dart';
 
@@ -39,6 +40,14 @@ class ActivationCubit extends Cubit<ActivationState> {
   final ActivationRepository _repository;
   final IapService _iap;
   StreamSubscription<IapOutcome>? _iapSub;
+
+  // UI-only safety net — see PurchaseWatchdog. 30 s sits above the
+  // 20 s verifyActivationPurchase timeout so it can never fire during
+  // a real verification; it only drops the "Activating…" overlay if
+  // the store never reports back at all. Never touches Play Billing or
+  // the CF.
+  final PurchaseWatchdog _watchdog =
+      PurchaseWatchdog(timeout: const Duration(seconds: 30));
 
   // Last known fee. Initialised to the fallback, updated by
   // loadFee, and read by activate() + _onIapOutcome — neither has
@@ -137,7 +146,20 @@ class ActivationCubit extends Cubit<ActivationState> {
       // usable again immediately rather than waiting on the async
       // outcome to arrive.
       emit(ActivationReady(fee: fee));
+      return;
     }
+    // Buy dispatched — arm the watchdog so the "Activating…" overlay
+    // can't strand the priest if no outcome ever comes back.
+    _watchdog.arm(_onWatchdogExpired);
+  }
+
+  // Fired only when a buy went to the store but no IapOutcome arrived
+  // in time. Drops the overlay back to Ready so the paywall is usable
+  // again. A purchase that does complete still activates via the
+  // app-wide outcome listener and/or restorePurchases on next launch.
+  void _onWatchdogExpired() {
+    if (isClosed) return;
+    emit(ActivationReady(fee: _currentFee));
   }
 
   void _onIapOutcome(IapOutcome outcome) {
@@ -153,6 +175,10 @@ class ActivationCubit extends Cubit<ActivationState> {
     if (outcome.productId != IapProducts.priestActivation) {
       return;
     }
+
+    // Our product resolved — stand the watchdog down; we update state
+    // for every kind below.
+    _watchdog.disarm();
 
     final fee = _currentFee;
     switch (outcome.kind) {
@@ -187,6 +213,7 @@ class ActivationCubit extends Cubit<ActivationState> {
 
   @override
   Future<void> close() async {
+    _watchdog.disarm();
     await _iapSub?.cancel();
     return super.close();
   }

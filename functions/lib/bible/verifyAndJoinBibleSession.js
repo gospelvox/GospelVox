@@ -78,6 +78,27 @@ exports.verifyAndJoinBibleSession = (0, https_1.onCall)({ region: constants_1.RE
         // this should be unreachable in practice — cheap insurance.
         throw new https_1.HttpsError("failed-precondition", "Meeting link not available");
     }
+    // ── 1b. Session must still be inside its live window ────────
+    // status === 'live' is NOT enough on its own: the auto-complete
+    // cron only runs every 2 min, so a doc can still read 'live' for
+    // a short window AFTER its promised duration has elapsed (and for
+    // much longer if the cron is delayed or down). We reject the
+    // payment the instant the duration is up — there is NO grace
+    // window — so a user can never be charged for a session that's
+    // already over. This is the server-authoritative twin of
+    // BibleSessionModel.isJoinable / isPastDeadline on the client; the
+    // client hides the button, this guarantees the charge can't land.
+    const startedTs = sessionData.startedAt;
+    if (startedTs) {
+        const durationRaw = sessionData.durationMinutes;
+        const durationMin = typeof durationRaw === "number" && Number.isFinite(durationRaw)
+            ? Math.max(1, Math.round(durationRaw))
+            : 60;
+        const deadlineMs = startedTs.toMillis() + durationMin * 60 * 1000;
+        if (Date.now() > deadlineMs) {
+            throw new https_1.HttpsError("failed-precondition", "This session has ended — payment is closed.");
+        }
+    }
     const title = String((_c = sessionData.title) !== null && _c !== void 0 ? _c : "Bible Session");
     const priestId = sessionData.priestId;
     // ── 2. Per-registration idempotency ─────────────────────────

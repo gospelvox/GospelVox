@@ -10,6 +10,7 @@ import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 BibleSessionModel _session({
   required String status,
   DateTime? scheduledAt,
+  DateTime? startedAt,
   int durationMinutes = 60,
 }) =>
     BibleSessionModel(
@@ -21,6 +22,7 @@ BibleSessionModel _session({
       description: 'desc',
       category: 'Prayer',
       scheduledAt: scheduledAt,
+      startedAt: startedAt,
       durationMinutes: durationMinutes,
       maxParticipants: 0,
       price: 199,
@@ -89,6 +91,55 @@ void main() {
     test('upcoming with no scheduledAt is NOT expired (can\'t tell)', () {
       final s = _session(status: 'upcoming', scheduledAt: null);
       expect(s.isExpiredUpcoming, isFalse);
+    });
+  });
+
+  // The live-session deadline is EXACTLY startedAt + duration — there
+  // is no 15-min grace any more. The instant the duration is up the
+  // session is over: not joinable, past its deadline. These tests lock
+  // that rule in so a future change can't silently reintroduce grace.
+  group('live deadline (no grace)', () {
+    test('live, 10 min into a 60-min session → joinable, not past', () {
+      final s = _session(
+        status: 'live',
+        startedAt: now.subtract(const Duration(minutes: 10)),
+        durationMinutes: 60,
+      );
+      expect(s.isJoinable, isTrue);
+      expect(s.isPastDeadline, isFalse);
+    });
+
+    test('live, exactly at duration end → NOT joinable, past deadline', () {
+      // 30-min session started 31 min ago — 1 min past the promised
+      // end. With the old +15 grace this was still joinable; now it
+      // is not, and no payment can be taken.
+      final s = _session(
+        status: 'live',
+        startedAt: now.subtract(const Duration(minutes: 31)),
+        durationMinutes: 30,
+      );
+      expect(s.isJoinable, isFalse);
+      expect(s.isPastDeadline, isTrue);
+      expect(s.isEffectivelyLive, isFalse);
+      expect(s.isEffectivelyCompleted, isTrue);
+    });
+
+    test('live, 5 min past a 60-min session → past deadline (no grace)', () {
+      // Old behaviour: still inside the 15-min grace → joinable.
+      // New behaviour: the duration is up, so it is over.
+      final s = _session(
+        status: 'live',
+        startedAt: now.subtract(const Duration(minutes: 65)),
+        durationMinutes: 60,
+      );
+      expect(s.isJoinable, isFalse);
+      expect(s.isPastDeadline, isTrue);
+    });
+
+    test('live with no startedAt → not joinable, not past (cannot tell)', () {
+      final s = _session(status: 'live', startedAt: null);
+      expect(s.isJoinable, isFalse);
+      expect(s.isPastDeadline, isFalse);
     });
   });
 }

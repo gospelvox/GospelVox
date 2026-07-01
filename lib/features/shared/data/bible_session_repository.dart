@@ -99,8 +99,8 @@ class BibleSessionRepository {
   // startBibleSession), so this list is typically very small.
   //
   // No client-side stale-deadline filter: between the join deadline
-  // (`startedAt + duration + 15min`) and the next 5-minute cron tick
-  // a session is still `status == 'live'` on the server. The OLD
+  // (`startedAt + duration`) and the next cron tick a session is
+  // still `status == 'live'` on the server. The OLD
   // behaviour dropped these from the list entirely, leaving them
   // invisible in BOTH live AND past until the cron ran (0–5 min gap
   // where the user couldn't see their session anywhere). The card UI
@@ -236,6 +236,9 @@ class BibleSessionRepository {
     required int maxParticipants,
     required int price,
     String meetingLink = '',
+    String meetingPlatform = 'google_meet',
+    String meetingId = '',
+    String meetingPasscode = '',
   }) async {
     final result = await FirebaseFunctions.instanceFor(region: 'asia-south1')
         .httpsCallable('createBibleSession')
@@ -252,6 +255,9 @@ class BibleSessionRepository {
       'price': price,
       'maxParticipants': maxParticipants,
       'meetingLink': meetingLink,
+      'meetingPlatform': meetingPlatform,
+      'meetingId': meetingId,
+      'meetingPasscode': meetingPasscode,
       'priestName': priestName,
       'priestPhotoUrl': priestPhotoUrl,
     }).timeout(const Duration(seconds: 20));
@@ -279,7 +285,13 @@ class BibleSessionRepository {
   //
   // Clearing the link (passing empty string) does NOT fan out — we
   // only fire when there's news worth sharing.
-  Future<void> updateMeetingLink(String sessionId, String link) async {
+  Future<void> updateMeetingLink(
+    String sessionId,
+    String link, {
+    String? meetingPlatform,
+    String? meetingId,
+    String? meetingPasscode,
+  }) async {
     final snap = await _sessions.doc(sessionId).get().timeout(_timeout);
     if (!snap.exists) {
       throw Exception('Session not found');
@@ -290,7 +302,15 @@ class BibleSessionRepository {
     }
     await _sessions
         .doc(sessionId)
-        .update({'meetingLink': link})
+        .update({
+          'meetingLink': link,
+          // Only stamp these when the caller specifies them (the priest
+          // picked/typed them in the sheet) — otherwise leave the
+          // existing values untouched.
+          'meetingPlatform': ?meetingPlatform,
+          'meetingId': ?meetingId,
+          'meetingPasscode': ?meetingPasscode,
+        })
         .timeout(_timeout);
 
     if (link.isNotEmpty) {
@@ -318,7 +338,7 @@ class BibleSessionRepository {
   //      step 1 has already landed.
   //
   // Per V1 design we DO NOT touch any user's registration row here —
-  // paid users (only possible in the 15-min join window) keep their
+  // paid users (only possible during the live join window) keep their
   // `paid` status and admin processes refunds offline.
   //
   // The legacy client-side notification batch was removed: Firestore

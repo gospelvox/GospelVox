@@ -131,26 +131,41 @@ String _roleToPath(String role) {
   }
 }
 
-// Persistent "has this priest seen the approval congrats screen" flag.
-// Per-device by design — a reinstall re-showing the one-time congrats is
-// harmless, and this keeps us off a Firestore write (and its rules). The
-// flag is what makes the congrats appear exactly once on the FIRST
-// approved entry, on both the live-listener path (pending page) and the
-// cold-start path (router resolves straight to approved).
+// "Has this priest seen the approval congrats screen" flag.
+//
+// Persisted in THREE places, checked together in _resolvePriestDestination
+// so the one-time congrats stays one-time across the situations that used
+// to re-show it:
+//   1. priests/{uid}.approvalCongratsSeen — the authoritative record.
+//      Lives on the server, so it survives sign-out/in, reinstall, app-data
+//      clear, and switching devices. This is the fix for "an already-
+//      approved priest sees 'You're Approved!' again every time they log
+//      in" — the old flag was device-local SharedPreferences, so any fresh
+//      install/device had no flag and re-showed the screen.
+//   2. SharedPreferences (device-local) — fast offline read so we don't
+//      depend on the network having returned the doc to skip congrats.
+//   3. In-memory set — synchronous backstop against a navigation loop
+//      within a session even if both writes above fail.
+// The Firestore field is whitelisted by rules implicitly: priests may
+// update their own doc as long as they don't touch the protected fields
+// (status/isActivated/walletBalance/...), and this is none of those — so
+// no firestore.rules change is needed.
 String _approvalCongratsKey(String uid) =>
     'priest_approval_congrats_seen_$uid';
 
-// In-memory backstop against a navigation loop. If the persistent write
-// below ever fails (prefs readable but not writable — disk full, etc.),
-// relying on the flag alone would loop congrats→dashboard→congrats and
-// trap the priest. This set is marked synchronously in
-// markApprovalCongratsSeen BEFORE the dashboard navigation, so the very
-// next approved-state resolution short-circuits to the dashboard no
-// matter what prefs does. Resets on app restart (a true write failure
-// would then re-show the one-time congrats once — cosmetic, not a trap).
+// In-memory backstop against a navigation loop. If the persistent writes
+// ever fail (prefs unwritable, network down), relying on them alone could
+// loop congrats→dashboard→congrats and trap the priest. This set is marked
+// synchronously in markApprovalCongratsSeen BEFORE the dashboard
+// navigation, so the very next approved-state resolution short-circuits to
+// the dashboard no matter what prefs/Firestore do. Resets on app restart.
 final Set<String> _approvalCongratsShownThisSession = <String>{};
 
-Future<bool> _approvalCongratsSeen(String uid) async {
+// Local (device + session) seen check. The SERVER field is read directly
+// from the already-fetched priest doc in _resolvePriestDestination — this
+// helper only covers the device-local layers so we can skip congrats even
+// before the doc read returns.
+Future<bool> _approvalCongratsSeenLocal(String uid) async {
   if (_approvalCongratsShownThisSession.contains(uid)) return true;
   try {
     final prefs = await SharedPreferences.getInstance();
@@ -163,18 +178,33 @@ Future<bool> _approvalCongratsSeen(String uid) async {
   }
 }
 
-// Called by the congrats screen's Continue button before it navigates to
-// the dashboard, so every later approved-state resolution skips congrats.
+// Called by the congrats screen the moment it appears, so every later
+// approved-state resolution — on this device or any other — skips congrats.
 Future<void> markApprovalCongratsSeen(String uid) async {
   // Synchronous in-memory mark FIRST — guarantees the subsequent
-  // navigation can't loop even if the persistent write below fails.
+  // navigation can't loop even if the persistent writes below fail.
   _approvalCongratsShownThisSession.add(uid);
+
+  // Server record (authoritative, survives reinstall/login/device-change).
+  // Best-effort: merge so we never clobber other fields, and swallow errors
+  // — the device-local layers still prevent a loop this session.
+  try {
+    await FirebaseFirestore.instance
+        .doc('priests/$uid')
+        .set(<String, dynamic>{'approvalCongratsSeen': true},
+            SetOptions(merge: true));
+  } catch (_) {
+    // Non-fatal — offline or transient. The local flag below still skips
+    // congrats on this device; the next time online + on the congrats
+    // screen will retry the write.
+  }
+
+  // Device-local fast path.
   try {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_approvalCongratsKey(uid), true);
   } catch (_) {
-    // Non-fatal — if the write fails the priest may see the congrats once
-    // more on next launch, which is a cosmetic annoyance, not a bug.
+    // Non-fatal — the server field and in-memory set still cover us.
   }
 }
 
@@ -183,49 +213,85 @@ Future<void> markApprovalCongratsSeen(String uid) async {
 // widget) so we never even mount the dashboard for unverified users —
 // avoids a flash of "Priest Dashboard" before the redirect happens.
 Future<String> _resolvePriestDestination(String uid) async {
+  final ref = FirebaseFirestore.instance.doc('priests/$uid');
+
+  // Read the priest's doc to decide their screen. We must distinguish
+  // three outcomes, because they route VERY differently:
+  //   • read succeeded, doc exists   → route by status
+  //   • read succeeded, doc absent   → genuinely new → /priest/register
+  //   • read FAILED (timeout/error)  → unknown → must NOT register them
+  // The bug this guards against: a slow network or a transient Firestore
+  // error used to throw straight to '/priest/register', demoting an
+  // already-approved (and possibly activated) priest to the brand-new-
+  // applicant screen on every flaky launch. A failed read says nothing
+  // about whether the priest exists, so it must never trigger register.
+  DocumentSnapshot<Map<String, dynamic>>? doc;
   try {
-    // Server read (not cache-first): a priest's status legitimately
+    // Server-first (not cache-first): a priest's status legitimately
     // changes (pending → approved) while the app is closed, and routing
-    // them to the right screen on launch needs the fresh value. Timeout
-    // lowered 10s → 6s so a slow network caps the launch wait.
-    final doc = await FirebaseFirestore.instance
-        .doc('priests/$uid')
-        .get()
-        .timeout(const Duration(seconds: 6));
-    if (!doc.exists) return '/priest/register';
-
-    final data = doc.data() ?? const <String, dynamic>{};
-    final status = data['status'] as String? ?? 'pending';
-
-    switch (status) {
-      case 'pending':
-        return '/priest/pending';
-      case 'rejected':
-        return '/priest/rejected';
-      case 'approved':
-        // First time a priest reaches approved → celebrate it once with
-        // the congrats screen; afterwards go straight to the dashboard.
-        // Approved priests always land on the dashboard regardless of
-        // activation — the activation gate lives at action points (going
-        // online, accepting a session) via a bottom sheet, so an
-        // unactivated priest can freely explore dashboard / wallet /
-        // profile to understand what they're activating for.
-        final seen = await _approvalCongratsSeen(uid);
-        return seen ? '/priest' : '/priest/approved';
-      case 'suspended':
-        // Suspended priests still see the dashboard shell (it'll
-        // render a "your account is suspended" card once that piece
-        // exists). Not redirecting elsewhere keeps them in a visible
-        // state rather than a confusing blank page.
-        return '/priest';
-      default:
-        return '/priest/register';
-    }
+    // them to the right screen on launch needs the fresh value. 6s caps
+    // the launch wait on a slow network.
+    doc = await ref.get().timeout(const Duration(seconds: 6));
   } catch (_) {
-    // Treat connectivity errors as "needs registration" rather than
-    // bouncing the user out — they can retry submitting and we'll
-    // pick up the existing doc once Firestore is reachable.
-    return '/priest/register';
+    // Server slow / unreachable / transient error. Fall back to the
+    // locally-cached doc — any priest who has opened the app before has
+    // priests/{uid} in Firestore's offline persistence, so this resolves
+    // their real status without a network round-trip.
+    try {
+      doc = await ref.get(const GetOptions(source: Source.cache));
+    } catch (_) {
+      doc = null;
+    }
+  }
+
+  // Total read failure (server AND cache unavailable). Do NOT route to
+  // register — land on the dashboard shell, which live-streams
+  // priests/{uid} and self-corrects to the right state the moment a read
+  // succeeds. Worse case for a truly-new user is a momentarily empty
+  // dashboard, not a wrongful "register from scratch" screen.
+  if (doc == null) return '/priest';
+
+  // A SUCCESSFUL read with no doc is the only thing that means a genuinely
+  // new user who must register.
+  if (!doc.exists) return '/priest/register';
+
+  final data = doc.data() ?? const <String, dynamic>{};
+  final status = data['status'] as String? ?? 'pending';
+
+  switch (status) {
+    case 'pending':
+      return '/priest/pending';
+    case 'rejected':
+      return '/priest/rejected';
+    case 'approved':
+      // First time a priest reaches approved → celebrate it once with
+      // the congrats screen; afterwards go straight to the dashboard.
+      // Approved priests always land on the dashboard regardless of
+      // activation — the activation gate lives at action points (going
+      // online, accepting a session) via a bottom sheet, so an
+      // unactivated priest can freely explore dashboard / wallet /
+      // profile to understand what they're activating for.
+      //
+      // "Seen" is true if ANY signal says so:
+      //   • the server field (survives reinstall/login/device-change),
+      //   • the priest is already activated — an activated priest is well
+      //     past the "you're approved, now activate" moment, so never show
+      //     it to them (this also covers priests who were approved BEFORE
+      //     the server field existed and so don't carry it),
+      //   • the device-local flag (fast offline path).
+      final seenServer = data['approvalCongratsSeen'] == true;
+      final alreadyActivated = data['isActivated'] == true;
+      final seenLocal = await _approvalCongratsSeenLocal(uid);
+      final seen = seenServer || alreadyActivated || seenLocal;
+      return seen ? '/priest' : '/priest/approved';
+    case 'suspended':
+      // Suspended priests still see the dashboard shell (it'll
+      // render a "your account is suspended" card once that piece
+      // exists). Not redirecting elsewhere keeps them in a visible
+      // state rather than a confusing blank page.
+      return '/priest';
+    default:
+      return '/priest/register';
   }
 }
 
@@ -383,7 +449,12 @@ final appRouter = GoRouter(
     // the shell leaves the home page's cubit/scroll position intact.
     GoRoute(
       path: '/user/speakers',
-      builder: (context, state) => const AllSpeakersPage(),
+      // Optional ?filter=<chip> pre-selects a filter chip so a user who
+      // tapped a chip on Home (e.g. "Online") lands on the matching list
+      // here instead of the full catalogue. Unknown/absent → "All".
+      builder: (context, state) => AllSpeakersPage(
+        initialFilter: state.uri.queryParameters['filter'],
+      ),
     ),
     GoRoute(
       path: '/priest',

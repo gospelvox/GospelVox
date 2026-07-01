@@ -24,28 +24,44 @@ import 'package:gospel_vox/features/shared/data/session_preflight.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/widgets/priest_card.dart';
+import 'package:gospel_vox/features/user/home/widgets/speaker_filter_bar.dart';
 import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
 class AllSpeakersPage extends StatelessWidget {
-  const AllSpeakersPage({super.key});
+  // Chip to pre-select on open, passed via the /user/speakers?filter=
+  // query param from Home's "See all". Null / unknown → "All".
+  final String? initialFilter;
+
+  const AllSpeakersPage({super.key, this.initialFilter});
 
   @override
   Widget build(BuildContext context) {
     return BlocProvider<HomeCubit>(
       create: (_) => sl<HomeCubit>()..watchPriests(),
-      child: const _AllSpeakersView(),
+      child: _AllSpeakersView(initialFilter: initialFilter),
     );
   }
 }
 
 class _AllSpeakersView extends StatefulWidget {
-  const _AllSpeakersView();
+  final String? initialFilter;
+
+  const _AllSpeakersView({this.initialFilter});
 
   @override
   State<_AllSpeakersView> createState() => _AllSpeakersViewState();
 }
 
 class _AllSpeakersViewState extends State<_AllSpeakersView> {
+  // Mirrors Home's local chip filter. Seeded from the route param so
+  // the page opens on the same filter the user tapped on Home; an
+  // unknown/absent value falls back to "All". The user can still switch
+  // chips here without going back.
+  late String _activeFilter = (widget.initialFilter != null &&
+          isKnownSpeakerFilter(widget.initialFilter!))
+      ? widget.initialFilter!
+      : 'All';
+
   // Mirrors home_page._startSession — runs SessionPreflight so an
   // insufficient-balance user lands on the RechargeSheet instead of
   // bouncing off a generic CF error after the waiting screen.
@@ -145,45 +161,88 @@ class _AllSpeakersViewState extends State<_AllSpeakersView> {
             );
           }
           final loaded = state as HomeLoaded;
-          final priests = loaded.filteredPriests;
-          if (priests.isEmpty) {
-            return Center(
-              child: Text(
-                'No speakers available yet',
-                style: GoogleFonts.inter(
-                  fontSize: 14,
-                  color: AppColors.muted,
-                ),
+          // Apply the active chip on top of the cubit's search output —
+          // same predicate Home uses, so this list matches what the
+          // user saw on the Home grid before tapping "See all".
+          final priests =
+              filterSpeakersByChip(loaded.filteredPriests, _activeFilter);
+
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              const SizedBox(height: 4),
+              SpeakerFilterBar(
+                active: _activeFilter,
+                onSelected: (label) =>
+                    setState(() => _activeFilter = label),
               ),
-            );
-          }
-          return GridView.builder(
-            padding: const EdgeInsets.fromLTRB(20, 8, 20, 24),
-            physics: const BouncingScrollPhysics(
-              parent: AlwaysScrollableScrollPhysics(),
-            ),
-            gridDelegate: const SliverGridDelegateWithFixedCrossAxisCount(
-              crossAxisCount: 2,
-              crossAxisSpacing: 12,
-              mainAxisSpacing: 12,
-              childAspectRatio: 0.72,
-            ),
-            itemCount: priests.length,
-            itemBuilder: (_, i) {
-              final priest = priests[i];
-              return PriestCard(
-                priest: priest,
-                gradient:
-                    kPriestGradients[i % kPriestGradients.length],
-                onTap: () =>
-                    context.push('/user/priest/${priest.uid}'),
-                onCall: () => _startSession(priest, 'voice'),
-                onChat: () => _startSession(priest, 'chat'),
-                onNotify: () => _subscribeToNotifyMe(priest),
-              );
-            },
+              const SizedBox(height: 8),
+              Expanded(
+                child: priests.isEmpty
+                    ? _buildEmpty(loaded)
+                    : GridView.builder(
+                        padding: const EdgeInsets.fromLTRB(20, 4, 20, 24),
+                        physics: const BouncingScrollPhysics(
+                          parent: AlwaysScrollableScrollPhysics(),
+                        ),
+                        gridDelegate:
+                            const SliverGridDelegateWithFixedCrossAxisCount(
+                          crossAxisCount: 2,
+                          crossAxisSpacing: 12,
+                          mainAxisSpacing: 12,
+                          childAspectRatio: 0.72,
+                        ),
+                        itemCount: priests.length,
+                        itemBuilder: (_, i) {
+                          final priest = priests[i];
+                          return PriestCard(
+                            priest: priest,
+                            gradient: kPriestGradients[
+                                i % kPriestGradients.length],
+                            onTap: () =>
+                                context.push('/user/priest/${priest.uid}'),
+                            onCall: () => _startSession(priest, 'voice'),
+                            onChat: () => _startSession(priest, 'chat'),
+                            onNotify: () => _subscribeToNotifyMe(priest),
+                          );
+                        },
+                      ),
+              ),
+            ],
           );
         },
+      ),
+    );
+  }
+
+  // Empty state. Distinguishes "the catalogue is genuinely empty" from
+  // "this chip just has nobody right now" (e.g. tapped Online when no
+  // priest is available) so the message guides the user back to a
+  // useful filter instead of implying the app has no speakers at all.
+  Widget _buildEmpty(HomeLoaded state) {
+    final hasChip = _activeFilter != 'All';
+    final catalogueEmpty = state.filteredPriests.isEmpty;
+
+    final String message;
+    if (catalogueEmpty) {
+      message = 'No speakers available yet';
+    } else if (hasChip) {
+      message = 'No speakers in ${_activeFilter.toLowerCase()} right now';
+    } else {
+      message = 'No speakers available yet';
+    }
+
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 40),
+        child: Text(
+          message,
+          textAlign: TextAlign.center,
+          style: GoogleFonts.inter(
+            fontSize: 14,
+            color: AppColors.muted,
+          ),
+        ),
       ),
     );
   }

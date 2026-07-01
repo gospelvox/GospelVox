@@ -33,6 +33,7 @@ import 'package:google_fonts/google_fonts.dart';
 
 import 'package:gospel_vox/core/router/app_router.dart';
 import 'package:gospel_vox/core/services/notification_service.dart';
+import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
@@ -176,12 +177,22 @@ class _BibleSessionLiveOverlayState
           .listen(
         (snap) {
           if (!mounted) return;
-          // First snapshot for this overlay instance — we expect
-          // status='live'. Subsequent snapshots could flip the
-          // status; the moment it's anything other than 'live',
-          // dismiss. A missing/deleted doc is also reason to bail.
-          final status = snap.data()?['status'] as String?;
-          if (status != 'live') {
+          // First snapshot for this overlay instance — we expect an
+          // effectively-live session. Dismiss the moment it's no
+          // longer EFFECTIVELY live: status left 'live' (completed /
+          // cancelled / deleted doc) OR the (startedAt + duration)
+          // deadline passed even though the doc still reads 'live'
+          // (the auto-complete cron hasn't caught up yet). Reusing
+          // isEffectivelyLive keeps the overlay consistent with the
+          // detail page and every other surface, so a user never gets
+          // a "LIVE NOW" call for a session that's actually over.
+          final data = snap.data();
+          if (data == null) {
+            _clear();
+            return;
+          }
+          final model = BibleSessionModel.fromFirestore(snap.id, data);
+          if (!model.isEffectivelyLive) {
             _clear();
           }
         },

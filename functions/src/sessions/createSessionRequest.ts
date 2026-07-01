@@ -168,7 +168,7 @@ export const createSessionRequest = onCall(
     //      bibleSessionReminders auto-complete cron.
     //
     //   2. bibleSessionLockedUntil — a wall-clock deadline
-    //      (startedAt + durationMinutes + 15min). Acts as the
+    //      (startedAt + durationMinutes). Acts as the
     //      self-healing guard: if every CF that's supposed to
     //      clear the field fails, once this timestamp passes the
     //      gate treats the priest as released anyway.

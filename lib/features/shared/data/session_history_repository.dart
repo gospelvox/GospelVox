@@ -266,7 +266,7 @@ class SessionHistoryRepository {
     // tab + detail page where the user can still take action.
     // Completed = the session actually happened (priest tapped
     // Mark Completed, OR the auto-complete cron flipped it after
-    // duration + 15 min). A bible_session.cancelled doc is a
+    // its duration elapsed). A bible_session.cancelled doc is a
     // refund/cancellation event, not history.
     return entries
         .whereType<BibleSessionEntry>()

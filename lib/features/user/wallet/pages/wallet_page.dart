@@ -185,6 +185,19 @@ class _WalletPageState extends State<WalletPage> {
           // PopScope guard.
           return PopScope(
             canPop: !showOverlay,
+            // When back is blocked (verification in flight) give the
+            // user explicit feedback instead of a silent dead button,
+            // so it never reads as "frozen". The watchdog in the cubit
+            // guarantees this block is always lifted within ~30 s even
+            // if the store never replies.
+            onPopInvokedWithResult: (didPop, _) {
+              if (!didPop && showOverlay) {
+                AppSnackBar.info(
+                  context,
+                  "Just a moment — we're confirming your payment.",
+                );
+              }
+            },
             // Stack rather than a single Scaffold so the processing
             // overlay can cover the entire wallet (including the AppBar
             // coin chip) during CF verification without unmounting the

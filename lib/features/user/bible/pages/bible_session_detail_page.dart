@@ -32,6 +32,7 @@ import 'package:url_launcher/url_launcher.dart';
 import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/services/purchase_watchdog.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_back_button.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
@@ -75,6 +76,13 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
 
   bool _isRegistering = false;
   bool _isPaying = false;
+
+  // UI-only safety net — see PurchaseWatchdog. 40 s sits above the
+  // 30 s verifyAndJoinBibleSession timeout so it can never fire during
+  // a real verification; it only releases the Pay spinner if the store
+  // never reports back at all. Never touches Play Billing or the CF.
+  final PurchaseWatchdog _watchdog =
+      PurchaseWatchdog(timeout: const Duration(seconds: 40));
 
   // Drives setState every 30 s so live countdown text and the past-
   // deadline gate refresh themselves without a pull-to-refresh.
@@ -123,6 +131,7 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
 
   @override
   void dispose() {
+    _watchdog.disarm();
     _refreshTimer?.cancel();
     _iapOutcomeSubscription?.cancel();
     super.dispose();
@@ -278,7 +287,25 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
       // unlocks immediately rather than waiting on the async
       // outcome.
       setState(() => _isPaying = false);
+      return;
     }
+    // Buy dispatched — arm the watchdog so the Pay spinner can't hang
+    // forever if no outcome ever comes back.
+    _watchdog.arm(_onWatchdogExpired);
+  }
+
+  // Fired only when a buy went to the store but no IapOutcome arrived
+  // in time. Releases the Pay spinner and reassures the user. A
+  // purchase that does complete still lets them in via the app-wide
+  // outcome listener and/or restorePurchases on next launch.
+  void _onWatchdogExpired() {
+    if (!mounted) return;
+    setState(() => _isPaying = false);
+    AppSnackBar.info(
+      context,
+      "Taking longer than expected. If you were charged, we'll let you in "
+      "as soon as it clears — no need to pay again.",
+    );
   }
 
   // Handles outcomes from the global IapService.outcomes broadcast
@@ -286,30 +313,39 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
   // bible_session_199 outcomes — coin / activation purchases that
   // fire while this page is open are silently ignored.
   //
-  // Preserves the legacy Razorpay success flow byte-for-byte:
-  //   meetingLink from server → _changed = true → _loadRegistration()
-  //   → success snackbar → _launchUrl(meetingLink). Only the
-  // TRIGGER changes (IAP outcome instead of Razorpay callback).
+  // On success the meeting link returned by the server is opened
+  // IMMEDIATELY — by the time this outcome fires the payment is fully
+  // settled and the link is already in `outcome.meetingLink`, so the
+  // user shouldn't wait on anything else first. The registration
+  // re-read that flips STATE D / renders the link card still runs, but
+  // in the BACKGROUND, so it lands a moment later without holding up
+  // the meeting launch. (Money + crediting are untouched — that all
+  // happened server-side before this outcome was emitted.)
   Future<void> _onIapOutcome(IapOutcome outcome) async {
     if (!mounted) return;
     if (outcome.productId != IapProducts.bibleSession199) return;
+
+    // Our product resolved — stand the watchdog down; every kind
+    // below updates the UI.
+    _watchdog.disarm();
 
     switch (outcome.kind) {
       case IapOutcomeKind.success:
         final meetingLink = outcome.meetingLink ?? '';
         _changed = true;
-        // Same call sequence as the legacy Razorpay success path:
-        // CF flipped (or created) the registration to 'paid';
-        // re-read it so STATE D unlocks and the link card renders.
-        // The session stream has been live the whole time so it
-        // doesn't need a refresh.
-        await _loadRegistration();
-        if (!mounted) return;
+        // No await before this point since the top-of-method mounted
+        // guard, so `mounted` is still true — release the spinner and
+        // confirm success right away.
         setState(() => _isPaying = false);
         AppSnackBar.success(
           context,
           "You're in! Opening meeting…",
         );
+        // Re-read the registration in the BACKGROUND so STATE D / the
+        // link card update without making the user wait. _loadRegistration
+        // has its own mounted guards, so firing it unawaited is safe.
+        // The link we need is already in `meetingLink`.
+        unawaited(_loadRegistration());
         // Auto-launch the meeting for convenience. Best-effort — a
         // failure surfaces a non-blocking snackbar inside _launchUrl
         // and the user can tap "Open Meeting" on the now-visible
@@ -812,9 +848,9 @@ class _BibleSessionDetailPageState extends State<BibleSessionDetailPage> {
     }
 
     // STATE C/D/I — Live branch. Only reachable now when status='live'
-    // AND we're still inside the (startedAt + duration + 15min)
-    // window — the past-deadline case falls into the Completed
-    // branch above instead of the legacy _EndingSoonStateView.
+    // AND we're still inside the (startedAt + duration) window — the
+    // past-deadline case falls into the Completed branch above instead
+    // of the legacy _EndingSoonStateView.
     if (session.isEffectivelyLive) {
       if (isPaid) {
         return _LiveLinkReadyCard(session: session);
@@ -1707,7 +1743,7 @@ class _LiveLockedLinkCard extends StatelessWidget {
                       borderRadius: BorderRadius.circular(10),
                     ),
                     child: Text(
-                      "https://meet.google.com/abc-defg-hij",
+                      session.platform.placeholder,
                       style: GoogleFonts.inter(
                         fontSize: 13,
                         fontWeight: FontWeight.w500,
@@ -1788,7 +1824,84 @@ class _LiveLinkReadyCard extends StatelessWidget {
             ],
           ),
         ),
+        // Zoom join extras, if the speaker provided them. The full Zoom
+        // link usually embeds the password (so these are often empty),
+        // but when present they let the user join manually from the
+        // Zoom app. Copy buttons because passcodes are fiddly to type.
+        if (session.hasMeetingId || session.hasPasscode) ...[
+          const SizedBox(height: 12),
+          if (session.hasMeetingId)
+            _JoinExtraLine(label: "Meeting ID", value: session.meetingId),
+          if (session.hasPasscode)
+            _JoinExtraLine(
+              label: "Passcode",
+              value: session.meetingPasscode,
+            ),
+        ],
       ],
+    );
+  }
+}
+
+// One labelled join detail (Meeting ID / Passcode) with a tap-to-copy
+// button. Shown to PAID users on a live Zoom session.
+class _JoinExtraLine extends StatelessWidget {
+  final String label;
+  final String value;
+  const _JoinExtraLine({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 8),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 11),
+        decoration: BoxDecoration(
+          color: AppColors.surfaceWhite,
+          borderRadius: BorderRadius.circular(12),
+          border: Border.all(color: AppColors.borderLight),
+        ),
+        child: Row(
+          children: [
+            Text(
+              "$label: ",
+              style: GoogleFonts.inter(
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+                color: AppColors.muted,
+              ),
+            ),
+            Expanded(
+              child: Text(
+                value,
+                maxLines: 1,
+                overflow: TextOverflow.ellipsis,
+                style: GoogleFonts.inter(
+                  fontSize: 13,
+                  fontWeight: FontWeight.w700,
+                  color: AppColors.deepDarkBrown,
+                ),
+              ),
+            ),
+            GestureDetector(
+              behavior: HitTestBehavior.opaque,
+              onTap: () {
+                HapticFeedback.lightImpact();
+                Clipboard.setData(ClipboardData(text: value));
+                AppSnackBar.success(context, "$label copied");
+              },
+              child: Padding(
+                padding: const EdgeInsets.all(4),
+                child: AppIcon(
+                  AppIcons.copy,
+                  size: 16,
+                  color: AppColors.primaryBrown,
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
     );
   }
 }

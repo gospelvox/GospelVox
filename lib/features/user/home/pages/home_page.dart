@@ -63,6 +63,7 @@ import 'package:gospel_vox/features/user/home/bloc/home_cubit.dart';
 import 'package:gospel_vox/features/user/home/bloc/home_state.dart';
 import 'package:gospel_vox/features/user/home/pages/user_shell_page.dart';
 import 'package:gospel_vox/features/user/home/widgets/priest_card.dart';
+import 'package:gospel_vox/features/user/home/widgets/speaker_filter_bar.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 
@@ -111,21 +112,12 @@ const List<String> _kBibleBannerAssets = <String>[
   'assets/bible_banners/scrolls.png',
 ];
 
-// Filter chip definitions. A record keeps the icon + colour bound to
-// the label inline so we don't drift label/icon indices apart by
-// editing one list and forgetting the other. `iconColor` is reserved
-// for cases (Online → green) where the icon needs to carry its own
-// semantic colour; null = inherit from the chip's foreground.
-typedef _FilterDef = ({
-  String label,
-  IconData? icon,
-  Color? iconColor,
-});
-
-// Muted sage — the "online / active" tint used by the filter chip
-// icon, the trust-stat dot, the explore-banner availability line.
-// Aliased to AppColors.sageOnline so the home-feed shares one
-// canonical online colour with every other screen in the app.
+// Muted sage — the "online / active" tint used by the trust-stat dot
+// and the explore-banner availability line. Aliased to
+// AppColors.sageOnline so the home-feed shares one canonical online
+// colour with every other screen in the app. (The filter-chip list and
+// its own online tint live in speaker_filter_bar.dart, the single
+// source of truth shared with the "All speakers" page.)
 const Color _kOnlineGreen = AppColors.sageOnline;
 
 // Compact count formatter — keeps marketplace-scale CTA copy
@@ -157,18 +149,8 @@ String _compactCount(int n) {
   return '${trim(n / 10000000)}Cr';
 }
 
-const List<_FilterDef> _kFilterChips = <_FilterDef>[
-  (label: 'All', icon: null, iconColor: null),
-  (label: 'Online', icon: AppIcons.wifi, iconColor: _kOnlineGreen),
-  (label: 'Priests', icon: AppIcons.userOutline, iconColor: null),
-  (label: 'Pastors', icon: AppIcons.add, iconColor: null),
-  (
-    label: 'Counsellors',
-    icon: AppIcons.chatOutline,
-    iconColor: null,
-  ),
-  (label: 'Bible Teachers', icon: AppIcons.bible, iconColor: null),
-];
+// The chip list is `kSpeakerFilterChips` from speaker_filter_bar.dart —
+// shared with the "All speakers" page so the two can't drift.
 
 // ─── Root ─────────────────────────────────────────────────
 
@@ -361,12 +343,13 @@ class _HomeViewState extends State<_HomeView>
       // marked them complete yet, but they shouldn't surface as
       // "upcoming" on home. Live sessions use startedAt as the
       // anchor (since they may have started later than scheduledAt)
-      // with the same 15-min grace as the auto-complete cron.
+      // and end exactly at startedAt + duration — no grace, matching
+      // the auto-complete cron and isPastDeadline.
       if (s.isLive) {
         final started = s.startedAt;
         if (started != null) {
           final liveEnd =
-              started.add(Duration(minutes: s.durationMinutes + 15));
+              started.add(Duration(minutes: s.durationMinutes));
           return liveEnd.isAfter(now);
         }
       }
@@ -533,17 +516,23 @@ class _HomeViewState extends State<_HomeView>
     return display.trim().split(' ').first;
   }
 
+  // Layers the active chip on top of the cubit's search output. The
+  // predicate itself lives in speaker_filter_bar.dart so the "See all"
+  // destination (/user/speakers) filters by exactly the same rule.
   List<SpeakerModel> _visiblePriests(HomeLoaded state) {
-    final base = state.filteredPriests;
-    if (_activeFilter == 'All') return base;
-    if (_activeFilter == 'Online') {
-      return base.where((p) => p.isAvailable).toList();
+    return filterSpeakersByChip(state.filteredPriests, _activeFilter);
+  }
+
+  // Carries the active chip across to the "All speakers" page so a user
+  // who picked "Online" on Home lands on the online list there too,
+  // instead of the full catalogue. 'All' is omitted to keep the route
+  // clean (the destination defaults to 'All' when no param is present).
+  void _openAllSpeakers() {
+    if (_activeFilter == 'All') {
+      context.push('/user/speakers');
+    } else {
+      context.push('/user/speakers?filter=${Uri.encodeComponent(_activeFilter)}');
     }
-    final q = _activeFilter.toLowerCase();
-    return base.where((p) {
-      return p.denomination.toLowerCase().contains(q) ||
-          p.specializations.any((s) => s.toLowerCase().contains(q));
-    }).toList();
   }
 
   void _openProfile(String priestId) {
@@ -809,10 +798,10 @@ class _HomeViewState extends State<_HomeView>
           scrollDirection: Axis.horizontal,
           physics: const BouncingScrollPhysics(),
           padding: const EdgeInsets.symmetric(horizontal: 20),
-          itemCount: _kFilterChips.length,
+          itemCount: kSpeakerFilterChips.length,
           separatorBuilder: (_, _) => const SizedBox(width: 8),
           itemBuilder: (_, i) {
-            final def = _kFilterChips[i];
+            final def = kSpeakerFilterChips[i];
             return _FilterChip(
               label: def.label,
               icon: def.icon,
@@ -1094,7 +1083,7 @@ class _HomeViewState extends State<_HomeView>
     // shortcut, deliberately smaller in visual weight.
     return _SectionHeader(
       title: 'Available now',
-      onSeeAll: () => context.push('/user/speakers'),
+      onSeeAll: _openAllSpeakers,
     );
   }
 
@@ -1110,7 +1099,7 @@ class _HomeViewState extends State<_HomeView>
     }
     return _ExploreBanner(
       priests: visible,
-      onTap: () => context.push('/user/speakers'),
+      onTap: _openAllSpeakers,
     );
   }
 
@@ -2229,7 +2218,7 @@ class _BibleSessionBanner extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     // isEffectivelyLive instead of isLive — a session whose deadline
-    // (startedAt + duration + 15min) has passed is treated as no
+    // (startedAt + duration) has passed is treated as no
     // longer live by the UI even if the auto-complete cron hasn't
     // flipped the doc yet, so users never see a "LIVE NOW" banner
     // for a session that's actually wrapped up.

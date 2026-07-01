@@ -9,6 +9,7 @@
 import 'package:cloud_firestore/cloud_firestore.dart';
 
 import 'package:gospel_vox/core/utils/date_format.dart' as df;
+import 'package:gospel_vox/features/shared/data/meeting_platform.dart';
 
 class BibleSessionModel {
   final String id;
@@ -29,6 +30,18 @@ class BibleSessionModel {
   // server-stamped display and ledger consistency.
   final int price;
   final String meetingLink;
+  // Which video platform the link is for: "google_meet" / "zoom".
+  // Stored on the doc; resolve to display metadata via `platform`.
+  // Legacy docs (written before this field) default to google_meet,
+  // back-filled from the link host where possible. See MeetingPlatform.
+  final String meetingPlatform;
+  // Optional Zoom join extras. The full Zoom invite link usually embeds
+  // the password, so these are a safety net for when the priest pastes
+  // a bare link or shares the ID/passcode separately. Empty for Google
+  // Meet (and for Zoom links that already embed the password). Shown to
+  // PAID users only, next to the meeting link.
+  final String meetingId;
+  final String meetingPasscode;
   // "upcoming" / "live" / "completed" / "cancelled"
   final String status;
   final int registrationCount;
@@ -36,7 +49,7 @@ class BibleSessionModel {
   // Set when the priest taps "Start Meeting" — the CF stamps this
   // with a server timestamp on the upcoming → live transition.
   // Drives both the "X min left" pill and the auto-complete cron
-  // (started + duration + 15min buffer = deadline).
+  // (started + duration = deadline; no grace window).
   final DateTime? startedAt;
   // Stamped by the priest's "Mark Completed" CF, by the auto-complete
   // cron, or by an admin force-complete. Used for post-session rating
@@ -63,6 +76,9 @@ class BibleSessionModel {
     required this.maxParticipants,
     required this.price,
     required this.meetingLink,
+    this.meetingPlatform = 'google_meet',
+    this.meetingId = '',
+    this.meetingPasscode = '',
     required this.status,
     required this.registrationCount,
     this.createdAt,
@@ -107,6 +123,9 @@ class BibleSessionModel {
       maxParticipants: (data['maxParticipants'] as num?)?.toInt() ?? 0,
       price: (data['price'] as num?)?.toInt() ?? 0,
       meetingLink: data['meetingLink'] as String? ?? '',
+      meetingPlatform: _resolvePlatform(data),
+      meetingId: data['meetingId'] as String? ?? '',
+      meetingPasscode: data['meetingPasscode'] as String? ?? '',
       status: data['status'] as String? ?? 'upcoming',
       registrationCount:
           (data['registrationCount'] as num?)?.toInt() ?? 0,
@@ -136,7 +155,24 @@ class BibleSessionModel {
     );
   }
 
+  // Resolve the stored platform id, back-filling for legacy docs:
+  // explicit field wins; else infer from the link host; else default
+  // to Google Meet (the only platform before this field existed).
+  static String _resolvePlatform(Map<String, dynamic> data) {
+    final stored = data['meetingPlatform'] as String?;
+    if (stored != null && stored.isNotEmpty) return stored;
+    final link = data['meetingLink'] as String? ?? '';
+    return MeetingPlatform.detectFromUrl(link)?.id ??
+        MeetingPlatform.googleMeet.id;
+  }
+
+  // Display metadata (label, hint, guide, placeholder) for this
+  // session's platform.
+  MeetingPlatform get platform => MeetingPlatform.fromId(meetingPlatform);
+
   bool get hasLink => meetingLink.isNotEmpty;
+  bool get hasMeetingId => meetingId.trim().isNotEmpty;
+  bool get hasPasscode => meetingPasscode.trim().isNotEmpty;
   bool get isUpcoming => status == 'upcoming';
   bool get isLive => status == 'live';
   bool get isCancelled => status == 'cancelled';
@@ -145,30 +181,33 @@ class BibleSessionModel {
       maxParticipants > 0 && registrationCount >= maxParticipants;
 
   // True only while the session is live AND we're still inside the
-  // join window (duration + 15 min slack to absorb late-comers and
-  // clock drift). After the deadline the auto-complete cron flips
-  // the session to "completed", but if the cron is late this getter
-  // is the client-side guard that hides "Join" before the doc flips.
+  // promised duration. The deadline is EXACTLY startedAt + duration —
+  // there is no grace window. The instant the duration is up the
+  // session is over: no join, no payment. After the deadline the
+  // auto-complete cron flips the doc to "completed", but if the cron
+  // is late this getter is the client-side guard that hides "Join"
+  // before the doc flips.
   bool get isJoinable {
     if (!isLive || startedAt == null) return false;
     final deadline = startedAt!.toLocal().add(
-          Duration(minutes: durationMinutes + 15),
+          Duration(minutes: durationMinutes),
         );
     return DateTime.now().isBefore(deadline);
   }
 
   // True when the doc says status='live' but we're already past the
-  // (startedAt + durationMinutes + 15min) deadline. The server-side
-  // cron flips these to 'completed' on its next tick, but there's a
-  // window where the doc still reads 'live' on the client. Without
-  // this guard the user sees a session shouting "LIVE NOW" long
-  // after the priest finished — and worse, paid users would still
-  // see a payable "Join" CTA. UI surfaces must treat this state as
-  // effectively completed.
+  // (startedAt + durationMinutes) deadline — i.e. the promised
+  // duration has fully elapsed. There is no grace window. The
+  // server-side cron flips these to 'completed' on its next tick, but
+  // there's a window where the doc still reads 'live' on the client.
+  // Without this guard the user sees a session shouting "LIVE NOW"
+  // long after the priest finished — and worse, paid users would
+  // still see a payable "Join" CTA. UI surfaces must treat this state
+  // as effectively completed.
   bool get isPastDeadline {
     if (!isLive || startedAt == null) return false;
     final deadline = startedAt!.toLocal().add(
-          Duration(minutes: durationMinutes + 15),
+          Duration(minutes: durationMinutes),
         );
     return !DateTime.now().isBefore(deadline);
   }
@@ -193,8 +232,10 @@ class BibleSessionModel {
   // only handles 'live' docs), so without this guard it would sit at
   // the TOP of "Upcoming" forever showing a past date. UI must treat
   // it as PAST (priest side) and hide it (user side). The 15-min grace
-  // mirrors the live-session deadline so a priest can still start a few
-  // minutes late before the slot is considered missed.
+  // here is DELIBERATE and separate from the (grace-free) live-session
+  // deadline above: it's anchored on scheduledAt and exists only so a
+  // priest can still start a few minutes late before the slot is
+  // considered missed — it does NOT extend a live session's lifetime.
   bool get isExpiredUpcoming {
     if (!isUpcoming || scheduledAt == null) return false;
     final deadline = scheduledAt!.toLocal().add(
@@ -203,11 +244,10 @@ class BibleSessionModel {
     return DateTime.now().isAfter(deadline);
   }
 
-  // Time remaining in the SCHEDULED duration (not the 15-min buffer)
-  // — the "X min left" pill should reflect what was promised, not
-  // the grace window. Returns Duration.zero once we're past the
-  // promised end, even though the session may still be joinable
-  // through the buffer.
+  // Time remaining in the promised duration. Returns Duration.zero
+  // once we're past the promised end — which is now also exactly the
+  // moment the session becomes past-deadline (there is no grace
+  // window any more), so "0 left" and "session over" coincide.
   Duration get remainingTime {
     if (!isLive || startedAt == null) return Duration.zero;
     final deadline = startedAt!.toLocal().add(

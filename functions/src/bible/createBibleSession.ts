@@ -52,6 +52,9 @@ export const createBibleSession = onCall(
       price?: number;
       maxParticipants?: number;
       meetingLink?: string;
+      meetingPlatform?: string;
+      meetingId?: string;
+      meetingPasscode?: string;
       priestName?: string;
       priestPhotoUrl?: string;
     };
@@ -109,6 +112,26 @@ export const createBibleSession = onCall(
         "Meeting link must start with https://",
       );
     }
+
+    // Platform allowlist. Anything unknown (or absent, e.g. an older
+    // client) falls back to google_meet — the historical default — so
+    // a drifted client can never write a garbage platform value.
+    const allowedPlatforms = ["google_meet", "zoom"];
+    const meetingPlatformRaw = (data.meetingPlatform ?? "google_meet").trim();
+    const meetingPlatform = allowedPlatforms.includes(meetingPlatformRaw)
+      ? meetingPlatformRaw
+      : "google_meet";
+
+    // Optional Zoom join extras. Forgiving — no format check (passcodes
+    // and IDs vary) — just trimmed and length-capped to keep the doc
+    // sane. Only meaningful for platforms that use access codes; for
+    // others we store empty so the doc shape stays uniform.
+    const meetingId = meetingPlatform === "zoom"
+      ? String(data.meetingId ?? "").trim().slice(0, 80)
+      : "";
+    const meetingPasscode = meetingPlatform === "zoom"
+      ? String(data.meetingPasscode ?? "").trim().slice(0, 80)
+      : "";
 
     // Client sends an ISO-8601 string (toUtc().toIso8601String()).
     // Parse explicitly so a malformed payload throws here instead
@@ -216,6 +239,9 @@ export const createBibleSession = onCall(
       price,
       maxParticipants,
       meetingLink,
+      meetingPlatform,
+      meetingId,
+      meetingPasscode,
       status: "upcoming",
       registrationCount: 0,
       remindersSent: {},

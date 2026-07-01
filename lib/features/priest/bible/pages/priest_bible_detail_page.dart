@@ -23,6 +23,8 @@ import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/features/shared/data/meeting_platform.dart';
+import 'package:gospel_vox/features/shared/widgets/meeting_platform_selector.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
@@ -117,24 +119,40 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
   // ── Mutations ─────────────────────────────────────────────────
 
   Future<void> _showAddLinkSheet(BibleSessionModel session) async {
-    final updated = await showModalBottomSheet<String>(
+    final updated = await showModalBottomSheet<
+        ({
+          String link,
+          String platformId,
+          String meetingId,
+          String passcode,
+        })>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) =>
-          _AddLinkSheet(initialLink: session.meetingLink),
+      builder: (_) => _AddLinkSheet(
+        initialLink: session.meetingLink,
+        initialPlatform: session.meetingPlatform,
+        initialMeetingId: session.meetingId,
+        initialPasscode: session.meetingPasscode,
+      ),
     );
     if (!mounted || updated == null) return;
     await _runMutation(() async {
       try {
-        await _repository.updateMeetingLink(widget.sessionId, updated);
+        await _repository.updateMeetingLink(
+          widget.sessionId,
+          updated.link,
+          meetingPlatform: updated.platformId,
+          meetingId: updated.meetingId,
+          meetingPasscode: updated.passcode,
+        );
         if (!mounted) return;
         _changed = true;
         AppSnackBar.success(
           context,
-          updated.isEmpty
+          updated.link.isEmpty
               ? "Link cleared."
-              : "Meet link saved — registered users will see it.",
+              : "Meeting link saved — registered users will see it.",
         );
       } catch (_) {
         if (!mounted) return;
@@ -324,12 +342,12 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
     }
   }
 
-  Future<void> _showLinkGuide() async {
+  Future<void> _showLinkGuide(MeetingPlatform platform) async {
     await showModalBottomSheet<void>(
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _MeetLinkGuideSheet(),
+      builder: (_) => _MeetLinkGuideSheet(platform: platform),
     );
   }
 
@@ -506,7 +524,7 @@ class _PriestBibleDetailPageState extends State<PriestBibleDetailPage> {
               registrationsLoaded: _registrationsLoaded,
               isMutating: _isMutating,
               onAddLink: () => _showAddLinkSheet(session),
-              onShowLinkGuide: _showLinkGuide,
+              onShowLinkGuide: () => _showLinkGuide(session.platform),
               onStart: () => _confirmStart(session),
               onCancel: () => _confirmCancel(session),
             )
@@ -1082,9 +1100,8 @@ class _LiveStateViewState extends State<_LiveStateView> {
               const SizedBox(width: 8),
               Expanded(
                 child: Text(
-                  "This session auto-completes 15 minutes after the "
-                  "scheduled end time. Mark it complete sooner if "
-                  "you finish early.",
+                  "This session auto-completes when its duration ends. "
+                  "Mark it complete sooner if you finish early.",
                   style: GoogleFonts.inter(
                     fontSize: 11,
                     fontWeight: FontWeight.w500,
@@ -1318,7 +1335,7 @@ class _CompletedStateView extends StatelessWidget {
     final completedAt = s.completedAt;
     if (scheduledAt == null || completedAt == null) return false;
     final expectedEnd = scheduledAt.add(
-      Duration(minutes: s.durationMinutes + 15),
+      Duration(minutes: s.durationMinutes),
     );
     final delta = completedAt.difference(expectedEnd).inMinutes.abs();
     return delta <= 30;
@@ -1510,7 +1527,7 @@ class _MeetLinkSection extends StatelessWidget {
               ),
               const SizedBox(width: 10),
               Text(
-                "MEET LINK",
+                session.platform.linkLabel,
                 style: GoogleFonts.inter(
                   fontSize: 11,
                   fontWeight: FontWeight.w600,
@@ -1554,6 +1571,19 @@ class _MeetLinkSection extends StatelessWidget {
                 ),
               ),
             ),
+            if (session.hasMeetingId || session.hasPasscode) ...[
+              const SizedBox(height: 8),
+              if (session.hasMeetingId)
+                _MeetExtraLine(
+                  label: "Meeting ID",
+                  value: session.meetingId,
+                ),
+              if (session.hasPasscode)
+                _MeetExtraLine(
+                  label: "Passcode",
+                  value: session.meetingPasscode,
+                ),
+            ],
             const SizedBox(height: 12),
             Center(
               child: _PressableButton(
@@ -2326,79 +2356,125 @@ class _PressableButtonState extends State<_PressableButton> {
 // ADD/EDIT LINK BOTTOM SHEET
 // ════════════════════════════════════════════════════════════════
 
-// Normalises whatever the priest pastes into a canonical Meet URL.
-// Google Meet's share UI hands out bare `meet.google.com/abc-defg-hij`
-// — no scheme. Requiring the priest to add `https://` manually is the
-// most common cause of "couldn't join" complaints, so we accept any
-// reasonable shape and converge on `https://meet.google.com/<code>`.
-_LinkNormResult _normaliseMeetLink(String raw) {
+// One labelled line (Meeting ID / Passcode) with a tap-to-copy
+// button. Shown under the link in the priest's manage view.
+class _MeetExtraLine extends StatelessWidget {
+  final String label;
+  final String value;
+  const _MeetExtraLine({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.only(top: 6),
+      child: Row(
+        children: [
+          Text(
+            "$label: ",
+            style: GoogleFonts.inter(
+              fontSize: 12,
+              fontWeight: FontWeight.w600,
+              color: AppColors.muted,
+            ),
+          ),
+          Expanded(
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: GoogleFonts.inter(
+                fontSize: 12,
+                fontWeight: FontWeight.w700,
+                color: AppColors.deepDarkBrown,
+              ),
+            ),
+          ),
+          GestureDetector(
+            behavior: HitTestBehavior.opaque,
+            onTap: () {
+              Clipboard.setData(ClipboardData(text: value));
+              AppSnackBar.success(context, "$label copied");
+            },
+            child: const Padding(
+              padding: EdgeInsets.all(4),
+              child: AppIcon(
+                AppIcons.paste,
+                size: 14,
+                color: AppColors.primaryBrown,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+// Forgiving normaliser. Accepts ANY https URL — Google Meet, Zoom, a
+// custom/corporate Zoom domain, anything — because requiring an exact
+// host wrongly rejects perfectly valid links (e.g. mychurch.zoom.us).
+// We only:
+//   • strip whitespace and prepend https:// when the scheme is missing
+//     (the #1 cause of "couldn't join" complaints), and
+//   • reject genuinely unusable input (no host at all).
+// A host that doesn't match the chosen platform is ALLOWED but flagged
+// with a soft `warning` so the priest can double-check — never blocked.
+_LinkNormResult _normaliseMeetingLink(String raw, MeetingPlatform platform) {
   // Strip ALL whitespace, not just edges — mobile keyboards sometimes
   // sneak a trailing space and copy buffers occasionally include line
   // breaks from web sources.
   var s = raw.replaceAll(RegExp(r'\s+'), '');
   if (s.isEmpty) return const _LinkNormResult.empty();
 
-  // Force https. Meet only serves over https; if someone pastes
-  // `http://` it's a stale/wrong copy and would 30x-redirect anyway.
+  // Force https (and add it when missing) so a bare host like
+  // `zoom.us/j/123` becomes a parseable URL.
   if (s.toLowerCase().startsWith('http://')) {
     s = 'https://${s.substring(7)}';
-  }
-  // Prepend scheme when missing so `meet.google.com/abc-defg-hij`
-  // becomes a parseable URI.
-  final lower = s.toLowerCase();
-  if (!lower.startsWith('https://')) {
-    if (lower.startsWith('meet.google.com/') ||
-        lower.startsWith('www.meet.google.com/')) {
-      s = 'https://$s';
-    } else {
-      return const _LinkNormResult.error(
-        "Doesn't look like a Google Meet link.",
-      );
-    }
+  } else if (!s.toLowerCase().startsWith('https://')) {
+    s = 'https://$s';
   }
 
   final uri = Uri.tryParse(s);
-  if (uri == null) {
-    return const _LinkNormResult.error("Couldn't read that link.");
-  }
-  var host = uri.host.toLowerCase();
-  if (host.startsWith('www.')) host = host.substring(4);
-  if (host != 'meet.google.com') {
+  if (uri == null || uri.host.isEmpty) {
     return const _LinkNormResult.error(
-      "Only Google Meet links (meet.google.com) are accepted.",
+      "That doesn't look like a valid link.",
     );
   }
-  // Meeting code lives in the first path segment, e.g. `abc-defg-hij`.
-  if (uri.pathSegments.isEmpty || uri.pathSegments.first.isEmpty) {
-    return const _LinkNormResult.error("Missing the meeting code.");
-  }
 
-  // Rebuild canonically: forced lowercase host, no `www.`, preserve
-  // any query string Google may attach (e.g. authuser), drop the
-  // fragment which Meet never uses for routing.
-  final canonical = Uri(
-    scheme: 'https',
-    host: 'meet.google.com',
-    pathSegments: uri.pathSegments,
-    query: uri.query.isEmpty ? null : uri.query,
-  ).toString();
-  return _LinkNormResult.ok(canonical);
+  // Forgiving: accept as-is. Flag a soft mismatch warning only.
+  final warning = platform.matchesUrl(s)
+      ? null
+      : "Doesn't look like a ${platform.label} link — double-check it.";
+  return _LinkNormResult.ok(s, warning: warning);
 }
 
 class _LinkNormResult {
   final String? url;
   final String? error;
+  // Soft, non-blocking hint (e.g. "doesn't look like a Zoom link").
+  // Present alongside a valid `url` — the link still saves.
+  final String? warning;
   final bool isEmpty;
-  const _LinkNormResult._({this.url, this.error, this.isEmpty = false});
+  const _LinkNormResult._(
+      {this.url, this.error, this.warning, this.isEmpty = false});
   const _LinkNormResult.empty() : this._(isEmpty: true);
-  const _LinkNormResult.ok(String u) : this._(url: u);
+  const _LinkNormResult.ok(String u, {String? warning})
+      : this._(url: u, warning: warning);
   const _LinkNormResult.error(String e) : this._(error: e);
   bool get isValid => url != null;
 }
 
 class _AddLinkSheet extends StatefulWidget {
   final String initialLink;
-  const _AddLinkSheet({required this.initialLink});
+  final String initialPlatform;
+  final String initialMeetingId;
+  final String initialPasscode;
+  const _AddLinkSheet({
+    required this.initialLink,
+    required this.initialPlatform,
+    required this.initialMeetingId,
+    required this.initialPasscode,
+  });
 
   @override
   State<_AddLinkSheet> createState() => _AddLinkSheetState();
@@ -2406,14 +2482,22 @@ class _AddLinkSheet extends StatefulWidget {
 
 class _AddLinkSheetState extends State<_AddLinkSheet> {
   late final TextEditingController _ctrl;
+  late final TextEditingController _idCtrl;
+  late final TextEditingController _passcodeCtrl;
+  late MeetingPlatform _platform;
   _LinkNormResult _result = const _LinkNormResult.empty();
   bool _canPaste = false;
 
   @override
   void initState() {
     super.initState();
+    _platform = MeetingPlatform.fromId(widget.initialPlatform);
     _ctrl = TextEditingController(text: widget.initialLink);
+    _idCtrl = TextEditingController(text: widget.initialMeetingId);
+    _passcodeCtrl = TextEditingController(text: widget.initialPasscode);
     _ctrl.addListener(_onChanged);
+    _idCtrl.addListener(_onExtrasChanged);
+    _passcodeCtrl.addListener(_onExtrasChanged);
     _onChanged();
     _refreshClipboardState();
   }
@@ -2422,16 +2506,33 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
   void dispose() {
     _ctrl.removeListener(_onChanged);
     _ctrl.dispose();
+    _idCtrl.removeListener(_onExtrasChanged);
+    _idCtrl.dispose();
+    _passcodeCtrl.removeListener(_onExtrasChanged);
+    _passcodeCtrl.dispose();
     super.dispose();
   }
 
+  // The ID/passcode fields don't affect link validation, but they do
+  // affect _canSave (a changed passcode is a saveable change), so a
+  // keystroke needs to refresh the Save button's enabled state.
+  void _onExtrasChanged() => setState(() {});
+
   void _onChanged() {
-    final next = _normaliseMeetLink(_ctrl.text);
+    final next = _normaliseMeetingLink(_ctrl.text, _platform);
     if (next.url != _result.url ||
         next.error != _result.error ||
+        next.warning != _result.warning ||
         next.isEmpty != _result.isEmpty) {
       setState(() => _result = next);
     }
+  }
+
+  void _selectPlatform(MeetingPlatform p) {
+    if (p.id == _platform.id) return;
+    setState(() => _platform = p);
+    // Re-validate so the soft mismatch warning reflects the new choice.
+    _onChanged();
   }
 
   Future<void> _refreshClipboardState() async {
@@ -2459,7 +2560,12 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
   // when the priest opens the sheet, looks at it, and taps Save.
   bool get _hasChanges {
     final current = _result.isValid ? _result.url! : _ctrl.text.trim();
-    return current != widget.initialLink;
+    final extrasChanged = _platform.usesAccessCodes &&
+        (_idCtrl.text.trim() != widget.initialMeetingId.trim() ||
+            _passcodeCtrl.text.trim() != widget.initialPasscode.trim());
+    return current != widget.initialLink ||
+        _platform.id != widget.initialPlatform ||
+        extrasChanged;
   }
 
   bool get _canSave {
@@ -2473,7 +2579,81 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
   void _save() {
     if (!_canSave) return;
     final value = _result.isValid ? _result.url! : '';
-    Navigator.of(context).pop(value);
+    final useCodes = _platform.usesAccessCodes;
+    Navigator.of(context).pop((
+      link: value,
+      platformId: _platform.id,
+      meetingId: useCodes ? _idCtrl.text.trim() : '',
+      passcode: useCodes ? _passcodeCtrl.text.trim() : '',
+    ));
+  }
+
+  // Compact labelled text field for the optional Zoom extras (Meeting
+  // ID / Passcode). Same beige fill as the link field so the sheet
+  // reads as one coherent form.
+  Widget _extrasField({
+    required String label,
+    required TextEditingController controller,
+    required String hint,
+  }) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        Text(
+          label.toUpperCase(),
+          style: GoogleFonts.inter(
+            fontSize: 11,
+            fontWeight: FontWeight.w600,
+            color: AppColors.muted,
+            letterSpacing: 0.8,
+          ),
+        ),
+        const SizedBox(height: 8),
+        TextField(
+          controller: controller,
+          autocorrect: false,
+          enableSuggestions: false,
+          textInputAction: TextInputAction.done,
+          style: GoogleFonts.inter(
+            fontSize: 14,
+            fontWeight: FontWeight.w500,
+            color: AppColors.deepDarkBrown,
+          ),
+          cursorColor: AppColors.primaryBrown,
+          decoration: InputDecoration(
+            hintText: hint,
+            hintStyle: GoogleFonts.inter(
+              fontSize: 14,
+              fontWeight: FontWeight.w400,
+              color: AppColors.muted.withValues(alpha: 0.6),
+            ),
+            filled: true,
+            fillColor: AppColors.warmBeige.withValues(alpha: 0.5),
+            contentPadding: const EdgeInsets.symmetric(
+              horizontal: 14,
+              vertical: 12,
+            ),
+            border: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide.none,
+            ),
+            enabledBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: BorderSide(
+                color: AppColors.muted.withValues(alpha: 0.15),
+              ),
+            ),
+            focusedBorder: OutlineInputBorder(
+              borderRadius: BorderRadius.circular(12),
+              borderSide: const BorderSide(
+                color: AppColors.primaryBrown,
+                width: 1.5,
+              ),
+            ),
+          ),
+        ),
+      ],
+    );
   }
 
   @override
@@ -2530,15 +2710,20 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
             ),
             const SizedBox(height: 12),
             Text(
-              "Paste your Google Meet link below. You can skip the "
-              "https:// — we'll add it for you. Users see the link as "
-              "soon as they pay to join the live session.",
+              "Paste your ${_platform.label} link below. You can skip "
+              "the https:// — we'll add it for you. Users see the link "
+              "as soon as they pay to join the live session.",
               style: GoogleFonts.inter(
                 fontSize: 13,
                 fontWeight: FontWeight.w400,
                 color: AppColors.muted,
                 height: 1.5,
               ),
+            ),
+            const SizedBox(height: 16),
+            MeetingPlatformSelector(
+              selected: _platform,
+              onChanged: _selectPlatform,
             ),
             const SizedBox(height: 16),
             TextField(
@@ -2555,7 +2740,7 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
               ),
               cursorColor: AppColors.primaryBrown,
               decoration: InputDecoration(
-                hintText: "meet.google.com/abc-defg-hij",
+                hintText: _platform.placeholder,
                 hintStyle: GoogleFonts.inter(
                   fontSize: 14,
                   fontWeight: FontWeight.w400,
@@ -2604,6 +2789,20 @@ class _AddLinkSheetState extends State<_AddLinkSheet> {
             ),
             const SizedBox(height: 10),
             _LinkStatusRow(result: _result),
+            if (_platform.usesAccessCodes) ...[
+              const SizedBox(height: 18),
+              _extrasField(
+                label: "Meeting ID (optional)",
+                controller: _idCtrl,
+                hint: "e.g. 123 4567 8901",
+              ),
+              const SizedBox(height: 14),
+              _extrasField(
+                label: "Passcode (optional)",
+                controller: _passcodeCtrl,
+                hint: "Only if your link doesn't include it",
+              ),
+            ],
             const SizedBox(height: 20),
             Opacity(
               opacity: _canSave ? 1.0 : 0.5,
@@ -2704,8 +2903,13 @@ class _LinkStatusRow extends StatelessWidget {
     if (result.isEmpty) {
       color = AppColors.muted;
       icon = AppIcons.lightbulb;
-      text =
-          "Tip: paste `meet.google.com/...` — we'll handle the rest.";
+      text = "Tip: paste your meeting link — we'll handle the rest.";
+    } else if (result.isValid && result.warning != null) {
+      // Valid + saveable, but the host doesn't match the chosen
+      // platform — a soft amber nudge, NOT a blocker.
+      color = AppColors.amberGold;
+      icon = AppIcons.info;
+      text = result.warning!;
     } else if (result.isValid) {
       color = AppColors.successGreen;
       icon = AppIcons.checkCircle;
@@ -3013,7 +3217,8 @@ class _ConfirmSheet extends StatelessWidget {
 // ════════════════════════════════════════════════════════════════
 
 class _MeetLinkGuideSheet extends StatelessWidget {
-  const _MeetLinkGuideSheet();
+  final MeetingPlatform platform;
+  const _MeetLinkGuideSheet({required this.platform});
 
   @override
   Widget build(BuildContext context) {
@@ -3063,7 +3268,7 @@ class _MeetLinkGuideSheet extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "How to Create a Meeting Link",
+                        platform.guideTitle,
                         style: GoogleFonts.inter(
                           fontSize: 18,
                           fontWeight: FontWeight.w700,
@@ -3085,43 +3290,14 @@ class _MeetLinkGuideSheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 24),
-            const _GuideStep(
-              number: 1,
-              title: "Open Google Meet",
-              description:
-                  "Open the Google Meet app on your phone, or visit "
-                  "meet.google.com in your browser.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 2,
-              title: "Create a New Meeting",
-              description: "Tap the 'New meeting' button or '+' icon.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 3,
-              title: "Choose 'Create a meeting for later'",
-              description:
-                  "This gives you a link without starting the meeting "
-                  "right now.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 4,
-              title: "Copy the Link",
-              description:
-                  "You'll see a link like meet.google.com/abc-defg-hij. "
-                  "Tap 'Copy' or long-press to copy it.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 5,
-              title: "Paste Here",
-              description:
-                  "Come back to Gospel Vox and paste the link in the "
-                  "Meet Link field.",
-            ),
+            for (var i = 0; i < platform.guideSteps.length; i++) ...[
+              if (i > 0) const SizedBox(height: 16),
+              _GuideStep(
+                number: i + 1,
+                title: platform.guideSteps[i].title,
+                description: platform.guideSteps[i].description,
+              ),
+            ],
             const SizedBox(height: 20),
             _PressableButton(
               onTap: () => Navigator.of(context).pop(),

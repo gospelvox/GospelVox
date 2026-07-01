@@ -85,7 +85,7 @@ exports.startBibleSession = (0, https_1.onCall)({ region: constants_1.REGION }, 
     // need an actual Timestamp value to write into the priest doc,
     // not a sentinel. The skew between Date.now() and the actual
     // server-stamped startedAt is sub-millisecond — negligible
-    // against a 15-minute grace window.
+    // against the session duration.
     //
     // bibleSessionLockedUntil is the safety-net deadline read by
     // SpeakerModel.isInBibleSession on the client AND by
@@ -97,7 +97,7 @@ exports.startBibleSession = (0, https_1.onCall)({ region: constants_1.REGION }, 
     const durationMin = typeof durationMinRaw === "number" && Number.isFinite(durationMinRaw)
         ? Math.max(1, Math.round(durationMinRaw))
         : 60;
-    const lockedUntilMs = Date.now() + (durationMin + 15) * 60 * 1000;
+    const lockedUntilMs = Date.now() + durationMin * 60 * 1000;
     const lockedUntil = admin.firestore.Timestamp.fromMillis(lockedUntilMs);
     const priestRef = db.doc(`priests/${callerUid}`);
     try {

@@ -195,7 +195,7 @@ export const bibleSessionReminders = onSchedule(
           title: "⚠️ Add Meeting Link",
           body:
             `"${title}" is tomorrow — ` +
-            "please add the Google Meet link.",
+            "please add the meeting link.",
           data: {
             type: "bible_session_link_reminder",
             sessionId,
@@ -233,7 +233,7 @@ export const bibleSessionReminders = onSchedule(
           title: "🚨 URGENT: Add Meeting Link!",
           body:
             `"${title}" starts in 1 hour — ` +
-            "add the Google Meet link NOW.",
+            "add the meeting link NOW.",
           data: {
             type: "bible_session_link_urgent",
             sessionId,
@@ -256,10 +256,10 @@ export const bibleSessionReminders = onSchedule(
         for (const reg of unpaidSnap.docs) {
           await sendPushNotification({
             userId: reg.id,
-            title: "⏰ Pay Now — Starting in 15 min!",
+            title: "⏰ Starting in 15 min!",
             body:
               `"${title}" starts soon. ` +
-              "Pay now to get the meeting link.",
+              "You'll pay to join the moment the speaker goes live.",
             data: {
               type: "bible_session_pay_reminder",
               sessionId,
@@ -370,7 +370,7 @@ export const bibleSessionReminders = onSchedule(
             title: "⚠️ Add Meeting Link",
             body:
               `"${title}" starts in ${diffMin} min — ` +
-              "add your Google Meet link now!",
+              "add your meeting link now!",
             data: {
               type: "bible_session_link_reminder",
               sessionId,
@@ -389,12 +389,11 @@ export const bibleSessionReminders = onSchedule(
     // AUTO-COMPLETE PASS
     // ─────────────────────────────────────────────────────────────
     //
-    // In the new flow, sessions auto-complete `durationMinutes + 15`
-    // minutes after the priest hit "Start Meeting". The +15 is the
-    // grace window for stragglers — `isJoinable` on the client uses
-    // the same offset. Once past that deadline the priest is assumed
-    // to have wrapped up and forgotten to mark it completed, so we
-    // do it for them.
+    // In the new flow, sessions auto-complete exactly `durationMinutes`
+    // minutes after the priest hit "Start Meeting" — there is no grace
+    // window. `isJoinable` / `isPastDeadline` on the client use the
+    // same deadline. Once past it the priest is assumed to have wrapped
+    // up and forgotten to mark it completed, so we do it for them.
     //
     // Side effects per auto-completed session:
     //   • status → 'completed', completedAt = server time,
@@ -438,7 +437,7 @@ export const bibleSessionReminders = onSchedule(
           : 60;
 
       const deadlineMs =
-        startedAt.getTime() + (durationMin + 15) * 60 * 1000;
+        startedAt.getTime() + durationMin * 60 * 1000;
       if (now.getTime() <= deadlineMs) continue;
 
       try {
@@ -560,6 +559,116 @@ export const bibleSessionReminders = onSchedule(
             `"${title}" has wrapped up. ` +
             "Thank you for being part of this blessed time.",
         });
+      }
+    }
+
+    // ─────────────────────────────────────────────────────────────
+    // AUTO-EXPIRE PASS (never-started sessions)
+    // ─────────────────────────────────────────────────────────────
+    //
+    // A session the priest never tapped "Start Meeting" on stays
+    // 'upcoming' forever — the auto-complete pass above only touches
+    // 'live' docs, so nothing else ever closes it. Once we're past
+    // (scheduledAt + durationMinutes + 15min grace) with no start, the
+    // slot is missed: the priest forgot. We close it as 'cancelled'
+    // (autoExpired:true for audit) so it stops rotting in the DB and
+    // disappears cleanly, then notify registrants "didn't take place —
+    // you were not charged" so they get closure instead of a silent
+    // vanish (the old behaviour only hid it client-side).
+    //
+    // The 15-min grace mirrors BibleSessionModel.isExpiredUpcoming so
+    // the server flips the doc at the exact moment the client already
+    // hides it — no window where the two disagree. Nobody can have paid
+    // (payment only happens once a session is live), so there is NO
+    // refund concern. Reuses the `upcoming` snapshot read at the top of
+    // the tick — no extra query.
+    for (const sessionDoc of upcoming.docs) {
+      const session = sessionDoc.data();
+      const sessionId = sessionDoc.id;
+
+      const scheduledTs =
+        session.scheduledAt as admin.firestore.Timestamp | undefined;
+      const scheduledAt = scheduledTs?.toDate();
+      if (!scheduledAt) continue;
+
+      const durationMinRaw = session.durationMinutes as number | undefined;
+      const durationMin =
+        typeof durationMinRaw === "number" && Number.isFinite(durationMinRaw)
+          ? Math.max(1, Math.round(durationMinRaw))
+          : 60;
+
+      const expireMs =
+        scheduledAt.getTime() + (durationMin + 15) * 60 * 1000;
+      if (now.getTime() <= expireMs) continue;
+
+      try {
+        await sessionDoc.ref.update({
+          status: "cancelled",
+          cancelledAt: admin.firestore.FieldValue.serverTimestamp(),
+          autoExpired: true,
+        });
+      } catch (err) {
+        console.error(
+          "[bibleSessionReminders] auto-expire flip failed for " +
+            `${sessionId}:`,
+          err,
+        );
+        continue;
+      }
+
+      const title = String(session.title ?? "Bible Session");
+
+      // Registrant closure note (in-app inbox + push). Nobody paid, so
+      // this is reassurance, not a refund.
+      let activeRegs: FirebaseFirestore.QueryDocumentSnapshot[] = [];
+      try {
+        const regsSnap = await db
+          .collection(`bible_sessions/${sessionId}/registrations`)
+          .get();
+        activeRegs = regsSnap.docs.filter(
+          (d) => d.data().status !== "cancelled",
+        );
+      } catch (err) {
+        console.error(
+          "[bibleSessionReminders] auto-expire regs read failed for " +
+            `${sessionId}:`,
+          err,
+        );
+      }
+      if (activeRegs.length > 0) {
+        await notifyRegistrants(sessionId, activeRegs, {
+          type: "bible_session_expired",
+          title: "Session Didn't Take Place",
+          body:
+            `"${title}" didn't take place at its scheduled time. ` +
+            "You were not charged.",
+        });
+      }
+
+      // Priest nudge so they realise they forgot to start it.
+      const priestId = session.priestId as string | undefined;
+      if (priestId) {
+        try {
+          const notifRef = db.collection("notifications").doc();
+          await notifRef.set({
+            userId: priestId,
+            type: "bible_session_expired_priest",
+            title: "Session Expired",
+            body:
+              `"${title}" was never started, so it has been closed. ` +
+              "Create a new session to reschedule.",
+            sessionId,
+            data: {sessionId},
+            isRead: false,
+            createdAt: admin.firestore.FieldValue.serverTimestamp(),
+          });
+        } catch (err) {
+          console.error(
+            "[bibleSessionReminders] auto-expire priest notif failed " +
+              `for ${sessionId}:`,
+            err,
+          );
+        }
       }
     }
   },

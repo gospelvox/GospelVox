@@ -62,7 +62,7 @@ class SpeakerModel {
   // doesn't get prematurely unlocked when one of the two ends.
   final String liveBibleSessionId;
   // Wall-clock deadline at which the bible-session lock auto-releases
-  // (startedAt + durationMinutes + 15min). Acts as the self-healing
+  // (startedAt + durationMinutes). Acts as the self-healing
   // guard for the lock — if every server-side clear path fails, the
   // moment this timestamp passes both the client UI and the
   // createSessionRequest CF treat the priest as free again. Without

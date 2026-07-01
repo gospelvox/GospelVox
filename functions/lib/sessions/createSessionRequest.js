@@ -131,7 +131,7 @@ exports.createSessionRequest = (0, https_1.onCall)({ region: constants_1.REGION 
     //      bibleSessionReminders auto-complete cron.
     //
     //   2. bibleSessionLockedUntil — a wall-clock deadline
-    //      (startedAt + durationMinutes + 15min). Acts as the
+    //      (startedAt + durationMinutes). Acts as the
     //      self-healing guard: if every CF that's supposed to
     //      clear the field fails, once this timestamp passes the
     //      gate treats the priest as released anyway.

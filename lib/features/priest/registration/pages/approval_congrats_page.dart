@@ -59,6 +59,18 @@ class _ApprovalCongratsPageState extends State<ApprovalCongratsPage>
       curve: const Interval(0.3, 1.0, curve: Curves.easeOutCubic),
     );
     _controller.forward();
+
+    // Mark the congrats as SEEN the moment it appears — not on the
+    // Continue tap. Persisting only on Continue meant a priest who closed
+    // or swiped the app away from this screen never recorded it, so the
+    // router showed them "You're Approved!" again on the next launch.
+    // Marking on view records the celebration as seen however they leave.
+    // markApprovalCongratsSeen updates an in-memory guard synchronously
+    // before its async write, so fire-and-forget here is safe.
+    final uid = FirebaseAuth.instance.currentUser?.uid;
+    if (uid != null) {
+      markApprovalCongratsSeen(uid);
+    }
   }
 
   @override
@@ -67,14 +79,9 @@ class _ApprovalCongratsPageState extends State<ApprovalCongratsPage>
     super.dispose();
   }
 
-  Future<void> _continue() async {
-    // Mark seen BEFORE navigating so the router's approved-state
-    // resolution sends them to the dashboard (not back here) from now on.
-    final uid = FirebaseAuth.instance.currentUser?.uid;
-    if (uid != null) {
-      await markApprovalCongratsSeen(uid);
-    }
-    if (!mounted) return;
+  void _continue() {
+    // Seen-flag is already persisted in initState (the moment this screen
+    // appeared), so here we just head to the dashboard.
     context.go('/priest');
   }
 

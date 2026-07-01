@@ -23,6 +23,8 @@ import 'package:gospel_vox/core/widgets/pulsing_dot.dart';
 import 'package:gospel_vox/features/priest/widgets/activation_prompt_sheet.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_model.dart';
 import 'package:gospel_vox/features/shared/data/bible_session_repository.dart';
+import 'package:gospel_vox/features/shared/data/meeting_platform.dart';
+import 'package:gospel_vox/features/shared/widgets/meeting_platform_selector.dart';
 import 'package:gospel_vox/core/widgets/app_icons.dart';
 import 'package:gospel_vox/core/widgets/app_loading_widget.dart';
 
@@ -97,7 +99,7 @@ class _PriestBibleSessionsPageState extends State<PriestBibleSessionsPage> {
       // filtering or sorting.
       //
       // isEffectivelyLive / isEffectivelyCompleted instead of the raw
-      // status flags — a session past its (startedAt + duration + 15min)
+      // status flags — a session past its (startedAt + duration)
       // deadline is treated as completed for bucketing even if the
       // auto-complete cron hasn't flipped the doc yet. Without this
       // the priest's "Live" tab keeps shouting LIVE for a session
@@ -707,6 +709,10 @@ class _CreateBibleSessionSheetState
   final _descCtrl = TextEditingController();
   final _maxCtrl = TextEditingController();
   final _linkCtrl = TextEditingController();
+  // Optional Zoom join extras — only shown when a platform that uses
+  // access codes (Zoom) is selected.
+  final _meetingIdCtrl = TextEditingController();
+  final _passcodeCtrl = TextEditingController();
 
   static const _categories = [
     "Deep Study",
@@ -726,6 +732,7 @@ class _CreateBibleSessionSheetState
   DateTime? _date;
   TimeOfDay? _time;
   int _durationMinutes = 60;
+  MeetingPlatform _platform = MeetingPlatform.googleMeet;
   bool _creating = false;
   String? _formError;
 
@@ -735,6 +742,8 @@ class _CreateBibleSessionSheetState
     _descCtrl.dispose();
     _maxCtrl.dispose();
     _linkCtrl.dispose();
+    _meetingIdCtrl.dispose();
+    _passcodeCtrl.dispose();
     super.dispose();
   }
 
@@ -832,6 +841,16 @@ class _CreateBibleSessionSheetState
     if (uri.scheme != 'https') {
       return (text: 'Must start with https://', mood: _HelperMood.error);
     }
+    // Forgiving: a link whose host doesn't match the chosen platform is
+    // still allowed (custom/corporate Zoom domains are valid) — we only
+    // show a gentle nudge so the priest can double-check. Never blocks.
+    if (!_platform.matchesUrl(raw)) {
+      return (
+        text: "Doesn't look like a ${_platform.label} link — "
+            'double-check it',
+        mood: _HelperMood.neutral,
+      );
+    }
     return (text: 'Looks good', mood: _HelperMood.success);
   }
 
@@ -893,7 +912,7 @@ class _CreateBibleSessionSheetState
       context: context,
       isScrollControlled: true,
       backgroundColor: Colors.transparent,
-      builder: (_) => const _MeetLinkGuideSheet(),
+      builder: (_) => _MeetLinkGuideSheet(platform: _platform),
     );
   }
 
@@ -1057,6 +1076,13 @@ class _CreateBibleSessionSheetState
         maxParticipants: maxAttendees,
         price: price,
         meetingLink: link,
+        meetingPlatform: _platform.id,
+        meetingId: _platform.usesAccessCodes
+            ? _meetingIdCtrl.text.trim()
+            : '',
+        meetingPasscode: _platform.usesAccessCodes
+            ? _passcodeCtrl.text.trim()
+            : '',
       );
 
       if (!mounted) return false;
@@ -1245,10 +1271,20 @@ class _CreateBibleSessionSheetState
               ),
               const SizedBox(height: 16),
 
-              // Meet link (optional)
+              // Meeting platform (Google Meet / Zoom)
+              const _FormLabel("MEETING PLATFORM"),
+              const SizedBox(height: 8),
+              MeetingPlatformSelector(
+                selected: _platform,
+                onChanged: (p) => setState(() => _platform = p),
+              ),
+              const SizedBox(height: 16),
+
+              // Meeting link (optional) — label + hint follow the
+              // chosen platform.
               Row(
                 children: [
-                  const _FormLabel("GOOGLE MEET LINK"),
+                  _FormLabel(_platform.linkLabel),
                   const SizedBox(width: 6),
                   GestureDetector(
                     onTap: _showLinkGuide,
@@ -1273,7 +1309,7 @@ class _CreateBibleSessionSheetState
               const SizedBox(height: 8),
               _FormField(
                 controller: _linkCtrl,
-                hint: "Paste from Google Meet (or type the URL)",
+                hint: _platform.hint,
                 keyboardType: TextInputType.url,
                 onChanged: (_) => setState(() {}),
               ),
@@ -1284,6 +1320,31 @@ class _CreateBibleSessionSheetState
                 },
               ),
               const SizedBox(height: 16),
+
+              // Optional Zoom join extras (Meeting ID + Passcode). Only
+              // shown for platforms that use access codes — the full
+              // Zoom link usually embeds the password, so these are a
+              // safety net for attendees who join manually.
+              if (_platform.usesAccessCodes) ...[
+                const _FormLabel("MEETING ID (OPTIONAL)"),
+                const SizedBox(height: 8),
+                _FormField(
+                  controller: _meetingIdCtrl,
+                  hint: "e.g. 123 4567 8901",
+                  keyboardType: TextInputType.text,
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 16),
+                const _FormLabel("PASSCODE (OPTIONAL)"),
+                const SizedBox(height: 8),
+                _FormField(
+                  controller: _passcodeCtrl,
+                  hint: "Only if your link doesn't include it",
+                  keyboardType: TextInputType.text,
+                  onChanged: (_) => setState(() {}),
+                ),
+                const SizedBox(height: 16),
+              ],
 
               // Max attendees
               const _FormLabel("MAX ATTENDEES"),
@@ -2092,7 +2153,8 @@ class _PressableButtonState extends State<_PressableButton> {
 // ════════════════════════════════════════════════════════════════
 
 class _MeetLinkGuideSheet extends StatelessWidget {
-  const _MeetLinkGuideSheet();
+  final MeetingPlatform platform;
+  const _MeetLinkGuideSheet({required this.platform});
 
   @override
   Widget build(BuildContext context) {
@@ -2142,7 +2204,7 @@ class _MeetLinkGuideSheet extends StatelessWidget {
                     crossAxisAlignment: CrossAxisAlignment.start,
                     children: [
                       Text(
-                        "How to Create a Meeting Link",
+                        platform.guideTitle,
                         style: GoogleFonts.inter(
                           fontSize: 18,
                           fontWeight: FontWeight.w700,
@@ -2164,44 +2226,14 @@ class _MeetLinkGuideSheet extends StatelessWidget {
               ],
             ),
             const SizedBox(height: 24),
-            const _GuideStep(
-              number: 1,
-              title: "Open Google Meet",
-              description:
-                  "Open the Google Meet app on your phone, or visit "
-                  "meet.google.com in your browser.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 2,
-              title: "Create a New Meeting",
-              description:
-                  "Tap the 'New meeting' button or '+' icon.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 3,
-              title: "Choose 'Create a meeting for later'",
-              description:
-                  "This gives you a link without starting the meeting "
-                  "right now.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 4,
-              title: "Copy the Link",
-              description:
-                  "You'll see a link like meet.google.com/abc-defg-hij. "
-                  "Tap 'Copy' or long-press to copy it.",
-            ),
-            const SizedBox(height: 16),
-            const _GuideStep(
-              number: 5,
-              title: "Paste Here",
-              description:
-                  "Come back to Gospel Vox and paste the link in the "
-                  "'Google Meet Link' field.",
-            ),
+            for (var i = 0; i < platform.guideSteps.length; i++) ...[
+              if (i > 0) const SizedBox(height: 16),
+              _GuideStep(
+                number: i + 1,
+                title: platform.guideSteps[i].title,
+                description: platform.guideSteps[i].description,
+              ),
+            ],
             const SizedBox(height: 20),
             const _InfoTip(
               "You don't need to add the link right now! You can "

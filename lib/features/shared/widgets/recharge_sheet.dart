@@ -31,6 +31,7 @@ import 'package:google_fonts/google_fonts.dart';
 import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
 import 'package:gospel_vox/core/services/injection_container.dart';
+import 'package:gospel_vox/core/services/purchase_watchdog.dart';
 import 'package:gospel_vox/core/theme/app_colors.dart';
 import 'package:gospel_vox/core/widgets/app_snackbar.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
@@ -132,6 +133,13 @@ class _RechargeSheetState extends State<RechargeSheet> {
   // success/error/cancel.
   bool _payInFlight = false;
 
+  // UI-only safety net — see PurchaseWatchdog. 30 s sits above the
+  // 20 s verifyCoinPurchase timeout so it can never fire during a real
+  // verification; it only releases the Proceed spinner if the store
+  // never reports back at all. Never touches Play Billing or the CF.
+  final PurchaseWatchdog _watchdog =
+      PurchaseWatchdog(timeout: const Duration(seconds: 30));
+
   // Tracks the pack the user picked when we kicked off a buy so the
   // success snackbar can render "+N coins" without re-deriving N
   // from the productId. Cleared on every outcome.
@@ -164,6 +172,7 @@ class _RechargeSheetState extends State<RechargeSheet> {
 
   @override
   void dispose() {
+    _watchdog.disarm();
     _iapOutcomeSubscription?.cancel();
     super.dispose();
   }
@@ -274,7 +283,26 @@ class _RechargeSheetState extends State<RechargeSheet> {
       // the user can pick a different pack.
       _pendingPack = null;
       setState(() => _payInFlight = false);
+      return;
     }
+    // Buy dispatched — arm the watchdog so the Proceed spinner can't
+    // hang forever if no outcome ever comes back.
+    _watchdog.arm(_onWatchdogExpired);
+  }
+
+  // Fired only when a buy went to the store but no IapOutcome arrived
+  // in time. Releases the spinner and reassures the user; any purchase
+  // that does complete still credits via the wallet's app-wide outcome
+  // listener and/or restorePurchases on next launch.
+  void _onWatchdogExpired() {
+    if (!mounted) return;
+    _pendingPack = null;
+    setState(() => _payInFlight = false);
+    AppSnackBar.info(
+      context,
+      "Taking longer than expected. If you were charged, your coins will "
+      "arrive shortly — no need to pay again.",
+    );
   }
 
   void _onIapOutcome(IapOutcome outcome) {
@@ -294,6 +322,10 @@ class _RechargeSheetState extends State<RechargeSheet> {
     if (pid != null && !IapProducts.allCoinPacks.contains(pid)) {
       return;
     }
+
+    // Our product (or a global unavailable) resolved — stand the
+    // watchdog down; the UI is about to update below.
+    _watchdog.disarm();
 
     switch (outcome.kind) {
       case IapOutcomeKind.success:

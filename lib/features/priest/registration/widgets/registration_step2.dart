@@ -143,6 +143,7 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
   String? _locationError;
   String? _bioError;
   String? _languagesError;
+  String? _specializationsError;
 
   @override
   void initState() {
@@ -418,6 +419,7 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
       } else {
         _selectedSpecializations.add(item);
       }
+      if (_selectedSpecializations.isNotEmpty) _specializationsError = null;
     });
   }
 
@@ -539,12 +541,21 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
       setState(() => _languagesError = langErr);
     }
 
+    String? specErr;
+    if (mergedSpecs.isEmpty) {
+      specErr = 'Please select at least one specialization';
+    }
+    if (specErr != _specializationsError && mounted) {
+      setState(() => _specializationsError = specErr);
+    }
+
     if (denomErr != null ||
         churchErr != null ||
         yearsErr != null ||
         locErr != null ||
         bioErr != null ||
-        langErr != null) {
+        langErr != null ||
+        specErr != null) {
       return;
     }
 
@@ -682,7 +693,7 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
             label: 'SPECIALIZATIONS',
             children: [
               Text(
-                'Select areas you specialize in (optional)',
+                'Select at least one area you specialize in',
                 style: GoogleFonts.inter(
                   fontSize: 12,
                   fontWeight: FontWeight.w400,
@@ -709,6 +720,17 @@ class _RegistrationStep2State extends State<RegistrationStep2> {
                 _OtherInputField(
                   controller: _otherSpecController,
                   hint: 'Type your specialization',
+                ),
+              ],
+              if (_specializationsError != null) ...[
+                const SizedBox(height: 10),
+                Text(
+                  _specializationsError!,
+                  style: GoogleFonts.inter(
+                    fontSize: 12,
+                    fontWeight: FontWeight.w400,
+                    color: AppColors.errorRed,
+                  ),
                 ),
               ],
             ],

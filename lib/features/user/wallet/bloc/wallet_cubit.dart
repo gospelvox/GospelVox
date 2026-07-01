@@ -4,6 +4,7 @@ import 'package:flutter_bloc/flutter_bloc.dart';
 import 'package:in_app_purchase/in_app_purchase.dart';
 import 'package:gospel_vox/core/config/iap_products.dart';
 import 'package:gospel_vox/core/services/iap_service.dart';
+import 'package:gospel_vox/core/services/purchase_watchdog.dart';
 import 'package:gospel_vox/features/user/wallet/bloc/wallet_state.dart';
 import 'package:gospel_vox/features/user/wallet/data/wallet_repository.dart';
 import 'package:gospel_vox/features/admin/settings/data/coin_pack_model.dart';
@@ -53,6 +54,17 @@ class WalletCubit extends Cubit<WalletState> {
   // wallet with a "Payment Successful" takeover. Pending deliberately
   // leaves this true so the eventual settlement still celebrates.
   bool _purchaseInFlight = false;
+
+  // UI-only safety net. If Google Play never reports a terminal event
+  // (most often: the user dismisses the Play sheet with the back
+  // gesture, which Android doesn't always surface as a cancellation),
+  // the overlay + back-button block would otherwise stay on forever.
+  // 30 s sits above the 20 s verifyCoinPurchase timeout so this can
+  // never fire while a real verification is in flight — see
+  // PurchaseWatchdog. It only ever flips our local UI flag; it never
+  // touches Play Billing or the verify CF.
+  final PurchaseWatchdog _watchdog =
+      PurchaseWatchdog(timeout: const Duration(seconds: 30));
   // Last uid passed to loadWallet. Cached so _onIapOutcome can fire
   // reloadAfterPurchase on success without forcing the call site to
   // thread the uid through a second time. Set on every loadWallet
@@ -221,7 +233,29 @@ class WalletCubit extends Cubit<WalletState> {
       if (after is WalletLoaded && after.isPurchasing) {
         emit(after.copyWith(isPurchasing: false));
       }
+      return;
     }
+    // Buy dispatched to the store. Arm the watchdog so the overlay
+    // can't strand the user if no outcome ever comes back.
+    _watchdog.arm(_onWatchdogExpired);
+  }
+
+  // Fired only when a buy went to the store but no IapOutcome arrived
+  // within the foreground budget (the dropped-event case). Drops the
+  // overlay + re-enables back, and reassures the user. The purchase,
+  // if it ever completes, still credits via the live outcome listener
+  // and/or restorePurchases on next launch — this is purely the UI
+  // unsticking itself.
+  void _onWatchdogExpired() {
+    if (isClosed) return;
+    _purchaseInFlight = false;
+    _clearPurchasing();
+    _notices.add(
+      WalletNotice.info(
+        "This is taking longer than expected. If you were charged, your "
+        "coins will arrive shortly — no need to pay again.",
+      ),
+    );
   }
 
   void _onIapOutcome(IapOutcome outcome) {
@@ -242,6 +276,11 @@ class WalletCubit extends Cubit<WalletState> {
     if (pid != null && !IapProducts.allCoinPacks.contains(pid)) {
       return;
     }
+
+    // A terminal/non-terminal outcome for OUR product (or a global
+    // unavailable) arrived — the screen is about to update either way,
+    // so stand the watchdog down.
+    _watchdog.disarm();
 
     switch (outcome.kind) {
       case IapOutcomeKind.success:
@@ -366,6 +405,7 @@ class WalletCubit extends Cubit<WalletState> {
 
   @override
   Future<void> close() async {
+    _watchdog.disarm();
     await _balanceSubscription?.cancel();
     await _iapOutcomeSubscription?.cancel();
     await _notices.close();

@@ -99,4 +99,12 @@ dependencies {
     // Pairs with isCoreLibraryDesugaringEnabled above. 2.1.4 is the
     // minimum version compatible with flutter_local_notifications 21.
     coreLibraryDesugaring("com.android.tools:desugar_jdk_libs:2.1.4")
+
+    // Official AndroidX SplashScreen backport. Used ONLY to keep the
+    // OS launch splash (the beige + app-icon screen already defined in
+    // styles.xml) on screen until Flutter paints its first frame —
+    // closing the brief black-surface gap that otherwise shows while
+    // main()'s async bootstrap runs before runApp(). See MainActivity's
+    // setKeepOnScreenCondition. Presentation only; no app logic touched.
+    implementation("androidx.core:core-splashscreen:1.0.1")
 }
